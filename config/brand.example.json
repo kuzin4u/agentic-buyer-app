@@ -1,0 +1,9 @@
+{
+  "name": "[BANK NAME]",
+  "colors": {
+    "primary": "#0B5D43",
+    "onPrimary": "#FFFFFF",
+    "accent": "#1F4FB8"
+  },
+  "logo": "[LOGO URL]"
+}

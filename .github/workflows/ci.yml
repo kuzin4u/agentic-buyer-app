@@ -1,0 +1,48 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  # Матрица Node: нижняя граница engines (>=20.19) и текущая LTS — как в agentic-buyer-ref.
+  test-node:
+    name: test (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установка зависимостей
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Аудит зависимостей работающего кода
+        run: npm audit --omit=dev --audit-level=high
+      - name: Аудит инструментов разработки
+        run: npm audit --audit-level=high
+      - name: Проверка типов и ESLint
+        run: npm run check
+      - name: Сборка
+        run: npm run build
+      - name: Тесты
+        run: npm test
+      - name: Поиск ключей и реквизитов
+        run: python3 .claude/hooks/scan_secrets.py .
+
+  # Итоговая проверка test — её требует защита ветки main, имя не меняется.
+  # if: always() обязателен: без него при красной матрице test была бы пропущена (skipped), а пропущенная обязательная
+  # проверка засчитывается как пройденная (ревью agentic-buyer-ref #23 п. 1). Зелёная — только при success всей матрицы.
+  test:
+    needs: test-node
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Матрица Node прошла целиком
+        run: test "${{ needs.test-node.result }}" = "success"
