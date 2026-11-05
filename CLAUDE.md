@@ -103,7 +103,7 @@
 
 ## Стек
 
-TypeScript, Node ≥ 20.19, vitest. Ядро — `agentic-buyer-ref` по тегу (`git+https`), подключается, когда у ядра появится первый тег. Каркас интерфейса — решение в первой задаче этапа 1 (через `/decision`).
+TypeScript, Node ≥ 20.19, vitest. Ядро — `agentic-buyer-ref` по тегу (`git+https`); до первого тега ядра — по коммиту `main` с глубоким импортом `src/agent/compose.ts` до передачи agentic-buyer-ref#105 (П2). Стенд Платформы `agentic-ps-platform` — по тегу, тому же, что у ядра; демо-стенд — `src/demo/`, `npm run demo` (П2). Каркас интерфейса — решение в первой задаче этапа 1 (через `/decision`).
 
 ## Команды
 
