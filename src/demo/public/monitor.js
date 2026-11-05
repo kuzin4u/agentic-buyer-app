@@ -1,6 +1,6 @@
 // Монитор операций демо-стенда (К1.3). Лента — SSE /events. Данные выводятся только через textContent (инвариант 4):
 // элементы создаются createElement, разметка из строк не собирается, строки не исполняются.
-/* global document, EventSource */
+/* global document, EventSource, fetch */
 "use strict";
 
 (function () {
@@ -35,7 +35,9 @@
     tr.appendChild(cell(time(e.at)));
     tr.appendChild(cell(m["class." + e.cls] || e.cls, "cls"));
     tr.appendChild(cell(m["source." + e.source] || e.source));
-    tr.appendChild(cell(e.what, "what"));
+    const what = cell(e.what, "what");
+    what.title = e.what; // путь в одну строку, полный — во всплывающей подсказке (поправка владельца (в))
+    tr.appendChild(what);
     tr.appendChild(cell(e.status));
     tr.appendChild(cell(e.code, "code"));
     tr.appendChild(cell(e.amount && e.amount.text ? e.amount.text[lang] : "", "amount"));
@@ -58,6 +60,35 @@
     document.getElementById("console-empty").hidden = true;
   }
 
+  // Шаг сюжета: текст из словаря, {параметр} → значение; сумма — готовый текст на языке страницы. Всё — textContent.
+  const param = (v) => (v && typeof v === "object" && v.text ? v.text[lang] : String(v));
+  function addStep(l) {
+    const tpl = m["step." + l.step] || l.step;
+    const text = tpl.replace(/\{([a-z_]+)\}/g, (_, k) => (l.params && l.params[k] !== undefined ? param(l.params[k]) : m["value.none"]));
+    const li = document.createElement("li");
+    li.className = l.step === "failed" ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
+    li.textContent = time(l.at) + "  " + text;
+    consoleList.insertBefore(li, consoleList.firstChild);
+    while (consoleList.childElementCount > MAX_ROWS) consoleList.removeChild(consoleList.lastChild);
+    document.getElementById("console-empty").hidden = true;
+  }
+
+  const msg = document.getElementById("scenario-msg");
+  for (const b of document.querySelectorAll("button[data-scenario]")) {
+    b.addEventListener("click", () => {
+      fetch("/scenario/" + b.dataset.scenario, { method: "POST" })
+        .then((r) => r.json().catch(() => ({ ok: false })))
+        .then((r) => {
+          msg.hidden = false;
+          msg.textContent = r.ok ? m["scenario.started"] : r.code === "BUSY" ? m["scenario.busy"] : r.code === "NEED_INTENT" ? m["scenario.need_intent"] : m["scenario.error"];
+        })
+        .catch(() => {
+          msg.hidden = false;
+          msg.textContent = m["scenario.error"];
+        });
+    });
+  }
+
   let seen = 0;
   function connect() {
     const es = new EventSource("/events");
@@ -70,6 +101,7 @@
       if (seq <= seen) return; // история при переподключении — без повторов
       seen = seq;
       if (item.stream === "monitor") addEvent(item.event);
+      else if (item.stream === "scenario") addStep(item.line);
       else addLine(item.line);
     };
     es.onerror = () => {

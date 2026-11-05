@@ -1,6 +1,7 @@
-// Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сервер экранов. Общая для npm run demo и тестов.
+// Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сюжеты, сервер экранов. Общая для npm run demo и тестов.
 import { MonitorBus } from "./bus.js";
 import { t, type Lang } from "./i18n.js";
+import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD } from "./scenarios.js";
 import { startMonitorServer, type MonitorServer } from "./server.js";
 import { startDemoStand, type DemoStand } from "./stand.js";
 
@@ -13,6 +14,7 @@ export interface DemoOptions {
 export interface Demo {
   readonly stand: DemoStand;
   readonly bus: MonitorBus;
+  readonly scenarios: DemoScenarios;
   readonly monitor: MonitorServer;
   close(): Promise<void>;
 }
@@ -22,7 +24,11 @@ export const DEFAULT_BRAND_PATH = "config/brand.demo.json";
 export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
   const stand = await startDemoStand(o.lang ? { lang: o.lang } : {});
   let bus: MonitorBus | undefined;
+  let scenarios: DemoScenarios | undefined;
   try {
+    // Сюжеты пишут шаги в шину; шина берёт у сюжетов сумму операции для строки итога. Связь — через замыкания.
+    const sc = new DemoScenarios(stand, (s) => bus?.scenario(s));
+    scenarios = sc;
     const b = new MonitorBus({
       calls: () => stand.stand.calls(),
       merchantCalls: () => stand.merchantCalls(),
@@ -30,6 +36,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       listenFeed: (l) => stand.agent.events.listen(l),
       isAgentKid: (kid) => stand.isAgentKid(kid),
       confirmation: (id) => stand.stand.confirmations.get(id),
+      operationAmount: (opRef) => sc.operationAmount(opRef),
       now: () => stand.stand.now(),
     });
     bus = b;
@@ -39,14 +46,20 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       urls: stand.urls,
       agentCode: stand.agentCode,
       brandPath: o.brandPath ?? DEFAULT_BRAND_PATH,
+      scenarios: sc,
+      intentCard: INTENT_CARD,
+      // Одноразовая ссылка входа клиента банка стенда: банк его уже опознал (эмулятор), подпись — на экране банка.
+      bankLogin: () => `${stand.urls.bankApp}${stand.stand.bankApp.session(DEMO_PRINCIPAL)}`,
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
     });
     return {
       stand,
       bus: b,
+      scenarios: sc,
       monitor,
       close: async () => {
+        await sc.close().catch(() => undefined);
         b.stop();
         try {
           await monitor.close();
@@ -56,6 +69,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       },
     };
   } catch (e) {
+    await scenarios?.close().catch(() => undefined);
     bus?.stop();
     await stand.close().catch((r: unknown) => console.error(t(o.lang ?? "ru", "cli.release_failed"), r));
     throw e;

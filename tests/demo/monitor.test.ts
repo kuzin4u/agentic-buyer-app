@@ -253,7 +253,7 @@ describe("монитор на живом стенде", () => {
     const badge = `<span class="badge emu">${MESSAGES.ru["badge.emulator"]}</span>`;
     expect(ruHtml.split(badge).length - 1).toBe(4);
     for (const [url, key] of [
-      [demo.stand.urls.bankApp, "link.bank"],
+      ["/bank-login", "link.bank"],
       [demo.stand.urls.upk, "link.upk"],
       [`${demo.stand.urls.merchants}/v1/shops`, "link.merchants"],
     ] as const) {
@@ -318,11 +318,6 @@ describe("монитор на живом стенде", () => {
     expect(sse).toContain("agent.selfcheck");
   });
 
-  it("до сюжетов реквизиты не выданы — живая проверка утечки переписывается в К2.1 (STATUS «Открыто»)", () => {
-    // Утечку по всем полям сейчас проверяет синтетический прогон ниже (ревью К1.3 № 1, № 12). Когда К2.1 даст первый
-    // выпуск реквизита, эта проверка упадёт и должна стать проверкой: криптограмма и token_ref — не в SSE и не на странице.
-    expect(demo.stand.stand.issuedCredentials()).toHaveLength(0);
-  });
 });
 
 describe("инвариант 1: синтетический прогон шины и сервера с метками утечки во всех запрещённых полях", () => {

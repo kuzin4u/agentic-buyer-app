@@ -27,7 +27,17 @@ section { background: #fff; border-radius: 8px; padding: 8px 12px; overflow-x: a
 h2 { font-size: 15px; margin: 4px 0 8px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
-td.what, td.ids, td.code { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+td.ids, td.code { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+/* Путь — в одну строку с многоточием, полный — во всплывающей подсказке (поправка владельца (в)). */
+td.what { font-family: ui-monospace, monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 28em; }
+.scenarios { margin: 0 16px 16px; background: #fff; border-radius: 8px; padding: 8px 12px; }
+.scenarios button { margin: 4px 8px 4px 0; padding: 6px 12px; border: 0; border-radius: 6px; background: var(--brand-primary); color: var(--brand-on-primary); font: inherit; cursor: pointer; }
+.hint { color: #555; margin: 0 0 6px; }
+.card { margin: 4px 0 8px; padding: 6px 10px; border: 1px solid #d9dde3; border-radius: 6px; background: #fafbfc; }
+.card dt { font-weight: 600; margin-bottom: 2px; }
+.card dd { margin: 0; }
+#console li.step { color: #12406b; font-family: system-ui, sans-serif; }
+#console li.step.outcome { color: var(--c-outcome); font-weight: 600; }
 td.cls { font-weight: 600; }
 tr.cls-mandate td.cls { color: var(--c-mandate); }
 tr.cls-check td.cls { color: var(--c-check); }
@@ -40,6 +50,6 @@ tr.cls-outcome { background: #f2fbf3; }
 tr.cls-other td.cls { color: var(--c-other); }
 #console { font-family: ui-monospace, monospace; font-size: 12px; padding-left: 0; list-style: none; margin: 0; }
 #console li { padding: 2px 0; border-bottom: 1px solid #f0f0f0; word-break: break-all; }
-#console li.warn { color: var(--c-decline); }
+#console li.warn, #console li.step.warn { color: var(--c-decline); }
 .empty { color: #888; }
 .status { color: var(--c-decline); font-weight: 600; }

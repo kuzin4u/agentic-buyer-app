@@ -5,13 +5,18 @@
 // Каждая запись приводится к классу: поручение, проверка, реквизит, оплата, итог, отказ (или «прочее»).
 //
 // Инвариант 1: в ленту попадают только поля из перечней ниже. Путь показывается шаблоном маршрута, а не как есть: из пути
-// берутся только mandate_id, op_ref, confirmation_id и id витрины. Ссылка реквизита (`/credentials/:ref`) не выводится.
+// берутся только mandate_id, op_ref, confirmation_id, merchant_id, id витрины и заказа. Ссылка реквизита
+// (`/credentials/:ref`) не выводится.
 // Инвариант 2: класс — подпись для человека, а не решение. Шина ничего не проверяет и не меняет: она только читает.
-// Сумма — только из записи подтверждения стенда (П6, чтение), в минимальных единицах и с валютой.
+// Сумма — из записи подтверждения стенда (П6, чтение) или из операции, которую вернуло ядро после события (К2.1), в
+// минимальных единицах и с валютой.
+// Четвёртый поток (К2.1) — шаги сюжетов демо-стенда: код шага и параметры, текст — по словарю на странице.
 import type { StandCall } from "agentic-ps-platform/stand";
 import type { JournalEntry } from "agentic-buyer-ref/src/agent/journal/index.js";
 import type { FeedItem } from "agentic-buyer-ref/src/agent/ports/events.js";
+import type { Money } from "agentic-buyer-ref/src/shared/domain.js";
 import { moneyView, type MoneyView } from "./money.js";
+import type { ScenarioStep } from "./scenarios.js";
 
 export const MONITOR_CLASSES = ["mandate", "check", "credential", "payment", "outcome", "decline", "other"] as const;
 export type MonitorClass = (typeof MONITOR_CLASSES)[number];
@@ -19,15 +24,33 @@ export type MonitorClass = (typeof MONITOR_CLASSES)[number];
 /** Источник записи. «Агент» — только если keyid обращения — ключ нашего агента (isAgentKid): браузер человека и любой
  *  другой клиент тоже ходят по сети, и их обращения агенту не приписываются (ревью К1.3 № 5, повторное — находка 2).
  *  Подпись монитор не проверяет: её проверяет Платформа или витрина, отказ виден в ленте кодом. */
-export type MonitorSource = "agent_platform" | "network_platform" | "stand" | "agent_merchant" | "network_merchant" | "pao_event";
+/** «Агент → Платформа (открытый адрес)» — неподписанное обращение агента к открытому адресу ПАО (`/.well-known/*`),
+ *  сопоставленное с записью pao.call журнала агента (поправка владельца (а), #issuecomment-6658360823). */
+export type MonitorSource =
+  | "agent_platform"
+  | "agent_platform_open"
+  | "network_platform"
+  | "stand"
+  | "agent_merchant"
+  | "network_merchant"
+  | "pao_event";
 
 /** Идентификаторы, которые разрешено показывать (инвариант 1). */
 export interface MonitorIds {
   readonly mandate_id?: string;
   readonly op_ref?: string;
   readonly confirmation_id?: string;
+  readonly merchant_id?: string;
   readonly shop_id?: string;
   readonly order_id?: string;
+}
+
+/** Шаг сюжета в ленте: суммы — с текстом на обоих языках, остальное — строки и числа как есть. */
+export interface ScenarioLine {
+  readonly seq: number;
+  readonly at: string;
+  readonly step: string;
+  readonly params: Readonly<Record<string, string | number | MoneyView>>;
 }
 
 export interface MonitorEvent {
@@ -61,7 +84,12 @@ export interface ConsoleLine {
 
 const CONSOLE_FIELDS = ["reason", "detail", "ref", "mandate", "merchant", "method", "result", "status", "check"] as const;
 
-export type BusItem = { readonly stream: "monitor"; readonly event: MonitorEvent } | { readonly stream: "console"; readonly line: ConsoleLine };
+export type BusItem =
+  | { readonly stream: "monitor"; readonly event: MonitorEvent }
+  | { readonly stream: "console"; readonly line: ConsoleLine }
+  | { readonly stream: "scenario"; readonly line: ScenarioLine };
+
+const seqOf = (i: BusItem): number => (i.stream === "monitor" ? i.event.seq : i.line.seq);
 
 /** Обращение без тела: форма журнала стенда, общая для ПАО и витрин. kid — только как признак подписи, в ленту не идёт. */
 export type CallRecord = Pick<StandCall, "method" | "path" | "status" | "code" | "source" | "kid">;
@@ -112,12 +140,14 @@ const PAO_ROUTES: readonly Route[] = [
   // Чтение операции — «проверка»: итог показывается только по событию ленты operation.* (инвариант 6, ревью К1.3 № 4).
   r("/pao/v1/operations/:x", "/pao/v1/operations/{op_ref}", "check", ["op_ref"]),
   r("/pao/v1/operations", "/pao/v1/operations", "check"),
-  r("/pao/v1/merchants/:x/readiness", "/pao/v1/merchants/{merchant_id}/readiness", "check"),
+  r("/pao/v1/merchants/:x/readiness", "/pao/v1/merchants/{merchant_id}/readiness", "check", ["merchant_id"]),
+  r("/.well-known/pao-configuration", "/.well-known/pao-configuration", "check"),
+  r("/.well-known/agent-keys", "/.well-known/agent-keys", "check"),
   r("/pao/v1/events", "/pao/v1/events", "other"),
   r("/pao/v1/subscription", "/pao/v1/subscription", "other"),
   r("/participants/v1/notifications", "/participants/v1/notifications", "other"),
   r("/participants/v1/agents/:x/status", "/participants/v1/agents/{agent_code}/status", "check"),
-  r("/participants/v1/merchants/:x/readiness", "/participants/v1/merchants/{merchant_id}/readiness", "check"),
+  r("/participants/v1/merchants/:x/readiness", "/participants/v1/merchants/{merchant_id}/readiness", "check", ["merchant_id"]),
   r("/adp/v1/decide", "/adp/v1/decide", "payment"),
   r("/adp/v1/events", "/adp/v1/events", "payment"),
   r("/participants/v1/mandates/:x/sign", "/participants/v1/mandates/{mandate_id}/sign", "mandate", ["mandate_id"]),
@@ -125,8 +155,8 @@ const PAO_ROUTES: readonly Route[] = [
   r("/participants/v1/principals/:x/revoke-all", "/participants/v1/principals/{principal_ref}/revoke-all", "mandate"),
   r("/participants/v1/principals/:x/limits", "/participants/v1/principals/{principal_ref}/limits", "mandate"),
   r("/participants/v1/confirmations/:x", "/participants/v1/confirmations/{confirmation_id}", "check", ["confirmation_id"]),
-  r("/participants/v1/merchants/:x/payments/:x", "/participants/v1/merchants/{merchant_id}/payments/{credential_ref}", "payment"),
-  r("/participants/v1/merchants/:x/payments", "/participants/v1/merchants/{merchant_id}/payments", "payment"),
+  r("/participants/v1/merchants/:x/payments/:x", "/participants/v1/merchants/{merchant_id}/payments/{credential_ref}", "payment", ["merchant_id"]),
+  r("/participants/v1/merchants/:x/payments", "/participants/v1/merchants/{merchant_id}/payments", "payment", ["merchant_id"]),
 ];
 
 const MERCHANT_ROUTES: readonly Route[] = [
@@ -219,19 +249,41 @@ export interface BusSources {
   isAgentKid(kid: string): boolean;
   /** Запись подтверждения стенда только для чтения — источник суммы. */
   confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
+  /** Сумма операции, как её вернуло ядро после события (сюжеты); нет — событие без суммы. */
+  operationAmount?(opRef: string): Promise<Money | undefined>;
   now(): Date;
 }
+
+/** Открытые адреса ПАО — без подписи по протоколу. Только их неподписанные обращения сопоставляются с журналом агента:
+ *  чужой неподписанный запрос к закрытому методу агенту не приписывается. */
+const OPEN_PREFIX = "/.well-known/";
+/** Сколько опросов ждать записи журнала агента для неподписанного обращения к открытому адресу. */
+const OPEN_MATCH_POLLS = 5;
+
+interface OpenPending {
+  k: Classified;
+  key: string;
+  polls: number;
+}
+
+/** Ключ сопоставления: метод, шаблон без имён параметров и статус. */
+const openKey = (method: string, template: string, status: number | string) => `${method} ${template.replace(/\{[^}]*\}/g, "{}")} ${status}`;
 
 export class MonitorBus {
   readonly #src: BusSources;
   /** История — по потокам отдельно: шумная консоль не вытесняет события монитора (ревью К1.3 № 13). */
-  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [] };
+  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [], scenario: [] };
   readonly #subs = new Set<(i: BusItem) => void>();
   readonly #limit: number;
   #seq = 0;
   #calls = 0;
   #merchantCalls = 0;
   #journal = 0;
+  /** Обращения агента к открытым адресам по журналу (pao.call), ещё не сопоставленные с журналом стенда. Живут
+   *  OPEN_MATCH_POLLS опросов: устаревшая запись чужой запрос агенту не припишет (ревью К2.1 № 2). */
+  #openByAgent: { key: string; polls: number }[] = [];
+  /** Неподписанные обращения к открытым адресам, ждущие записи журнала агента. */
+  #openPending: OpenPending[] = [];
   #timer: NodeJS.Timeout | undefined;
   #offFeed: (() => void) | undefined;
 
@@ -255,11 +307,38 @@ export class MonitorBus {
 
   /** Прочитать новые записи журналов (по индексу). Открыт для тестов: не ждать таймера. */
   poll(): void {
+    // Журнал агента — первым: его записи pao.call об открытых адресах нужны, чтобы подписать обращения стенда ниже.
+    const j = this.#src.journal();
+    for (; this.#journal < j.length; this.#journal++) {
+      const e = j[this.#journal]!;
+      if (e.kind === "pao.call" && e.result === "ok" && typeof e.method === "string") {
+        const [m, path] = e.method.split(" ");
+        if (m && path?.startsWith(OPEN_PREFIX)) this.#openByAgent.push({ key: openKey(m, path, e.detail ?? ""), polls: 0 });
+      }
+      if (!CONSOLE_NOISE.has(e.kind)) this.#push({ stream: "console", line: consoleLine(++this.#seq, e) });
+    }
+    // Ожидающие неподписанные обращения к открытым адресам: пара в журнале агента — «агент (открытый адрес)»; нет пары за
+    // OPEN_MATCH_POLLS опросов — «по сети без подписи агента».
+    const still: OpenPending[] = [];
+    for (const p of this.#openPending) {
+      if (this.#takeOpen(p.key)) this.#monitor({ ...p.k, source: "agent_platform_open" });
+      else if (++p.polls >= OPEN_MATCH_POLLS) this.#monitor({ ...p.k, source: "network_platform" });
+      else still.push(p);
+    }
+    this.#openPending = still;
+
     const calls = this.#src.calls();
     for (; this.#calls < calls.length; this.#calls++) {
       const c = calls[this.#calls]!;
       const k = classifyCall(c, "pao");
-      if (k) this.#monitor({ ...k, source: c.source !== "network" ? "stand" : this.#byAgent(c) ? "agent_platform" : "network_platform" });
+      if (!k) continue;
+      if (c.source !== "network") this.#monitor({ ...k, source: "stand" });
+      else if (this.#byAgent(c)) this.#monitor({ ...k, source: "agent_platform" });
+      else if (c.path.startsWith(OPEN_PREFIX) && c.kid === undefined) {
+        const key = openKey(c.method, k.what.slice(c.method.length + 1), c.status);
+        if (this.#takeOpen(key)) this.#monitor({ ...k, source: "agent_platform_open" });
+        else this.#openPending.push({ k, key, polls: 0 });
+      } else this.#monitor({ ...k, source: "network_platform" });
     }
     const mc = this.#src.merchantCalls();
     for (; this.#merchantCalls < mc.length; this.#merchantCalls++) {
@@ -267,11 +346,31 @@ export class MonitorBus {
       const k = classifyCall(c, "merchants");
       if (k) this.#monitor({ ...k, source: this.#byAgent(c) ? "agent_merchant" : "network_merchant" });
     }
-    const j = this.#src.journal();
-    for (; this.#journal < j.length; this.#journal++) {
-      const e = j[this.#journal]!;
-      if (!CONSOLE_NOISE.has(e.kind)) this.#push({ stream: "console", line: consoleLine(++this.#seq, e) });
+    this.#openByAgent = this.#openByAgent.filter((o) => ++o.polls < OPEN_MATCH_POLLS);
+  }
+
+  /** Самая старая несопоставленная запись журнала агента с этим ключом — по порядку, одна на обращение. */
+  #takeOpen(key: string): boolean {
+    const i = this.#openByAgent.findIndex((o) => o.key === key);
+    if (i < 0) return false;
+    this.#openByAgent.splice(i, 1);
+    return true;
+  }
+
+  /** Шаг сюжета в ленту. Суммы — минимальные единицы + валюта → текст на обоих языках; неверная сумма — без суммы. */
+  scenario(s: ScenarioStep): void {
+    const params: Record<string, string | number | MoneyView> = {};
+    for (const [k, v] of Object.entries(s.params)) {
+      if (typeof v === "string" || typeof v === "number") params[k] = v;
+      else {
+        try {
+          params[k] = moneyView({ minor: v.amount, currency: v.currency });
+        } catch {
+          // сумма не по форме — шаг без неё
+        }
+      }
     }
+    this.#push({ stream: "scenario", line: { seq: ++this.#seq, at: this.#src.now().toISOString(), step: s.step, params } });
   }
 
   #byAgent(c: CallRecord): boolean {
@@ -300,6 +399,14 @@ export class MonitorBus {
       } catch {
         amount = undefined;
       }
+    } else if (rest.ids.op_ref && this.#src.operationAmount) {
+      // Сумма итога — из операции, которую ядро прочитало по этому событию (GET операции); не со слов продавца.
+      try {
+        const m = await this.#src.operationAmount(rest.ids.op_ref);
+        if (m) amount = moneyView({ minor: m.amount, currency: m.currency });
+      } catch {
+        amount = undefined;
+      }
     }
     this.#monitor({ ...rest, ids, source: "pao_event", ...(amount && { amount }) }, at);
   }
@@ -315,10 +422,9 @@ export class MonitorBus {
     for (const s of this.#subs) s(i);
   }
 
-  /** История обоих потоков по порядку seq. */
+  /** История всех потоков по порядку seq. */
   history(): readonly BusItem[] {
-    const seq = (i: BusItem) => (i.stream === "monitor" ? i.event.seq : i.line.seq);
-    return [...this.#history.monitor, ...this.#history.console].sort((a, b) => seq(a) - seq(b));
+    return [...this.#history.monitor, ...this.#history.console, ...this.#history.scenario].sort((a, b) => seqOf(a) - seqOf(b));
   }
 
   subscribe(fn: (i: BusItem) => void): () => void {

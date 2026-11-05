@@ -8,6 +8,8 @@ import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
 import type { MonitorBus } from "./bus.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { formatMoney } from "./money.js";
+import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
 const PUBLIC = (name: string) => readFileSync(new URL(`./public/${name}`, import.meta.url), "utf8");
@@ -38,6 +40,12 @@ export interface MonitorServerOptions {
   brandPath: string;
   defaultLang?: Lang;
   port?: number;
+  /** Сюжеты (К2.1); нет — кнопок нет, POST /scenario/* — 405. */
+  scenarios?: { start(name: ScenarioName): ScenarioStart };
+  /** Карточка поручения сюжета 1 — показывается человеку до нажатия кнопки (Т3а: keyTermsShown, ревью К2.1 № 1). */
+  intentCard?: IntentCard;
+  /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
+  bankLogin?: () => string;
 }
 
 export interface MonitorServer {
@@ -75,10 +83,33 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
 <p class="subtitle">${e("page.subtitle")}</p>
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
-  ${link(o.urls.bankApp, e("link.bank"), emu)}
+  ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
   ${link(o.urls.upk, e("link.upk"), emu)}
   ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
 </ul>
+${
+  o.scenarios
+    ? `<section class="scenarios">
+  <h2>${e("scenario.title")}</h2>
+  <p class="hint">${e("scenario.hint")}</p>
+  ${
+    o.intentCard
+      ? `<dl class="card" id="intent-card">
+    <dt>${e("card.intent.title")}</dt>
+    <dd>${e("card.subject")}: ${escapeHtml(o.intentCard.subject)}</dd>
+    <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: o.intentCard.limit.amount, currency: o.intentCard.limit.currency }, lang))}</dd>
+    <dd>${e("card.valid_days")}: ${o.intentCard.validDays}</dd>
+    <dd>${e("card.merchants")}: ${o.intentCard.merchants}</dd>
+    <dd>${e("card.single_use")}</dd>
+  </dl>`
+      : ""
+  }
+  <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
+  <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
+  <p id="scenario-msg" class="status" hidden></p>
+</section>`
+    : ""
+}
 <main>
   <section>
     <h2>${e("monitor.title")}</h2>
@@ -125,6 +156,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const plain = "text/plain; charset=utf-8";
   const fallback: Lang = o.defaultLang ?? "ru";
   let hosts: ReadonlySet<string> = new Set();
+  let origins: ReadonlySet<string> = new Set();
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     // Только Host самого монитора: чужая страница через подмену DNS (DNS rebinding) ленту не прочитает (ревью К1.3 № 11).
     if (!hosts.has(req.headers.host ?? "")) return send(res, 421, plain, t(fallback, "http.misdirected"));
@@ -136,7 +168,23 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       return send(res, 400, plain, t(fallback, "http.bad_request"));
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
+    // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
+    const scenario = /^\/scenario\/(intent|purchase)$/.exec(u.pathname);
+    if (req.method === "POST" && scenario && o.scenarios) {
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const r = o.scenarios.start(scenario[1] as ScenarioName);
+      return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
     if (req.method !== "GET") return send(res, 405, plain, t(lang, "http.method_not_allowed"));
+    if (u.pathname === "/bank-login" && o.bankLogin) {
+      // Вход — только переходом со страницы монитора или вводом адреса: чужая страница (ссылка, <img>, предзагрузка)
+      // сессию банка не создаёт (ревью К2.1 № 3). Без заголовка — не браузер (тест, curl): пропускается.
+      const site = req.headers["sec-fetch-site"];
+      if (site !== undefined && site !== "same-origin" && site !== "none") return send(res, 403, plain, t(lang, "http.forbidden"));
+      // Одноразовая ссылка входа: в ленту и журнал не пишется, страница монитора её не хранит.
+      res.writeHead(303, { location: o.bankLogin(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      return res.end();
+    }
     switch (u.pathname) {
       case "/":
         return send(res, 200, "text/html; charset=utf-8", page(lang, o, brand, logo !== null));
@@ -177,6 +225,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   });
   const { port } = server.address() as AddressInfo;
   hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  origins = new Set([...hosts].map((h) => `http://${h}`));
   return {
     url: `http://127.0.0.1:${port}`,
     server,
