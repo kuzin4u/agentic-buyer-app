@@ -1,0 +1,189 @@
+// Сервер экранов демо-стенда (П2 п. 2): node:http, только 127.0.0.1. Страница монитора на ru или en (?lang=), бренд из
+// конфигурации, лента — SSE (/events). CSP — только 'self': скрипт, стили и цвета бренда отдаются файлами, без inline.
+// На странице нет данных витрин в разметке: ленту строит скрипт через textContent (инвариант 4).
+import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { extname, resolve, sep } from "node:path";
+import { parseBrand, type Brand } from "../brand.js";
+import type { MonitorBus } from "./bus.js";
+import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import type { DemoUrls } from "./stand.js";
+
+const PUBLIC = (name: string) => readFileSync(new URL(`./public/${name}`, import.meta.url), "utf8");
+
+const CSP = "default-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/** Экранирование текста для HTML: словари и бренд — значения конфигурации, а не разметка. */
+export function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** JSON внутри <script type="application/json">: без «<», чтобы строка данных не закрыла тег. */
+const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
+
+/** Бренд из файла конфигурации. Логотип — только файл внутри config/ (на стенде нет внешних адресов); иначе — без картинки. */
+export function loadBrand(path: string): { brand: Brand; logoFile: string | null } {
+  const brand = parseBrand(JSON.parse(readFileSync(path, "utf8")));
+  const configDir = resolve("config");
+  const file = resolve(brand.logo);
+  const logoFile = file.startsWith(configDir + sep) && [".svg", ".png"].includes(extname(file)) ? file : null;
+  return { brand, logoFile };
+}
+
+export interface MonitorServerOptions {
+  bus: MonitorBus;
+  urls: DemoUrls;
+  agentCode: string;
+  brandPath: string;
+  defaultLang?: Lang;
+  port?: number;
+}
+
+export interface MonitorServer {
+  readonly url: string;
+  readonly server: Server;
+  close(): Promise<void>;
+}
+
+function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolean): string {
+  const e = (k: Parameters<typeof t>[1]) => escapeHtml(t(lang, k));
+  const emu = `<span class="badge emu">${e("badge.emulator")}</span>`;
+  const real = `<span class="badge real">${e("badge.real")}</span>`;
+  const link = (href: string, label: string, badge: string) =>
+    `<li><a href="${escapeHtml(href)}" target="_blank" rel="noopener">${label}</a> ${badge}</li>`;
+  const other: Lang = lang === "ru" ? "en" : "ru";
+  const cols = (["col.time", "col.class", "col.source", "col.what", "col.status", "col.code", "col.amount", "col.ids"] as const)
+    .map((k) => `<th>${e(k)}</th>`)
+    .join("");
+  return `<!doctype html>
+<html lang="${lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${e("page.title")}</title>
+<link rel="stylesheet" href="/brand.css">
+<link rel="stylesheet" href="/monitor.css">
+</head>
+<body>
+<header>
+  ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
+  <div class="brand-name">${escapeHtml(brand.name)} ${emu}</div>
+  <h1>${e("page.title")}</h1>
+  <nav class="lang">${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
+</header>
+<p class="subtitle">${e("page.subtitle")}</p>
+<ul class="links">
+  <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
+  ${link(o.urls.bankApp, e("link.bank"), emu)}
+  ${link(o.urls.upk, e("link.upk"), emu)}
+  ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
+</ul>
+<main>
+  <section>
+    <h2>${e("monitor.title")}</h2>
+    <p id="status" class="status" hidden></p>
+    <table id="monitor"><thead><tr>${cols}</tr></thead><tbody></tbody></table>
+    <p id="monitor-empty" class="empty">${e("monitor.empty")}</p>
+  </section>
+  <section>
+    <h2>${e("console.title")}</h2>
+    <ol id="console"></ol>
+    <p id="console-empty" class="empty">${e("console.empty")}</p>
+  </section>
+</main>
+<script id="i18n" type="application/json">${jsonForScript({ lang, messages: MESSAGES[lang] })}</script>
+<script src="/monitor.js"></script>
+</body>
+</html>`;
+}
+
+function brandCss(b: Brand): string {
+  // Значения цветов уже проверены parseBrand (#RRGGBB) — подстановка в CSS безопасна.
+  return `:root{--brand-primary:${b.colors.primary};--brand-on-primary:${b.colors.onPrimary};--brand-accent:${b.colors.accent}}\n`;
+}
+
+export async function startMonitorServer(o: MonitorServerOptions): Promise<MonitorServer> {
+  const { brand, logoFile } = loadBrand(o.brandPath);
+  const js = PUBLIC("monitor.js");
+  const css = PUBLIC("monitor.css");
+  const logo = logoFile ? readFileSync(logoFile) : null;
+  const sse = new Set<ServerResponse>();
+
+  const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
+    res.writeHead(status, {
+      "content-type": type,
+      "content-security-policy": CSP,
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cache-control": "no-store",
+    });
+    res.end(body);
+  };
+
+  // Служебные ответы (400, 404, 405, 421) человек тоже может увидеть в браузере — текст из словаря (ревью К1.3 № 8).
+  const plain = "text/plain; charset=utf-8";
+  const fallback: Lang = o.defaultLang ?? "ru";
+  let hosts: ReadonlySet<string> = new Set();
+  const handle = (req: IncomingMessage, res: ServerResponse) => {
+    // Только Host самого монитора: чужая страница через подмену DNS (DNS rebinding) ленту не прочитает (ревью К1.3 № 11).
+    if (!hosts.has(req.headers.host ?? "")) return send(res, 421, plain, t(fallback, "http.misdirected"));
+    // Неразбираемый адрес запроса — 400, а не исключение, которое уронит процесс (повторное ревью К1.3, находка 1).
+    let u: URL;
+    try {
+      u = new URL(req.url ?? "/", "http://127.0.0.1");
+    } catch {
+      return send(res, 400, plain, t(fallback, "http.bad_request"));
+    }
+    const lang = langOf(u.searchParams.get("lang"), fallback);
+    if (req.method !== "GET") return send(res, 405, plain, t(lang, "http.method_not_allowed"));
+    switch (u.pathname) {
+      case "/":
+        return send(res, 200, "text/html; charset=utf-8", page(lang, o, brand, logo !== null));
+      case "/monitor.js":
+        return send(res, 200, "text/javascript; charset=utf-8", js);
+      case "/monitor.css":
+        return send(res, 200, "text/css; charset=utf-8", css);
+      case "/brand.css":
+        return send(res, 200, "text/css; charset=utf-8", brandCss(brand));
+      case "/brand/logo":
+        if (!logo || !logoFile) return send(res, 404, plain, t(lang, "http.not_found"));
+        return send(res, 200, extname(logoFile) === ".svg" ? "image/svg+xml" : "image/png", logo);
+      case "/events": {
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          connection: "keep-alive",
+        });
+        for (const item of o.bus.history()) res.write(`data: ${JSON.stringify(item)}\n\n`);
+        const off = o.bus.subscribe((item) => res.write(`data: ${JSON.stringify(item)}\n\n`));
+        sse.add(res);
+        req.on("close", () => {
+          off();
+          sse.delete(res);
+        });
+        return;
+      }
+      default:
+        return send(res, 404, plain, t(lang, "http.not_found"));
+    }
+  };
+
+  const server = createServer(handle);
+  await new Promise<void>((ok, fail) => {
+    server.once("error", fail);
+    server.listen(o.port ?? 0, "127.0.0.1", () => ok());
+  });
+  const { port } = server.address() as AddressInfo;
+  hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  return {
+    url: `http://127.0.0.1:${port}`,
+    server,
+    close: () =>
+      new Promise<void>((ok) => {
+        for (const r of sse) r.end();
+        server.close(() => ok());
+      }),
+  };
+}

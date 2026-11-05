@@ -19,6 +19,8 @@ import { createMerchants, createStand, type MerchantsStand, type Stand } from "a
 import { createAgentCore, type AgentCore } from "agentic-buyer-ref/src/agent/compose.js";
 import { MemoryJournal } from "agentic-buyer-ref/src/agent/journal/index.js";
 import { generateKey } from "agentic-buyer-ref/src/agent/signer/index.js";
+import type { CallRecord } from "./bus.js";
+import { t, type Lang } from "./i18n.js";
 
 /** Адреса экранов и служб демо-стенда. Все на 127.0.0.1. */
 export interface DemoUrls {
@@ -40,7 +42,42 @@ export interface DemoStand {
   readonly journal: MemoryJournal;
   readonly agentCode: string;
   readonly urls: DemoUrls;
+  /** Обращения к витринам эмулятора: метод, путь без строки запроса, статус, код при 4xx и 5xx. Тел нет (инвариант 1).
+   *  Живой массив без копии: шина читает его по индексу. */
+  merchantCalls(): readonly CallRecord[];
+  /** keyid ключей нашего агента: созданный при старте и те, что реестр вернул при допуске. По нему монитор отличает
+   *  обращение агента от прочих. Подпись проверяет Платформа или витрина, а не монитор. */
+  isAgentKid(kid: string): boolean;
   close(): Promise<void>;
+}
+
+/** Журнал обращений к витринам — по образцу stand.calls() Платформы. Хук ставится до listen. Из тела ответа берётся
+ *  только поле code и только при 4xx и 5xx. */
+function recordCalls(app: MerchantsStand["app"], out: CallRecord[]): void {
+  app.addHook("onSend", async (req, reply, payload) => {
+    let code: string | undefined;
+    if (reply.statusCode >= 400 && typeof payload === "string") {
+      try {
+        const c = (JSON.parse(payload) as { code?: unknown } | null)?.code;
+        if (typeof c === "string") code = c;
+      } catch {
+        // тело не JSON — кода нет
+      }
+    }
+    // keyid из заголовка, как прислал клиент: подпись здесь не проверяется. Монитор сверяет его с ключами нашего агента
+    // (isAgentKid); в ленту keyid не идёт.
+    const sig = req.headers["signature-input"];
+    const kid = typeof sig === "string" ? /;keyid="([^"]+)"/.exec(sig)?.[1] : undefined;
+    out.push({
+      method: req.method,
+      path: req.url.split("?")[0] ?? "",
+      status: reply.statusCode,
+      source: "network",
+      ...(code !== undefined && { code }),
+      ...(kid !== undefined && { kid }),
+    });
+    return payload;
+  });
 }
 
 /** Параметры агента берутся из его пакета. Свой файл параметров приложение не заводит: значения принадлежат ядру. */
@@ -48,11 +85,12 @@ function agentParamsPath(): string {
   return createRequire(import.meta.url).resolve("agentic-buyer-ref/config/params.stand.json");
 }
 
-export async function startDemoStand(): Promise<DemoStand> {
+export async function startDemoStand(o: { lang?: Lang } = {}): Promise<DemoStand> {
   const fixture = AGENT_FIXTURES.find((f) => f.registered && f.class === "BUYER");
   if (!fixture) throw new Error("в AGENT_FIXTURES нет зарегистрированного агента BUYER");
 
   const journal = new MemoryJournal();
+  const merchantCalls: CallRecord[] = [];
   const dirs: string[] = [];
   let stand: Stand | undefined;
   let merchants: MerchantsStand | undefined;
@@ -94,6 +132,8 @@ export async function startDemoStand(): Promise<DemoStand> {
       },
     });
 
+    recordCalls(merchants.app, merchantCalls);
+
     const { descriptor } = generateKey(keysDir);
     const decision = await s.admit(agentApplication(fixture, { alg: descriptor.alg, public_key: descriptor.public_key }), fixture.operator);
     if (!decision.admitted) throw new Error(`стенд не допустил агента фикстуры: ${JSON.stringify(decision)}`);
@@ -107,7 +147,8 @@ export async function startDemoStand(): Promise<DemoStand> {
       journal,
       pao: { baseUrl: pao, agentCode: fixture.agent_code },
     });
-    await agent.start();
+    const self = await agent.start();
+    const agentKids = new Set<string>([descriptor.kid, ...self.keys.map((k) => k.kid)]);
 
     const a = agent;
     const m = merchants;
@@ -118,11 +159,13 @@ export async function startDemoStand(): Promise<DemoStand> {
       journal,
       agentCode: fixture.agent_code,
       urls: { pao, merchants: merchantsUrl, bankApp, upk },
+      merchantCalls: () => merchantCalls,
+      isAgentKid: (kid) => agentKids.has(kid),
       close: release,
     };
   } catch (e) {
     // Сбой освобождения не заменяет причину сбоя запуска.
-    await release().catch((r: unknown) => console.error("демо-стенд: ресурсы освобождены не полностью", r));
+    await release().catch((r: unknown) => console.error(t(o.lang ?? "ru", "cli.release_failed"), r));
     throw e;
   }
 }
