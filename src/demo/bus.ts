@@ -62,6 +62,8 @@ export interface MonitorEvent {
   readonly what: string;
   readonly status?: number;
   readonly code?: string;
+  /** Уточнение кода: чей предел при LIMIT_EXCEEDED (CLIENT — лимит клиента в банке, MANDATE, INSTRUMENT). */
+  readonly codeDetail?: string;
   readonly amount?: MoneyView;
   readonly ids: MonitorIds;
 }
@@ -174,7 +176,7 @@ const NOISE = new Set(["GET /pao/v1/events", "PUT /pao/v1/subscription", "GET /p
 /** Ответ 4xx с этим кодом — не отказ, а передача решения человеку (инвариант 3): класс «проверка». */
 const TO_HUMAN = new Set(["CONFIRMATION_REQUIRED"]);
 
-export type Classified = Pick<MonitorEvent, "cls" | "what" | "ids" | "status" | "code">;
+export type Classified = Pick<MonitorEvent, "cls" | "what" | "ids" | "status" | "code" | "codeDetail">;
 
 /** Обращение → класс, шаблон и идентификаторы. Неизвестный путь — «прочее» без пути (только метод): лишнее не выводится. */
 export function classifyCall(c: CallRecord, routes: "pao" | "merchants"): Classified | null {
@@ -249,8 +251,8 @@ export interface BusSources {
   isAgentKid(kid: string): boolean;
   /** Запись подтверждения стенда только для чтения — источник суммы. */
   confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
-  /** Сумма операции, как её вернуло ядро после события (сюжеты); нет — событие без суммы. */
-  operationAmount?(opRef: string): Promise<Money | undefined>;
+  /** Сумма (у ядра), причина отказа (ответ ADP) и чей предел (уведомление банку) по операции; нет — событие без них. */
+  operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string } | undefined>;
   now(): Date;
 }
 
@@ -379,13 +381,17 @@ export class MonitorBus {
 
   /** Ошибка разбора события или суммы не роняет процесс: событие показывается без суммы (ревью К1.3 № 3). */
   async #onFeed(item: FeedItem): Promise<void> {
+    // Номер — при приёме события, до ожиданий суммы и кода: следствия (шаги сюжета) не встают в ленте раньше причины
+    // (ревью К2.2б, Н3). Строка уходит позже с этим номером; клиент принимает номера не по возрастанию.
+    const seq = ++this.#seq;
     let k: ReturnType<typeof classifyFeedItem>;
     try {
       k = classifyFeedItem(item);
     } catch {
       return;
     }
-    const { at, ...rest } = k;
+    const { at, ...first } = k;
+    let rest: Classified = first;
     let amount: MoneyView | undefined;
     let ids = rest.ids;
     if (rest.ids.confirmation_id) {
@@ -399,20 +405,23 @@ export class MonitorBus {
       } catch {
         amount = undefined;
       }
-    } else if (rest.ids.op_ref && this.#src.operationAmount) {
-      // Сумма итога — из операции, которую ядро прочитало по этому событию (GET операции); не со слов продавца.
+    } else if (rest.ids.op_ref && this.#src.operation) {
+      // Сумма и причина отказа — из операции, которую ядро прочитало по этому событию (GET операции); не со слов
+      // продавца. Событие operation.declined причины не несёт (К2.2б).
       try {
-        const m = await this.#src.operationAmount(rest.ids.op_ref);
-        if (m) amount = moneyView({ minor: m.amount, currency: m.currency });
+        const info = await this.#src.operation(rest.ids.op_ref);
+        if (info?.amount) amount = moneyView({ minor: info.amount.amount, currency: info.amount.currency });
+        if (info?.declineReason && rest.code === undefined) rest = { ...rest, ...safeCode(info.declineReason) };
+        if (info?.limitSource && CODE.test(info.limitSource)) rest = { ...rest, codeDetail: info.limitSource };
       } catch {
         amount = undefined;
       }
     }
-    this.#monitor({ ...rest, ids, source: "pao_event", ...(amount && { amount }) }, at);
+    this.#monitor({ ...rest, ids, source: "pao_event", ...(amount && { amount }) }, at, seq);
   }
 
-  #monitor(k: Omit<MonitorEvent, "seq" | "at">, at?: string): void {
-    this.#push({ stream: "monitor", event: { seq: ++this.#seq, at: at ?? this.#src.now().toISOString(), ...k } });
+  #monitor(k: Omit<MonitorEvent, "seq" | "at">, at?: string, seq?: number): void {
+    this.#push({ stream: "monitor", event: { seq: seq ?? ++this.#seq, at: at ?? this.#src.now().toISOString(), ...k } });
   }
 
   #push(i: BusItem): void {

@@ -107,6 +107,8 @@ ${
   <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
   <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
   <p class="hint mode-note">${e("scenario.purchase_note")}</p>
+  <button type="button" data-scenario="limit">${e("scenario.limit")}</button>
+  <p class="hint">${e("scenario.limit_note")}</p>
   <div id="cart-card" class="card" hidden>
     <dl>
       <dt>${e("card.cart.title")}</dt>
@@ -184,7 +186,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
+    const scenario = /^\/scenario\/(intent|purchase|limit|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
     if (req.method === "POST" && scenario && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;

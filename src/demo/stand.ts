@@ -48,8 +48,21 @@ export interface DemoStand {
   /** keyid ключей нашего агента: созданный при старте и те, что реестр вернул при допуске. По нему монитор отличает
    *  обращение агента от прочих. Подпись проверяет Платформа или витрина, а не монитор. */
   isAgentKid(kid: string): boolean;
+  /** Решение ADP стенда по операции (ответ на сообщение эквайрера в этой сборке): решение и причина. */
+  adpDecision(opRef: string): AdpDecision | undefined;
+  /** Чей предел сработал при LIMIT_EXCEEDED — по уведомлению банку client.limit_declined (ПИ-8): CLIENT, MANDATE,
+   *  INSTRUMENT; ждёт доставки уведомления фоновым проходом не дольше waitMs. */
+  limitSource(opRef: string, waitMs?: number): Promise<string | undefined>;
   close(): Promise<void>;
 }
+
+export interface AdpDecision {
+  readonly decision: string;
+  readonly reason?: string;
+}
+
+/** Сколько решений ADP держать для монитора. */
+const ADP_KEPT = 200;
 
 /** Журнал обращений к витринам — по образцу stand.calls() Платформы. Хук ставится до listen. Из тела ответа берётся
  *  только поле code и только при 4xx и 5xx. */
@@ -95,6 +108,7 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
 
   const journal = new MemoryJournal();
   const merchantCalls: CallRecord[] = [];
+  const adpDecisions = new Map<string, AdpDecision>();
   const dirs: string[] = [];
   let stand: Stand | undefined;
   let merchants: MerchantsStand | undefined;
@@ -126,6 +140,12 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
         const op_ref = (msg as { op_ref?: unknown }).op_ref;
         const res = await s.app.inject({ method: "POST", url: "/adp/v1/decide", payload: msg });
         const d = res.json() as { decision?: string; reason?: string };
+        // Ответ ADP — только решение и причина: для кода в строке события монитора (operation.declined кода не несёт, К2.2б).
+        // Сообщение эквайрера не читается вовсе: его составляет эмулятор продавца (ревью К2.2б № 1; инвариант 1).
+        if (typeof op_ref === "string" && typeof d.decision === "string") {
+          adpDecisions.set(op_ref, { decision: d.decision, ...(typeof d.reason === "string" && { reason: d.reason }) });
+          while (adpDecisions.size > ADP_KEPT) adpDecisions.delete(adpDecisions.keys().next().value!);
+        }
         if (d.decision === "APPROVE") {
           // Ответ эмитента (ПИ-3) после одобрения ADP имитирует эта сборка стенда, а не эмулятор банка (как в контуре
           // агента, режим adpAsync). Только после APPROVE: отказ или запрос подтверждения ADP одобрением не становится.
@@ -204,6 +224,26 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
       urls: { pao, merchants: merchantsUrl, bankApp, upk },
       merchantCalls: () => merchantCalls,
       isAgentKid: (kid) => agentKids.has(kid),
+      adpDecision: (opRef) => adpDecisions.get(opRef),
+      limitSource: async (opRef, waitMs = 3000) => {
+        const end = Date.now() + waitMs;
+        type Notice = { notification_id?: string; type?: string; data?: { op_ref?: string; reason?: string } };
+        for (;;) {
+          // Все страницы ленты банка по after (ревью К2.2б, Н5): иначе после сотни уведомлений нужное не найдётся.
+          let after: string | undefined;
+          for (;;) {
+            const r = await s.issuer.getNotifications(after);
+            const list = (r.body as { notifications?: Notice[] } | null)?.notifications ?? [];
+            const n = list.find((x) => x.type === "client.limit_declined" && x.data?.op_ref === opRef);
+            if (n?.data?.reason) return n.data.reason;
+            const last = list.at(-1)?.notification_id;
+            if (list.length === 0 || last === undefined || last === after) break;
+            after = last;
+          }
+          if (Date.now() > end) return undefined;
+          await new Promise((ok) => setTimeout(ok, 200));
+        }
+      },
       close: release,
     };
   } catch (e) {

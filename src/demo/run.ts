@@ -38,7 +38,15 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       listenFeed: (l) => stand.agent.events.listen(l),
       isAgentKid: (kid) => stand.isAgentKid(kid),
       confirmation: (id) => stand.stand.confirmations.get(id),
-      operationAmount: (opRef) => sc.operationAmount(opRef),
+      // Сумма — только у ядра (операция после события или, на отказе, итог корзины CART). Код отказа — из ответа ADP стенда,
+      // чей предел — из уведомления банку (ПИ-8). Со слов продавца — ничего (ревью К2.2б № 1–2; дополнение 2 к П2).
+      operation: async (opRef) => {
+        const info = await sc.operationInfo(opRef);
+        const d = stand.adpDecision(opRef);
+        const declineReason = d?.decision === "DECLINE" ? d.reason : info?.declineReason;
+        const limitSource = declineReason === "LIMIT_EXCEEDED" ? await stand.limitSource(opRef) : undefined;
+        return { ...(info?.amount && { amount: info.amount }), ...(declineReason && { declineReason }), ...(limitSource && { limitSource }) };
+      },
       now: () => stand.stand.now(),
     });
     bus = b;

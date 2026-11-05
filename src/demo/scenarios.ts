@@ -9,6 +9,7 @@ import { MERCHANT_FIXTURES } from "agentic-ps-platform/fixtures";
 import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
 import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
 import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import { ISO4217_MINOR_UNITS } from "./money.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -19,11 +20,23 @@ export interface ScenarioStep {
 
 export type StepSink = (s: ScenarioStep) => void;
 
-export type ScenarioName = "intent" | "purchase";
+/** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке». */
+export type ScenarioName = "intent" | "purchase" | "limit";
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
 const OPS_KEPT = 50;
+
+/** Что монитору нужно об операции: сумма и причина отказа, как их вернула Платформа ядру. */
+export interface OperationInfo {
+  readonly amount?: Money;
+  readonly declineReason?: string;
+}
+
+const infoOf = (op: Operation): OperationInfo => ({
+  ...(op.amount && { amount: op.amount }),
+  ...(op.declineReason && { declineReason: op.declineReason }),
+});
 const CLOSE_WAIT_MS = 3000;
 
 /** Клиент банка стенда, от имени которого агент действует. Идентификатор клиента, не реквизит. */
@@ -73,7 +86,7 @@ export class DemoScenarios {
   readonly #emit: StepSink;
   readonly #ac = new AbortController();
   readonly #ops = new Map<string, Operation>();
-  readonly #opWaiters = new Map<string, ((m: Money | undefined) => void)[]>();
+  readonly #opWaiters = new Map<string, ((m: OperationInfo | undefined) => void)[]>();
   #purchase: Purchase | null = null;
   #intentActive = false;
   #running: Promise<void> | null = null;
@@ -83,6 +96,10 @@ export class DemoScenarios {
   #signal: AbortSignal = this.#ac.signal;
   /** Сюжет на стадии оплаты: прерывание не принимается (итог — по событию). */
   #paying = false;
+  /** Версия лимитов клиента в банке стенда (ПИ-8): каждая запись — следующая. */
+  #limitsVersion = 0;
+  /** Длина журнала ядра в начале оплаты этой покупки: запись об отказе ищется только после неё (ревью К2.2б, Н1). */
+  #payJournalFrom = -1;
   #seq = 0;
 
   constructor(d: DemoStand, emit: StepSink) {
@@ -90,13 +107,14 @@ export class DemoScenarios {
     this.#emit = emit;
   }
 
-  /** Сумма операции, как её вернуло ядро (GET операции после события) — для строки итога в мониторе. */
-  operationAmount(opRef: string, waitMs = 3000): Promise<Money | undefined> {
+  /** Сумма и причина отказа операции, как их вернуло ядро (GET операции после события), — для строки события в мониторе:
+   *  событие operation.* само причины не несёт. */
+  operationInfo(opRef: string, waitMs = 3000): Promise<OperationInfo | undefined> {
     const known = this.#ops.get(opRef);
-    if (known) return Promise.resolve(known.amount ?? undefined);
+    if (known) return Promise.resolve(infoOf(known));
     return new Promise((ok) => {
       // По ответу — таймер снимается; по сроку — ожидающий удаляется из списка (ревью К2.1 № 4).
-      const waiter = (m: Money | undefined) => {
+      const waiter = (m: OperationInfo | undefined) => {
         clearTimeout(timer);
         ok(m);
       };
@@ -117,7 +135,7 @@ export class DemoScenarios {
     this.#ops.set(op.opRef, op);
     // Сумма нужна только строке события этой операции: храним последние, а не все.
     while (this.#ops.size > OPS_KEPT) this.#ops.delete(this.#ops.keys().next().value!);
-    for (const w of this.#opWaiters.get(op.opRef) ?? []) w(op.amount ?? undefined);
+    for (const w of this.#opWaiters.get(op.opRef) ?? []) w(infoOf(op));
     this.#opWaiters.delete(op.opRef);
   }
 
@@ -155,13 +173,14 @@ export class DemoScenarios {
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
     if (this.#running) return { ok: false, code: "BUSY" };
-    if (name === "purchase" && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
+    if (name !== "intent" && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();
     this.#runAc = run;
     this.#signal = AbortSignal.any([this.#ac.signal, run.signal]);
     this.#paying = false;
-    const work = name === "intent" ? this.#intent() : this.#buy();
+    this.#payJournalFrom = -1;
+    const work = name === "intent" ? this.#intent() : name === "limit" ? this.#overLimit() : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -207,6 +226,10 @@ export class DemoScenarios {
   #fail(e: unknown): void {
     if (this.#ac.signal.aborted) return;
     const reason = this.#purchase?.reason;
+    // Операция отказа известна ядру (GET после operation.declined) — её сумма нужна строке события в мониторе.
+    const op = this.#purchase?.operation;
+    if (op) this.#remember(op);
+    else this.#rememberDecline();
     // Прервано человеком — только если у покупки нет своей причины остановки: отказ Платформы или ядра не подменяется
     // словом «прервано» (ревью К2.2а № 1).
     if (this.#signal.aborted && !reason) {
@@ -243,7 +266,70 @@ export class DemoScenarios {
     this.#step("intent.signed", { mandate_id: signed.id, status: signed.status });
   }
 
-  async #buy(): Promise<void> {
+  /** Сюжет 3 (Р-1255 п. 1): покупка как в сюжете 2, но перед запросом корзины эмулятор банка ставит клиенту лимит на
+   *  операцию ниже итога корзины. Отказ даёт ADP Платформы (LIMIT_EXCEEDED), приложение пределы не сравнивает
+   *  (инвариант 2). После сюжета — при любом исходе — лимит снимается. */
+  async #overLimit(): Promise<void> {
+    let set = false;
+    try {
+      await this.#buy({
+        beforeCart: async (total) => {
+          // Лимит — половина итога корзины, округлённая вниз до целой единицы валюты: заведомо ниже суммы операции. Это
+          // настройка банка (эмулятор), а не решение приложения о платеже. Валюты нет в таблице ISO 4217 — сюжет не идёт.
+          const digits = ISO4217_MINOR_UNITS[total.currency];
+          if (digits === undefined) throw Object.assign(new Error(`валюты ${total.currency} нет в таблице`), { code: "CURRENCY_UNKNOWN" });
+          const unit = 10 ** digits;
+          const limit: Money = { amount: Math.floor(total.amount / 2 / unit) * unit, currency: total.currency };
+          await this.#setLimits({ per_operation: limit.amount, currency: limit.currency });
+          set = true;
+          this.#step("bank.limit_set", { limit });
+        },
+      });
+    } catch (e) {
+      // Отказ — в консоль до снятия лимита: шаги идут в порядке событий. «Превышен лимит клиента в банке» — только если
+      // уведомление банку говорит CLIENT; иначе общий «failed» с кодом (ревью К2.2б № 2, повторное — Н4).
+      const opRef = this.#purchase?.reason === "DECLINED_LIMIT_EXCEEDED" ? this.#rememberDecline() : undefined;
+      const source = opRef ? await this.#d.limitSource(opRef) : undefined;
+      if (source === "CLIENT") this.#step("limit.declined", { code: this.#purchase!.reason! });
+      else this.#fail(e);
+    } finally {
+      if (set) {
+        // Снятие — со своим исходом: сбой не маскируется прежней причиной отказа (ревью К2.2б № 3).
+        try {
+          await this.#setLimits({});
+          this.#step("bank.limit_reset");
+        } catch (e) {
+          const code = (e as { code?: unknown } | null)?.code;
+          this.#step("bank.limit_reset_failed", { code: typeof code === "string" ? code : "UNKNOWN" });
+        }
+      }
+    }
+  }
+
+  /** Отказ операции: ядро операцию не запоминает (только одобрение), поэтому для строки события монитора — op_ref из
+   *  журнала ядра (operation.status DECLINED) и сумма — итог корзины CART ядра, не со слов продавца (ревью К2.2б № 1). */
+  #rememberDecline(): string | undefined {
+    // Только отказ на оплате этой покупки: запись журнала — после начала её оплаты (ревью К2.2б, Н1).
+    if (this.#payJournalFrom < 0 || !this.#purchase?.reason?.startsWith("DECLINED_")) return undefined;
+    const total = this.#purchase.cartMandate?.cart?.total;
+    const entries = this.#d.journal.entries;
+    for (let i = entries.length - 1; i >= this.#payJournalFrom; i--) {
+      const e = entries[i]!;
+      if (e.kind === "operation.status" && e.detail === "DECLINED" && typeof e.ref === "string") {
+        if (!this.#ops.has(e.ref)) this.#remember({ opRef: e.ref, orderRef: null, channel: null, amount: total ?? null, merchantId: null, indicator: null, status: "DECLINED", declineReason: null, fulfilment: null });
+        return e.ref;
+      }
+    }
+    return undefined;
+  }
+
+  /** Лимиты клиента в приложении банка стенда (ПИ-8): версия растёт с каждой записью. */
+  async #setLimits(limits: Record<string, unknown>): Promise<void> {
+    const r = await this.#d.stand.issuer.setLimits(DEMO_PRINCIPAL, limits, ++this.#limitsVersion);
+    if (r.statusCode !== 200) throw Object.assign(new Error(`лимиты клиента не приняты: ${r.statusCode}`), { code: "BANK_LIMITS_REJECTED" });
+  }
+
+  async #buy(o: { beforeCart?: (total: Money) => Promise<void> } = {}): Promise<void> {
     const p = this.#purchase!;
     // Поручение считается использованным с запроса корзины (ниже), а не с начала сюжета: прерванный или отклонённый до
     // корзины сюжет его не тратит (ревью К2.2а № 3). Второго сюжета, пока этот идёт, нет — start() отвечает BUSY.
@@ -293,6 +379,8 @@ export class DemoScenarios {
     this.#step("cart.agreed", { merchant_id: pick.merchantId, sku: pick.sku });
     // Прервано между «согласен» и запросом — корзину не запрашивать (ревью К2.2а № 4).
     this.#signal.throwIfAborted();
+    if (o.beforeCart && total) await o.beforeCart(total);
+    this.#signal.throwIfAborted();
     // С этого запроса поручение использовано (разовое): следующая покупка — через новый сюжет 1.
     this.#intentActive = false;
     const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
@@ -306,6 +394,7 @@ export class DemoScenarios {
     this.#step("payment.started", { order_id: order.orderId });
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
+    this.#payJournalFrom = this.#d.journal.entries.length;
     const op = await p.authorize(this.#key("pay"), this.#signal);
     this.#remember(op);
     this.#step("outcome", {

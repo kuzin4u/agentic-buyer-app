@@ -39,7 +39,9 @@
     what.title = e.what; // путь в одну строку, полный — во всплывающей подсказке (поправка владельца (в))
     tr.appendChild(what);
     tr.appendChild(cell(e.status));
-    tr.appendChild(cell(e.code, "code"));
+    // Код — как есть; пояснение из словаря: сначала уточнённое (code.<КОД>.<чей предел>), иначе общее (code.<КОД>).
+    const note = e.code ? (e.codeDetail && m["code." + e.code + "." + e.codeDetail]) || m["code." + e.code] : undefined;
+    tr.appendChild(cell(e.code ? (note ? e.code + " — " + note : e.code) : "", "code"));
     tr.appendChild(cell(e.amount && e.amount.text ? e.amount.text[lang] : "", "amount"));
     tr.appendChild(cell(ids(e.ids), "ids"));
     tbody.insertBefore(tr, tbody.firstChild);
@@ -121,7 +123,7 @@
     });
   }
 
-  let seen = 0;
+  const seen = new Set();
   function connect() {
     const es = new EventSource("/events");
     es.onopen = () => {
@@ -130,8 +132,9 @@
     es.onmessage = (msg) => {
       const item = JSON.parse(msg.data);
       const seq = item.stream === "monitor" ? item.event.seq : item.line.seq;
-      if (seq <= seen) return; // история при переподключении — без повторов
-      seen = seq;
+      // История при переподключении — без повторов; номера могут прийти не по возрастанию (строка события ждёт суммы).
+      if (seen.has(seq)) return;
+      seen.add(seq);
       if (item.stream === "monitor") addEvent(item.event);
       else if (item.stream === "scenario") {
         addStep(item.line);
