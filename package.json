@@ -13,7 +13,8 @@
     "check": "tsc --noEmit && eslint .",
     "scan:secrets": "python3 .claude/hooks/scan_secrets.py .",
     "build": "tsc -p tsconfig.build.json",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "demo": "tsx src/demo/main.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
