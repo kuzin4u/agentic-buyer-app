@@ -80,12 +80,16 @@ function recordCalls(app: MerchantsStand["app"], out: CallRecord[]): void {
   });
 }
 
+/** Период фоновых проходов стенда (только локальный стенд демо). */
+const STAND_PASS_MS = 1000;
+
 /** Параметры агента берутся из его пакета. Свой файл параметров приложение не заводит: значения принадлежат ядру. */
 function agentParamsPath(): string {
   return createRequire(import.meta.url).resolve("agentic-buyer-ref/config/params.stand.json");
 }
 
-export async function startDemoStand(o: { lang?: Lang } = {}): Promise<DemoStand> {
+/** passMs — период фоновых проходов стенда; 0 — без проходов (тест вызывает их сам). По умолчанию STAND_PASS_MS. */
+export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): Promise<DemoStand> {
   const fixture = AGENT_FIXTURES.find((f) => f.registered && f.class === "BUYER");
   if (!fixture) throw new Error("в AGENT_FIXTURES нет зарегистрированного агента BUYER");
 
@@ -95,7 +99,12 @@ export async function startDemoStand(o: { lang?: Lang } = {}): Promise<DemoStand
   let stand: Stand | undefined;
   let merchants: MerchantsStand | undefined;
   let agent: AgentCore | undefined;
+  let passes: NodeJS.Timeout | undefined;
+  let passing: Promise<void> | null = null;
   const release = async () => {
+    clearInterval(passes);
+    // Идущий проход — дождаться до закрытия стенда (ревью К2.2а № 5).
+    await passing;
     try {
       agent?.close();
     } finally {
@@ -148,6 +157,40 @@ export async function startDemoStand(o: { lang?: Lang } = {}): Promise<DemoStand
       pao: { baseUrl: pao, agentCode: fixture.agent_code },
     });
     const self = await agent.start();
+
+    // Фоновые проходы стенда раз в секунду (Р-1255 п. 4): сборщик итогов операций (operation.declined по отказу ADP вне
+    // пути авторизации), уведомления участников и их доставка банку, срок резервов. Своего таймера у стенда нет — проход
+    // вызывает тот, кто стенд поднял; в рабочей Платформе это её фоновые задачи. Проходы не накладываются; сбой прохода
+    // не роняет стенд — следующий проход повторит.
+    // Первая ошибка каждого прохода — в stderr: постоянный сбой (например, итоги не собираются) виден (ревью К2.2а № 6).
+    const reported = new Set<string>();
+    const PASSES: readonly [string, () => Promise<unknown>][] = [
+      ["collectOperationOutcomes", () => s.collectOperationOutcomes()],
+      ["notifyParticipants", () => s.notifyParticipants()],
+      ["deliverParticipantNotifications", () => s.deliverParticipantNotifications()],
+      ["expireReservations", () => s.expireReservations()],
+    ];
+    const passMs = o.passMs ?? STAND_PASS_MS;
+    if (passMs > 0) {
+      passes = setInterval(() => {
+        if (passing) return;
+        passing = (async () => {
+          for (const [name, pass] of PASSES) {
+            try {
+              await pass();
+            } catch (e) {
+              if (!reported.has(name)) {
+                reported.add(name);
+                console.error(t(o.lang ?? "ru", "cli.pass_failed"), name, e);
+              }
+            }
+          }
+        })().finally(() => {
+          passing = null;
+        });
+      }, passMs);
+      passes.unref();
+    }
     const agentKids = new Set<string>([descriptor.kid, ...self.keys.map((k) => k.kid)]);
 
     const a = agent;

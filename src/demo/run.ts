@@ -9,6 +9,8 @@ export interface DemoOptions {
   brandPath?: string;
   lang?: Lang;
   port?: number;
+  /** Период фоновых проходов стенда; 0 — без проходов (тесты без сюжетов отказа). */
+  passMs?: number;
 }
 
 export interface Demo {
@@ -22,7 +24,7 @@ export interface Demo {
 export const DEFAULT_BRAND_PATH = "config/brand.demo.json";
 
 export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
-  const stand = await startDemoStand(o.lang ? { lang: o.lang } : {});
+  const stand = await startDemoStand({ ...(o.lang && { lang: o.lang }), ...(o.passMs !== undefined && { passMs: o.passMs }) });
   let bus: MonitorBus | undefined;
   let scenarios: DemoScenarios | undefined;
   try {

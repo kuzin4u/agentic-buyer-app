@@ -21,7 +21,7 @@ export type StepSink = (s: ScenarioStep) => void;
 
 export type ScenarioName = "intent" | "purchase";
 
-export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" };
+export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
 const OPS_KEPT = 50;
 const CLOSE_WAIT_MS = 3000;
@@ -78,6 +78,11 @@ export class DemoScenarios {
   #intentActive = false;
   #running: Promise<void> | null = null;
   #consentWaiter: ((agree: boolean) => void) | null = null;
+  /** Отмена текущего сюжета (кнопка «прервать»); сигнал сюжета — общий и свой вместе. */
+  #runAc: AbortController | null = null;
+  #signal: AbortSignal = this.#ac.signal;
+  /** Сюжет на стадии оплаты: прерывание не принимается (итог — по событию). */
+  #paying = false;
   #seq = 0;
 
   constructor(d: DemoStand, emit: StepSink) {
@@ -129,18 +134,19 @@ export class DemoScenarios {
     return { ok: true };
   }
 
-  /** Ожидание ответа человека на карточку корзины; отмена сюжета (close) — отказ. */
+  /** Ожидание ответа человека на карточку корзины; отмена сюжета (кнопка «прервать» или close) — отказ. */
   #consent(): Promise<boolean> {
+    const signal = this.#signal;
     return new Promise((ok, fail) => {
-      if (this.#ac.signal.aborted) return fail(new Error("сюжет отменён"));
+      if (signal.aborted) return fail(new Error("сюжет отменён"));
       const onAbort = () => {
         // После отмены ответ человека — NOT_AWAITING, а не «принято» (ревью К2.1а № 3).
         this.#consentWaiter = null;
         fail(new Error("сюжет отменён"));
       };
-      this.#ac.signal.addEventListener("abort", onAbort, { once: true });
+      signal.addEventListener("abort", onAbort, { once: true });
       this.#consentWaiter = (v) => {
-        this.#ac.signal.removeEventListener("abort", onAbort);
+        signal.removeEventListener("abort", onAbort);
         ok(v);
       };
     });
@@ -150,12 +156,29 @@ export class DemoScenarios {
   start(name: ScenarioName): ScenarioStart {
     if (this.#running) return { ok: false, code: "BUSY" };
     if (name === "purchase" && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
-    const run = name === "intent" ? this.#intent() : this.#buy();
-    this.#running = run
+    // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
+    const run = new AbortController();
+    this.#runAc = run;
+    this.#signal = AbortSignal.any([this.#ac.signal, run.signal]);
+    this.#paying = false;
+    const work = name === "intent" ? this.#intent() : this.#buy();
+    this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
         this.#running = null;
+        this.#runAc = null;
+        this.#paying = false;
       });
+    return { ok: true };
+  }
+
+  /** Прервать текущий сюжет (ревью К2.1 № 6): снимается ожидание подписи поручения или корзины и карточки; ядро прерывает
+   *  ожидание ленты на следующем чтении. До запроса корзины поручение не использовано; после — нужен новый сюжет 1.
+   *  На оплате — PAYING: пакет передан продавцу, итог придёт по событию Платформы, оплату на полпути не рвём. */
+  abort(): ScenarioStart {
+    if (!this.#runAc || this.#runAc.signal.aborted) return { ok: false, code: "NOT_AWAITING" };
+    if (this.#paying) return { ok: false, code: "PAYING" };
+    this.#runAc.abort();
     return { ok: true };
   }
 
@@ -184,6 +207,13 @@ export class DemoScenarios {
   #fail(e: unknown): void {
     if (this.#ac.signal.aborted) return;
     const reason = this.#purchase?.reason;
+    // Прервано человеком — только если у покупки нет своей причины остановки: отказ Платформы или ядра не подменяется
+    // словом «прервано» (ревью К2.2а № 1).
+    if (this.#signal.aborted && !reason) {
+      const state = this.#purchase?.state;
+      this.#step("aborted", { ...(state !== undefined && { state }) });
+      return;
+    }
     const code = reason ?? (e as { code?: unknown } | null)?.code;
     const state = this.#purchase?.state;
     this.#step("failed", { code: typeof code === "string" ? code : "UNKNOWN", ...(state !== undefined && { state }) });
@@ -208,15 +238,17 @@ export class DemoScenarios {
     const intent = await p.intent(draft, this.#key("intent"));
     this.#step("intent.created", { mandate_id: intent.id, subject: draft.subject, limit: draft.amountLimit });
     this.#step("intent.awaiting_signature", { mandate_id: intent.id });
-    const signed = await p.awaitIntent(this.#ac.signal);
+    const signed = await p.awaitIntent(this.#signal);
     this.#intentActive = signed.status === "ACTIVE";
     this.#step("intent.signed", { mandate_id: signed.id, status: signed.status });
   }
 
   async #buy(): Promise<void> {
     const p = this.#purchase!;
-    // Поручение использовано этой покупкой: следующая покупка — через новый сюжет 1 (поручение разовое).
-    this.#intentActive = false;
+    // Поручение считается использованным с запроса корзины (ниже), а не с начала сюжета: прерванный или отклонённый до
+    // корзины сюжет его не тратит (ревью К2.2а № 3). Второго сюжета, пока этот идёт, нет — start() отвечает BUSY.
+    // Р-1251 п. 2: первая волна — немедленный режим (подпись корзины клиентом); автономный — второй этап.
+    this.#step("purchase.mode_note");
     const zones = await p.search();
     this.#step("search.found", { contour: zones.contour.length, market: zones.market.length, unavailable: zones.unavailable.length });
     for (const o of zones.contour.filter((x) => x.a5.length > 0)) {
@@ -255,20 +287,26 @@ export class DemoScenarios {
     const agreed = await this.#consent();
     if (!agreed) {
       // Корзина не запрошена: поручение не использовано — сюжет 2 можно повторить.
-      this.#intentActive = true;
       this.#step("cart.declined", { merchant_id: pick.merchantId, sku: pick.sku });
       return;
     }
     this.#step("cart.agreed", { merchant_id: pick.merchantId, sku: pick.sku });
+    // Прервано между «согласен» и запросом — корзину не запрашивать (ревью К2.2а № 4).
+    this.#signal.throwIfAborted();
+    // С этого запроса поручение использовано (разовое): следующая покупка — через новый сюжет 1.
+    this.#intentActive = false;
     const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
     this.#step("cart.created", { mandate_id: cart.id, ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
-    const signed = await p.awaitCart(this.#ac.signal);
+    const signed = await p.awaitCart(this.#signal);
     this.#step("cart.signed", { mandate_id: signed.id, status: signed.status });
+    this.#signal.throwIfAborted();
     const order = await p.placeOrder(this.#key("order"));
     this.#step("order.placed", { order_id: order.orderId, merchant_id: pick.merchantId, total: order.total });
     this.#step("payment.started", { order_id: order.orderId });
-    const op = await p.authorize(this.#key("pay"), this.#ac.signal);
+    // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
+    this.#paying = true;
+    const op = await p.authorize(this.#key("pay"), this.#signal);
     this.#remember(op);
     this.#step("outcome", {
       op_ref: op.opRef,

@@ -112,7 +112,11 @@
     b.addEventListener("click", () => {
       fetch("/scenario/" + b.dataset.scenario, { method: "POST" })
         .then((r) => r.json().catch(() => ({ ok: false })))
-        .then(answer)
+        .then((r) => {
+          if (b.dataset.scenario !== "abort") return answer(r);
+          msg.hidden = false;
+          msg.textContent = r.ok ? m["scenario.aborting"] : r.code === "PAYING" ? m["scenario.paying"] : m["scenario.not_running"];
+        })
         .catch(() => answer({ ok: false }));
     });
   }

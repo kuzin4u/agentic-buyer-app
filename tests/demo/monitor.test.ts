@@ -230,7 +230,7 @@ async function readSse(url: string, until: (text: string) => boolean, ms = 5000)
 describe("монитор на живом стенде", () => {
   let demo: Demo;
   beforeAll(async () => {
-    demo = await startDemo();
+    demo = await startDemo({ passMs: 0 }); // фоновые проходы монитору не нужны (ревью К2.2а № 7)
   }, 30_000);
   afterAll(async () => {
     await demo?.close();

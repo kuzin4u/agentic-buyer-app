@@ -6,7 +6,8 @@ import { startDemoStand, type DemoStand } from "../../src/demo/stand.js";
 describe("демо-стенд: запуск", () => {
   let demo: DemoStand;
   beforeAll(async () => {
-    demo = await startDemoStand();
+    // Без фоновых проходов: этому тесту они не нужны, а время в них — лишняя зависимость (ревью К2.2а № 7).
+    demo = await startDemoStand({ passMs: 0 });
   }, 30_000);
   afterAll(async () => {
     await demo?.close();
