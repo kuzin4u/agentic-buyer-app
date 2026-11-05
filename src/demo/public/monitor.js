@@ -113,6 +113,46 @@
     }
   }
 
+  // Заказы в витрине продавца (К2.3): строка — по order.placed; ответ витрины — order.shop_reply (слова продавца);
+  // итог — только шаги итога сюжета (по событию Платформы). Всё — textContent.
+  const ordersBody = document.querySelector("#orders tbody");
+  const orders = new Map();
+  function ordersFor(l) {
+    if (!ordersBody) return;
+    const p = l.params || {};
+    if (l.step === "order.placed") {
+      const tr = document.createElement("tr");
+      const item = fill(m["orders.item"], p);
+      const cells = [p.order_id, p.merchant_id, item, p.total ? param(p.total) : "", m["value.none"], m["orders.pending"]].map((v) => cell(v));
+      for (const c of cells) tr.appendChild(c);
+      ordersBody.insertBefore(tr, ordersBody.firstChild);
+      orders.set(p.order_id, { reply: cells[4], outcome: cells[5], tr });
+      document.getElementById("orders-empty").hidden = true;
+      return;
+    }
+    const o = p.order_id !== undefined ? orders.get(p.order_id) : undefined;
+    if (!o) return;
+    // Подпись — из словаря, код — рядом (ревью К2.3 № 5).
+    const label = (prefix, code) => (m[prefix + code] ? m[prefix + code] + " (" + code + ")" : String(code));
+    if (l.step === "order.shop_reply") o.reply.textContent = m["reply." + p.reply] ? label("reply.", p.reply) : fill(m["reply.other"], { code: p.reply });
+    else if (l.step === "outcome") {
+      o.outcome.textContent = label("status.", p.status) + (p.amount ? ", " + param(p.amount) : "");
+      o.tr.className = p.status === "DECLINED" ? "cls-decline" : "cls-outcome";
+    } else if (l.step === "limit.declined" || (l.step === "failed" && /^DECLINED_/.test(String(p.code)))) {
+      // «Отказ» — только отказ по событию Платформы (DECLINED_*), ревью К2.3 № 2.
+      o.outcome.textContent = m["orders.outcome.declined"] + " — " + String(p.code);
+      o.tr.className = "cls-decline";
+    } else if (l.step === "failed") {
+      // Остановка без события об итоге (например, итог не подтверждён) — не «отказ».
+      o.outcome.textContent = m["orders.outcome.unconfirmed"] + " — " + String(p.code);
+      o.tr.className = "";
+    } else if (l.step === "upk.aborted") {
+      // Запрос в банке открыт: итог — в приложении банка, не «не состоялась» (ревью К2.3 № 1).
+      o.outcome.textContent = m["orders.outcome.confirmation_aborted"] + " — " + String(p.code);
+      o.tr.className = "";
+    }
+  }
+
   const msg = document.getElementById("scenario-msg");
   const answer = (r) => {
     msg.hidden = false;
@@ -160,6 +200,7 @@
         addStep(item.line);
         cartCardFor(item.line);
         upkFor(item.line);
+        ordersFor(item.line);
       }
       else addLine(item.line);
     };

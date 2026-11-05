@@ -85,6 +85,10 @@ describe("сюжет 4: подтверждение человеком через
 
     const outcome = await until(after(n, "outcome"), 60_000);
     expect(outcome.params).toMatchObject({ status: "AUTHORIZED", amount: { minor: total.minor, currency: "RUB" } });
+    // Панель витрины (К2.3): итог связан с заказом; ответы витрины — слова продавца, отдельными шагами.
+    const placed = steps().slice(n).find((s) => s.step === "order.placed")!;
+    expect(outcome.params.order_id).toBe(placed.params.order_id);
+    expect(steps().slice(n).filter((s) => s.step === "order.shop_reply" && s.params.order_id === placed.params.order_id).length).toBeGreaterThan(0);
     const ev = await until(() => events().find((e) => e.what === "operation.authorized"));
     expect(ev).toMatchObject({ cls: "outcome", amount: { minor: total.minor } });
     await demo.scenarios.settled();

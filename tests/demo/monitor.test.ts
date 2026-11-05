@@ -251,8 +251,9 @@ describe("монитор на живом стенде", () => {
     expect(ruHtml).toContain(brand.name);
     // Пометка «эмулятор» — у бренда банка в шапке и у каждой ссылки на эмулятор: банк, УПК, витрины (ревью К1.3 № 9).
     const badge = `<span class="badge emu">${MESSAGES.ru["badge.emulator"]}</span>`;
-    // 4 — шапка и три ссылки; ещё 2 — панель УПК сюжета 4 (у её заголовка и у ссылки на страницу УПК, К2.2в).
-    expect(ruHtml.split(badge).length - 1).toBe(6);
+    // 4 — шапка и три ссылки; ещё 2 — панель УПК сюжета 4 (у её заголовка и у ссылки на страницу УПК, К2.2в);
+    // ещё 1 — заголовок панели «Заказы в витрине продавца» (К2.3).
+    expect(ruHtml.split(badge).length - 1).toBe(7);
     for (const [url, key] of [
       ["/bank-login", "link.bank"],
       [demo.stand.urls.upk, "link.upk"],
@@ -265,7 +266,9 @@ describe("монитор на живом стенде", () => {
     expect(enHtml).toContain('<html lang="en">');
     expect(enHtml).toContain(MESSAGES.en["monitor.title"]);
     expect(enHtml).not.toContain(MESSAGES.ru["monitor.title"]);
-    expect(enHtml.split(`<span class="badge emu">${MESSAGES.en["badge.emulator"]}</span>`).length - 1).toBe(6);
+    expect(enHtml.split(`<span class="badge emu">${MESSAGES.en["badge.emulator"]}</span>`).length - 1).toBe(7);
+    expect(ruHtml).toContain('<table id="orders">');
+    expect(ruHtml).toContain(MESSAGES.ru["orders.hint"]);
   });
 
   it("бренд: цвета из конфигурации в /brand.css, логотип — файл из config/", async () => {

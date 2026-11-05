@@ -60,6 +60,10 @@ describe("сюжет 3: отказ — превышен лимит клиент�
 
     const declined = await until(after(n, "limit.declined"), 60_000);
     expect(declined.params.code).toBe("DECLINED_LIMIT_EXCEEDED");
+    // Панель витрины (К2.3): отказ связан с заказом; ответ витрины на оплату — свой шаг (слова продавца).
+    const placed = steps().slice(n).find((s) => s.step === "order.placed")!;
+    expect(declined.params.order_id).toBe(placed.params.order_id);
+    expect(steps().slice(n).some((s) => s.step === "order.shop_reply" && s.params.order_id === placed.params.order_id)).toBe(true);
     await until(after(n, "bank.limit_reset"));
     expect(steps().slice(n).findIndex((s) => s.step === "limit.declined")).toBeLessThan(steps().slice(n).findIndex((s) => s.step === "bank.limit_reset"));
     expect(steps().slice(n).some((s) => s.step === "outcome")).toBe(false);

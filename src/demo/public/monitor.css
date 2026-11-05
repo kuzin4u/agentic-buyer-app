@@ -22,7 +22,8 @@ header a { color: var(--brand-on-primary); }
 .badge.emu { background: #ffe9a8; color: #5a4300; border: 1px dashed #b48a00; }
 .badge.real { background: #d7f2dc; color: #12521d; }
 main { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 0 16px 16px; }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+main > section:first-child { grid-row: span 2; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } main > section:first-child { grid-row: auto; } }
 section { background: #fff; border-radius: 8px; padding: 8px 12px; overflow-x: auto; }
 h2 { font-size: 15px; margin: 4px 0 8px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }

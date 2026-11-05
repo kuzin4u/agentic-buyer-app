@@ -152,6 +152,12 @@ ${
     <p id="monitor-empty" class="empty">${e("monitor.empty")}</p>
   </section>
   <section>
+    <h2>${e("orders.title")} <span class="badge emu">${e("badge.emulator")}</span></h2>
+    <p class="hint">${e("orders.hint")}</p>
+    <table id="orders"><thead><tr><th>${e("orders.col.order")}</th><th>${e("orders.col.merchant")}</th><th>${e("orders.col.item")}</th><th>${e("orders.col.total")}</th><th>${e("orders.col.shop_reply")}</th><th>${e("orders.col.outcome")}</th></tr></thead><tbody></tbody></table>
+    <p id="orders-empty" class="empty">${e("orders.empty")}</p>
+  </section>
+  <section>
     <h2>${e("console.title")}</h2>
     <ol id="console"></ol>
     <p id="console-empty" class="empty">${e("console.empty")}</p>

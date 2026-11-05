@@ -106,6 +106,8 @@ export class DemoScenarios {
   #limitsVersion = 0;
   /** Длина журнала ядра в начале оплаты этой покупки: запись об отказе ищется только после неё (ревью К2.2б, Н1). */
   #payJournalFrom = -1;
+  /** Заказ текущего сюжета — для связи шагов отказа с панелью витрины. */
+  #orderId: string | null = null;
   #seq = 0;
 
   constructor(d: DemoStand, emit: StepSink) {
@@ -186,6 +188,7 @@ export class DemoScenarios {
     this.#signal = AbortSignal.any([this.#ac.signal, run.signal]);
     this.#paying = false;
     this.#payJournalFrom = -1;
+    this.#orderId = null;
     const work =
       name === "intent"
         ? this.#intent()
@@ -255,15 +258,16 @@ export class DemoScenarios {
       this.#step("aborted", { ...(state !== undefined && { state }) });
       return;
     }
+    const order: Record<string, string> = this.#orderId ? { order_id: this.#orderId } : {};
     if (reason === "CONFIRMATION_ABORTED") {
       // Прервано человеком во время ожидания подтверждения: запрос в банке остаётся открытым до срока (Р69 п. 3; ревью
       // К2.2в № 3).
-      this.#step("upk.aborted", { code: reason });
+      this.#step("upk.aborted", { code: reason, ...order });
       return;
     }
     const code = reason ?? (e as { code?: unknown } | null)?.code;
     const state = this.#purchase?.state;
-    this.#step("failed", { code: typeof code === "string" ? code : "UNKNOWN", ...(state !== undefined && { state }) });
+    this.#step("failed", { code: typeof code === "string" ? code : "UNKNOWN", ...(state !== undefined && { state }), ...order });
   }
 
   /** Сюжет 4 (Р-1255 п. 2): своё поручение до 5 000 ₽ (карточка у кнопки 4), подпись человеком; затем покупка с суммой
@@ -420,7 +424,7 @@ export class DemoScenarios {
       // уведомление банку говорит CLIENT; иначе общий «failed» с кодом (ревью К2.2б № 2, повторное — Н4).
       const opRef = this.#purchase?.reason === "DECLINED_LIMIT_EXCEEDED" ? this.#rememberDecline() : undefined;
       const source = opRef ? await this.#d.limitSource(opRef) : undefined;
-      if (source === "CLIENT") this.#step("limit.declined", { code: this.#purchase!.reason! });
+      if (source === "CLIENT") this.#step("limit.declined", { code: this.#purchase!.reason!, ...(this.#orderId && { order_id: this.#orderId }) });
       else this.#fail(e);
     } finally {
       if (set) {
@@ -533,7 +537,10 @@ export class DemoScenarios {
     this.#step("cart.signed", { mandate_id: signed.id, status: signed.status });
     this.#signal.throwIfAborted();
     const order = await p.placeOrder(this.#key("order"));
-    this.#step("order.placed", { order_id: order.orderId, merchant_id: pick.merchantId, total: order.total });
+    // Заказ в витрине продавца (К2.3, п. 5 задачи): номер и сумма — ответ витрины агенту (слова продавца), товар — выбор.
+    // Номер — в поле сюжета для шагов отказа; объект ошибки ядра не трогаем (ревью К2.3 № 3).
+    this.#orderId = order.orderId;
+    this.#step("order.placed", { order_id: order.orderId, merchant_id: pick.merchantId, total: order.total, title: pick.product.title, sku: pick.sku, qty });
     this.#step("payment.started", { order_id: order.orderId });
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
@@ -542,16 +549,33 @@ export class DemoScenarios {
     let op: Operation;
     try {
       op = await p.authorize(this.#key("pay"), this.#signal);
+    } catch (e) {
+      this.#shopReplies(order.orderId);
+      throw e;
     } finally {
       offConfirm?.();
     }
+    this.#shopReplies(order.orderId);
     this.#remember(op);
     this.#step("outcome", {
       op_ref: op.opRef,
+      order_id: order.orderId,
       status: op.status,
       ...(op.amount ? { amount: op.amount } : {}),
       ...(op.declineReason ? { code: op.declineReason } : {}),
       state: p.state,
     });
+  }
+
+  /** Ответы витрины агенту на оплату и подтверждение этого заказа — из журнала ядра (shop.call, деталь — ответ продавца:
+   *  PAID, AWAITING_CONFIRMATION, DECLINED). Это слова продавца, а не итог: итог — только по событию Платформы. */
+  #shopReplies(orderId: string): void {
+    const entries = this.#d.journal.entries;
+    for (let i = Math.max(this.#payJournalFrom, 0); i < entries.length; i++) {
+      const e = entries[i]!;
+      if (e.kind !== "shop.call" || typeof e.method !== "string" || typeof e.detail !== "string") continue;
+      if (!/\/(payment|confirmation)$/.test(e.method) || !/^[A-Z_]+$/.test(e.detail)) continue;
+      this.#step("order.shop_reply", { order_id: orderId, reply: e.detail });
+    }
   }
 }

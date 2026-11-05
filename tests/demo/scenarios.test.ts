@@ -150,6 +150,11 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
     // Слово продавца (PAID) — не итог: в ленте ответ витрины на оплату — «оплата», не «итог».
     const pay = events(demo).find((e) => e.what.endsWith("/payment") && e.source === "agent_merchant");
     expect(pay?.cls).toBe("payment");
+    // Заказ в витрине продавца (К2.3): строка заказа, ответ витрины (слова продавца) и итог по событию — с одним order_id.
+    const placed = steps(demo).find((s) => s.step === "order.placed")!;
+    expect(placed.params).toMatchObject({ order_id: expect.any(String), merchant_id: picked.params.merchant_id, sku: picked.params.sku, qty: 1 });
+    expect(steps(demo).find((s) => s.step === "order.shop_reply")?.params).toMatchObject({ order_id: placed.params.order_id, reply: "PAID" });
+    expect(outcome.params.order_id).toBe(placed.params.order_id);
     await demo.scenarios.settled();
   });
 
