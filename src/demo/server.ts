@@ -44,6 +44,8 @@ export interface MonitorServerOptions {
   scenarios?: { start(name: ScenarioName): ScenarioStart; answerCart(agree: boolean): ScenarioStart; abort(): ScenarioStart };
   /** Карточка поручения сюжета 1 — показывается человеку до нажатия кнопки (Т3а: keyTermsShown, ревью К2.1 № 1). */
   intentCard?: IntentCard;
+  /** Карточка поручения сюжета 4 — у кнопки 4. */
+  intentCardUpk?: IntentCard;
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
 }
@@ -52,6 +54,19 @@ export interface MonitorServer {
   readonly url: string;
   readonly server: Server;
   close(): Promise<void>;
+}
+
+/** Карточка поручения (Т3а): видна до кнопки сюжета, значения — из конфигурации сюжета, не из данных витрин. */
+function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Parameters<typeof t>[1]): string {
+  const e = (k: Parameters<typeof t>[1]) => escapeHtml(t(lang, k));
+  return `<dl class="card" id="${id}">
+    <dt>${e(titleKey)}</dt>
+    <dd>${e("card.subject")}: ${escapeHtml(card.subject)}</dd>
+    <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: card.limit.amount, currency: card.limit.currency }, lang))}</dd>
+    <dd>${e("card.valid_days")}: ${card.validDays}</dd>
+    <dd>${e("card.merchants")}: ${card.merchants}</dd>
+    <dd>${e("card.single_use")}</dd>
+  </dl>`;
 }
 
 function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolean): string {
@@ -92,23 +107,23 @@ ${
     ? `<section class="scenarios">
   <h2>${e("scenario.title")}</h2>
   <p class="hint">${e("scenario.hint")}</p>
-  ${
-    o.intentCard
-      ? `<dl class="card" id="intent-card">
-    <dt>${e("card.intent.title")}</dt>
-    <dd>${e("card.subject")}: ${escapeHtml(o.intentCard.subject)}</dd>
-    <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: o.intentCard.limit.amount, currency: o.intentCard.limit.currency }, lang))}</dd>
-    <dd>${e("card.valid_days")}: ${o.intentCard.validDays}</dd>
-    <dd>${e("card.merchants")}: ${o.intentCard.merchants}</dd>
-    <dd>${e("card.single_use")}</dd>
-  </dl>`
-      : ""
-  }
+  ${o.intentCard ? intentCardHtml(lang, o.intentCard, "intent-card", "card.intent.title") : ""}
   <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
   <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
   <p class="hint mode-note">${e("scenario.purchase_note")}</p>
   <button type="button" data-scenario="limit">${e("scenario.limit")}</button>
   <p class="hint">${e("scenario.limit_note")}</p>
+  ${o.intentCardUpk ? intentCardHtml(lang, o.intentCardUpk, "intent-card-upk", "card.intent_upk.title") : ""}
+  <button type="button" data-scenario="upk">${e("scenario.upk")}</button>
+  <p class="hint">${e("scenario.upk_note")}</p>
+  <div id="upk-panel" class="card" hidden>
+    <dl>
+      <dt>${e("upk.panel.title")} <span class="badge emu">${e("badge.emulator")}</span></dt>
+      <dd><a id="upk-link" target="_blank" rel="noopener">${e("upk.link")}</a> <span class="badge emu">${e("badge.emulator")}</span></dd>
+      <dd>${e("upk.sms")}: <strong id="upk-code"></strong></dd>
+      <dd>${e("upk.hint")}</dd>
+    </dl>
+  </div>
   <div id="cart-card" class="card" hidden>
     <dl>
       <dt>${e("card.cart.title")}</dt>
@@ -186,7 +201,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|limit|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
+    const scenario = /^\/scenario\/(intent|purchase|limit|upk|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
     if (req.method === "POST" && scenario && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;

@@ -20,12 +20,15 @@ export interface ScenarioStep {
 
 export type StepSink = (s: ScenarioStep) => void;
 
-/** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке». */
-export type ScenarioName = "intent" | "purchase" | "limit";
+/** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
+ *  «подтверждение человеком через УПК» (своё поручение). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk";
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
 const OPS_KEPT = 50;
+/** Валюта рыночного порога подтверждения Платформы: параметр confirm_above_kop — в копейках рубля (ISO 4217). */
+const THRESHOLD_CURRENCY = "RUB";
 
 /** Что монитору нужно об операции: сумма и причина отказа, как их вернула Платформа ядру. */
 export interface OperationInfo {
@@ -59,6 +62,9 @@ export const INTENT_CARD: IntentCard = {
   validDays: 7,
   merchants: MERCHANT_FIXTURES.length,
 };
+
+/** Поручение сюжета 4 (Р-1255 п. 2): своё, до 5 000 ₽ — выше порога подтверждения банка; карточка — у кнопки 4. */
+export const INTENT_CARD_UPK: IntentCard = { ...INTENT_CARD, limit: { amount: 500000, currency: "RUB" } };
 
 export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDraft {
   return {
@@ -173,14 +179,14 @@ export class DemoScenarios {
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
     if (this.#running) return { ok: false, code: "BUSY" };
-    if (name !== "intent" && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
+    if ((name === "purchase" || name === "limit") && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();
     this.#runAc = run;
     this.#signal = AbortSignal.any([this.#ac.signal, run.signal]);
     this.#paying = false;
     this.#payJournalFrom = -1;
-    const work = name === "intent" ? this.#intent() : name === "limit" ? this.#overLimit() : this.#buy();
+    const work = name === "intent" ? this.#intent() : name === "limit" ? this.#overLimit() : name === "upk" ? this.#upk() : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -196,7 +202,10 @@ export class DemoScenarios {
    *  На оплате — PAYING: пакет передан продавцу, итог придёт по событию Платформы, оплату на полпути не рвём. */
   abort(): ScenarioStart {
     if (!this.#runAc || this.#runAc.signal.aborted) return { ok: false, code: "NOT_AWAITING" };
-    if (this.#paying) return { ok: false, code: "PAYING" };
+    // Ожидание подтверждения человека (сюжет 4) прерывать можно: ядро снимает его с CONFIRMATION_ABORTED, запрос в банке
+    // остаётся (Р69 п. 3).
+    // Состояние — у ядра: только пока оно ждёт решения человека (CONFIRMING); после решения — PAYING (ревью К2.2в № 2).
+    if (this.#paying && this.#purchase?.state !== "CONFIRMING") return { ok: false, code: "PAYING" };
     this.#runAc.abort();
     return { ok: true };
   }
@@ -237,12 +246,55 @@ export class DemoScenarios {
       this.#step("aborted", { ...(state !== undefined && { state }) });
       return;
     }
+    if (reason === "CONFIRMATION_ABORTED") {
+      // Прервано человеком во время ожидания подтверждения: запрос в банке остаётся открытым до срока (Р69 п. 3; ревью
+      // К2.2в № 3).
+      this.#step("upk.aborted", { code: reason });
+      return;
+    }
     const code = reason ?? (e as { code?: unknown } | null)?.code;
     const state = this.#purchase?.state;
     this.#step("failed", { code: typeof code === "string" ? code : "UNKNOWN", ...(state !== undefined && { state }) });
   }
 
-  async #intent(): Promise<void> {
+  /** Сюжет 4 (Р-1255 п. 2): своё поручение до 5 000 ₽ (карточка у кнопки 4), подпись человеком; затем покупка с суммой
+   *  выше порога подтверждения банка. ADP отвечает CONFIRMATION_REQUIRED — ядро ждёт решения человека (инвариант 3):
+   *  на мониторе — ссылка на страницу УПК и панель «эмулятор SMS банка» с кодом; код вводит человек на странице УПК. */
+  async #upk(): Promise<void> {
+    await this.#intent(INTENT_CARD_UPK);
+    if (!this.#intentActive) return;
+    // Рыночный порог подтверждения Платформы стенда (confirm_above_kop — в копейках рубля); количество — чтобы сумма была
+    // выше него (не дробление, наоборот). Решает о подтверждении ADP, приложение только подбирает сумму сюжета.
+    const threshold: Money = { amount: this.#d.stand.params.confirm_above_kop, currency: THRESHOLD_CURRENCY };
+    await this.#buy({
+      qtyFor: (price) => {
+        if (price.currency !== threshold.currency) return { code: "CURRENCY_MISMATCH" };
+        if (price.amount <= 0) return { code: "PRICE_INVALID" };
+        const qty = Math.floor(threshold.amount / price.amount) + 1;
+        this.#step("upk.qty", { qty, threshold });
+        return qty;
+      },
+      confirmation: true,
+    });
+  }
+
+  /** Запрос подтверждения по корзине этой покупки — из ленты ПАО агента: ссылка на страницу УПК стенда и код из банка
+   *  (эмулятор SMS). Ссылка страницы от ядра приходит только для https: (Р69 п. 5); у локального стенда — http:, поэтому
+   *  ссылку строит сборка демо по confirmation_id. Решения здесь нет: подтверждает человек на странице. */
+  #watchConfirmation(cartId: string): () => void {
+    const seen = new Set<string>();
+    return this.#d.agent.events.listen(async (item) => {
+      if (item.kind !== "event" || item.event.type !== "confirmation.required") return;
+      const id = item.event.confirmationId;
+      if (!id || seen.has(id) || (item.event.mandateId !== null && item.event.mandateId !== cartId)) return;
+      seen.add(id);
+      this.#step("upk.required", { confirmation_id: id, upk_url: `${this.#d.urls.upk}/c/${encodeURIComponent(id)}` });
+      const code = await this.#d.stand.issuer.upkCode(id).catch(() => undefined);
+      if (code) this.#step("upk.sms", { code });
+    });
+  }
+
+  async #intent(card: IntentCard = INTENT_CARD): Promise<void> {
     const core = this.#d.agent;
     const shops = core.shops({ baseUrl: this.#d.urls.merchants });
     const region = standRegion();
@@ -257,7 +309,7 @@ export class DemoScenarios {
     });
     this.#purchase = p;
     this.#intentActive = false;
-    const draft = demoIntent(new Date());
+    const draft = demoIntent(new Date(), card);
     const intent = await p.intent(draft, this.#key("intent"));
     this.#step("intent.created", { mandate_id: intent.id, subject: draft.subject, limit: draft.amountLimit });
     this.#step("intent.awaiting_signature", { mandate_id: intent.id });
@@ -329,7 +381,15 @@ export class DemoScenarios {
     if (r.statusCode !== 200) throw Object.assign(new Error(`лимиты клиента не приняты: ${r.statusCode}`), { code: "BANK_LIMITS_REJECTED" });
   }
 
-  async #buy(o: { beforeCart?: (total: Money) => Promise<void> } = {}): Promise<void> {
+  async #buy(
+    o: {
+      beforeCart?: (total: Money) => Promise<void>;
+      /** Количество по цене товара (сюжет 4); нет — 1. { code } — сюжет не идёт, с этим кодом. */
+      qtyFor?: (price: Money) => number | { code: string };
+      /** Сюжет 4: показывать запрос подтверждения (ссылка УПК, эмулятор SMS). */
+      confirmation?: boolean;
+    } = {},
+  ): Promise<void> {
     const p = this.#purchase!;
     // Поручение считается использованным с запроса корзины (ниже), а не с начала сюжета: прерванный или отклонённый до
     // корзины сюжет его не тратит (ревью К2.2а № 3). Второго сюжета, пока этот идёт, нет — start() отвечает BUSY.
@@ -354,7 +414,12 @@ export class DemoScenarios {
     // приложение (инвариант 2); на карточке — цена, количество и доставка из выдачи продавца.
     // Итог — функцией ядра cartTotal (Σ цена × количество, как у CART; ревью К2.1а № 1): приложение его не считает.
     // Доставка — условие продавца из выдачи; в итог корзины ядра она не входит, и карточка это говорит.
-    const qty = 1;
+    const q = o.qtyFor ? o.qtyFor(pick.product.price) : 1;
+    if (typeof q !== "number") {
+      this.#step("failed", { code: q.code, state: p.state });
+      return;
+    }
+    const qty = q;
     const total = cartTotal([{ price: pick.product.price, qty }]);
     const delivery = pick.product.delivery.find((d) => d.region === undefined || d.region === standRegion()) ?? pick.product.delivery[0];
     this.#step("cart.card", {
@@ -395,7 +460,13 @@ export class DemoScenarios {
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
     this.#payJournalFrom = this.#d.journal.entries.length;
-    const op = await p.authorize(this.#key("pay"), this.#signal);
+    const offConfirm = o.confirmation ? this.#watchConfirmation(cart.id) : undefined;
+    let op: Operation;
+    try {
+      op = await p.authorize(this.#key("pay"), this.#signal);
+    } finally {
+      offConfirm?.();
+    }
     this.#remember(op);
     this.#step("outcome", {
       op_ref: op.opRef,

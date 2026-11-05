@@ -93,6 +93,26 @@
     cartCard.hidden = false;
   }
 
+  // Панель УПК (сюжет 4): ссылка на страницу УПК и код из «эмулятора SMS банка» — из шагов upk.required и upk.sms.
+  // Ссылка — только на 127.0.0.1 (страница УПК стенда); код — textContent. Любой другой шаг, кроме этих и notice,
+  // скрывает панель после итога.
+  const upkPanel = document.getElementById("upk-panel");
+  function upkFor(l) {
+    if (!upkPanel) return;
+    if (l.step === "upk.required") {
+      const url = String(l.params && l.params.upk_url);
+      const a = document.getElementById("upk-link");
+      if (/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) a.href = url;
+      else a.removeAttribute("href");
+      document.getElementById("upk-code").textContent = "";
+      upkPanel.hidden = false;
+    } else if (l.step === "upk.sms") {
+      document.getElementById("upk-code").textContent = String(l.params && l.params.code);
+    } else if (l.step === "outcome" || l.step === "failed" || l.step === "aborted" || l.step === "upk.aborted") {
+      upkPanel.hidden = true;
+    }
+  }
+
   const msg = document.getElementById("scenario-msg");
   const answer = (r) => {
     msg.hidden = false;
@@ -139,6 +159,7 @@
       else if (item.stream === "scenario") {
         addStep(item.line);
         cartCardFor(item.line);
+        upkFor(item.line);
       }
       else addLine(item.line);
     };
