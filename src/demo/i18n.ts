@@ -107,6 +107,14 @@ const ru = {
     "Ожидание подтверждения прервано человеком ({code}). Запрос подтверждения в банке остаётся открытым до своего срока; оплаты не будет.",
   "step.upk.required": "Платформа запросила подтверждение человека: {confirmation_id}. Откройте страницу УПК (панель выше).",
   "step.upk.sms": "Банк (эмулятор) прислал код в SMS — он в панели выше.",
+  "scenario.revoke": "5. Отзыв поручения — следующая попытка отклонена",
+  "scenario.revoke_note":
+    "Нужно подписанное поручение (сюжет 1). После кнопки отзовите поручение сами на экране мандатов банка — кнопки «отозвать» здесь нет. По событию Платформы агент перечитает поручение у неё (отозвано), попробует купить и остановит попытку сам — до витрин, корзины и оплаты. Отказ Платформы на оплату по отозванному поручению — сюжет подставного агента (DEMO-2).",
+  "step.revoke.ask": "Отзовите поручение {mandate_id} на экране мандатов банка (ссылка вверху) — агент ждёт события Платформы.",
+  "step.revoke.seen": "Поручение {mandate_id} отозвано человеком: по событию агент перечитал его у Платформы — отозвано.",
+  "step.revoke.attempt": "Агент пробует купить по поручению {mandate_id}.",
+  "step.revoke.refused":
+    "Попытка остановлена агентом до витрин, корзины и оплаты — {code} (состояние {state}): поручение отозвано, к Платформе с этой попыткой агент не обращался.",
   "scenario.abort": "Прервать сюжет",
   "scenario.aborting": "Сюжет прерывается — итог в консоли агента.",
   "scenario.not_running": "Сейчас нет сюжета, который можно прервать.",
@@ -243,6 +251,14 @@ const en: Record<MessageKey, string> = {
     "Waiting for confirmation was aborted by the human ({code}). The confirmation request at the bank stays open until it expires; there will be no payment.",
   "step.upk.required": "The Platform requested human confirmation: {confirmation_id}. Open the UPK page (panel above).",
   "step.upk.sms": "The bank (emulator) sent the code by SMS — it is in the panel above.",
+  "scenario.revoke": "5. Mandate revocation — the next attempt is refused",
+  "scenario.revoke_note":
+    "A signed mandate is required (scenario 1). After the button, revoke the mandate yourself on the bank mandates screen — there is no “revoke” button here. On the Platform event the agent re-reads the mandate from it (revoked), tries to buy and stops the attempt itself — before the shops, cart and payment. A Platform refusal of payment under a revoked mandate is the rogue-agent scenario (DEMO-2).",
+  "step.revoke.ask": "Revoke mandate {mandate_id} on the bank mandates screen (link at the top) — the agent waits for the Platform event.",
+  "step.revoke.seen": "Mandate {mandate_id} revoked by the human: on the event the agent re-read it from the Platform — revoked.",
+  "step.revoke.attempt": "The agent tries to buy under mandate {mandate_id}.",
+  "step.revoke.refused":
+    "Attempt stopped by the agent before the shops, cart and payment — {code} (state {state}): the mandate is revoked; the agent did not contact the Platform with this attempt.",
   "scenario.abort": "Abort scenario",
   "scenario.aborting": "The scenario is being aborted — see the agent console.",
   "scenario.not_running": "There is no scenario to abort right now.",

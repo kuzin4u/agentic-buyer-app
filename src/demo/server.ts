@@ -116,6 +116,8 @@ ${
   ${o.intentCardUpk ? intentCardHtml(lang, o.intentCardUpk, "intent-card-upk", "card.intent_upk.title") : ""}
   <button type="button" data-scenario="upk">${e("scenario.upk")}</button>
   <p class="hint">${e("scenario.upk_note")}</p>
+  <button type="button" data-scenario="revoke">${e("scenario.revoke")}</button>
+  <p class="hint">${e("scenario.revoke_note")}</p>
   <div id="upk-panel" class="card" hidden>
     <dl>
       <dt>${e("upk.panel.title")} <span class="badge emu">${e("badge.emulator")}</span></dt>
@@ -201,7 +203,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|limit|upk|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
+    const scenario = /^\/scenario\/(intent|purchase|limit|upk|revoke|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
     if (req.method === "POST" && scenario && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;

@@ -22,7 +22,7 @@ export type StepSink = (s: ScenarioStep) => void;
 
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
  *  «подтверждение человеком через УПК» (своё поручение). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk";
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke";
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
@@ -179,14 +179,23 @@ export class DemoScenarios {
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
     if (this.#running) return { ok: false, code: "BUSY" };
-    if ((name === "purchase" || name === "limit") && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
+    if ((name === "purchase" || name === "limit" || name === "revoke") && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();
     this.#runAc = run;
     this.#signal = AbortSignal.any([this.#ac.signal, run.signal]);
     this.#paying = false;
     this.#payJournalFrom = -1;
-    const work = name === "intent" ? this.#intent() : name === "limit" ? this.#overLimit() : name === "upk" ? this.#upk() : this.#buy();
+    const work =
+      name === "intent"
+        ? this.#intent()
+        : name === "limit"
+          ? this.#overLimit()
+          : name === "upk"
+            ? this.#upk()
+            : name === "revoke"
+              ? this.#revoke()
+              : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -275,6 +284,75 @@ export class DemoScenarios {
         return qty;
       },
       confirmation: true,
+    });
+  }
+
+  /** Сюжет 5 (Р-1255 п. 3): на действующем поручении человек сам отзывает его на экране мандатов банка — кнопки
+   *  «отозвать» на демо-экране нет (П2 п. 5). По событию mandate.revoked ядро перечитывает поручение у Платформы (GET
+   *  мандата) — «отозвано»; затем агент пытается купить, и ядро останавливает попытку своей проверкой (MANDATE_REVOKED) —
+   *  до витрин, корзины и оплаты, к Платформе при попытке не обращаясь (ревью К2.2г № 1). Отказ Платформы на запрос оплаты по отозванному поручению — сюжет подставного агента
+   *  (DEMO-2), не этот. */
+  async #revoke(): Promise<void> {
+    const p = this.#purchase!;
+    const id = p.intentMandate?.id;
+    if (!id) {
+      this.#step("failed", { code: "NO_INTENT", state: p.state });
+      return;
+    }
+    this.#step("revoke.ask", { mandate_id: id });
+    // Ядро уже знает об отзыве (событие прочитано раньше) — не ждать (ревью К2.2г № 3).
+    if (!this.#d.agent.mandates.revoked(id)) await this.#waitRevoked(id);
+    // Поручение отозвано: дальше покупок по нему нет.
+    this.#intentActive = false;
+    this.#step("revoke.seen", { mandate_id: id });
+    this.#step("revoke.attempt", { mandate_id: id });
+    try {
+      await p.search();
+    } catch (e) {
+      // Шаг «отклонена из-за отзыва» — только при этой причине; иначе — общий отказ с кодом (ревью К2.2г № 5).
+      if (p.reason === "MANDATE_REVOKED") this.#step("revoke.refused", { mandate_id: id, code: p.reason, state: p.state });
+      else this.#fail(e);
+      return;
+    }
+    // Ядро дошло до выдачи по отозванному поручению — так быть не должно: видно человеку как сбой.
+    this.#step("failed", { code: "REVOKED_NOT_ENFORCED", state: p.state });
+  }
+
+  /** Ожидание события mandate.revoked по поручению — из ленты ПАО агента; отмена сюжета снимает ожидание. Пока ждём,
+   *  лента будится с периодом опроса ленты агента (event_poll_interval_ms) — как опрос оболочки (Р34): сама лента читает
+   *  только по сигналу. Слушатель ядра зарегистрирован раньше нашего, поэтому к нашему ok() поручение уже перечитано. */
+  #waitRevoked(mandateId: string): Promise<void> {
+    const signal = this.#signal;
+    const events = this.#d.agent.events;
+    return new Promise((ok, fail) => {
+      if (signal.aborted) return fail(new Error("сюжет отменён"));
+      let off: () => void = () => undefined;
+      const done = () => {
+        clearInterval(poll);
+        off();
+        signal.removeEventListener("abort", onAbort);
+      };
+      // Лента остановлена (агент остановлен) — ожидание завершается с ошибкой, а не вечно (ревью К2.2г № 4).
+      const poll = setInterval(
+        () =>
+          void events.signal().catch((e: unknown) => {
+            done();
+            fail(e);
+          }),
+        this.#d.agent.params.event_poll_interval_ms,
+      );
+      poll.unref();
+      const onAbort = () => {
+        done();
+        fail(new Error("сюжет отменён"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      off = events.listen((item) => {
+        if (item.kind === "event" && item.event.type === "mandate.revoked" && item.event.mandateId === mandateId) {
+          done();
+          ok();
+        }
+      });
     });
   }
 
