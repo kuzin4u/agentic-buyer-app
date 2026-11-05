@@ -84,6 +84,8 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
   });
 
   let intentId = "";
+  /** Поручение, которое последний тест сюжета 1 оставил ждать подписи, — для теста отмены. */
+  let pendingIntent = "";
   it("сюжет 1: поручение создано и ждёт подписи; человек входит в банк по ссылке и видит поручение; подпись — по событию", async () => {
     expect((await post("intent")).status).toBe(202);
     const waiting = await until(step(demo, "intent.awaiting_signature"));
@@ -117,7 +119,22 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
 
   it("сюжет 2: нашёл, сравнил, выбрал; корзина подписана человеком; итог — по событию operation.authorized с суммой", async () => {
     expect((await post("purchase")).status).toBe(202);
+    // Карточка корзины (Р-1248 п. 1): сюжет ждёт решения человека; до «согласен» корзина не запрашивается.
+    const card = await until(step(demo, "cart.card"));
+    expect(card.params).toMatchObject({ title: expect.any(String), merchant_id: expect.any(String), price: { currency: "RUB" }, qty: 1 });
+    // Итог на карточке — по правилу ядра (cartTotal: цена × количество), совпадает с итогом корзины ниже.
+    const cardTotal = card.params.total as { minor: number; currency: string };
+    expect(cardTotal.minor).toBe((card.params.price as { minor: number }).minor);
+    await pause(300);
+    const mandatePosts = () => demo.stand.stand.calls().filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates").length;
+    expect(mandatePosts()).toBe(1); // только INTENT
+    expect((await post("cart/accept", "http://evil.example")).status).toBe(403);
+    expect((await post("cart/accept")).status).toBe(202);
+    expect((await post("cart/accept")).status).toBe(409); // ответ уже дан
     const cartWait = await until(step(demo, "cart.awaiting_signature"));
+    expect(mandatePosts()).toBe(2);
+    expect(steps(demo).find((s) => s.step === "cart.created")?.params.total).toMatchObject({ minor: cardTotal.minor, currency: cardTotal.currency });
+    expect(steps(demo).findIndex((s) => s.step === "cart.agreed")).toBeLessThan(steps(demo).findIndex((s) => s.step === "cart.created"));
     const found = steps(demo).find((s) => s.step === "search.found")!;
     expect(Number(found.params.contour)).toBeGreaterThan(0);
     const picked = steps(demo).find((s) => s.step === "search.picked")!;
@@ -176,6 +193,37 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
     }
   });
 
+  it("человек не согласился с карточкой корзины — корзина не запрошена, поручение можно использовать снова (Р-1248 п. 1)", async () => {
+    // Новое поручение, подписанное (в автотесте — эмулятором банка, П2 п. 5).
+    let before = steps(demo).length;
+    expect((await post("intent")).status).toBe(202);
+    const w = await until(() => steps(demo).slice(before).find((s) => s.step === "intent.awaiting_signature"));
+    expect((await demo.stand.stand.issuer.sign(String(w.params.mandate_id))).statusCode).toBe(200);
+    await until(() => steps(demo).slice(before).find((s) => s.step === "intent.signed"));
+    await demo.scenarios.settled();
+
+    const posts = () => demo.stand.stand.calls().filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates").length;
+    before = steps(demo).length;
+    expect((await post("purchase")).status).toBe(202);
+    await until(() => steps(demo).slice(before).find((s) => s.step === "cart.card"));
+    const n = posts();
+    expect((await post("cart/decline", "http://evil.example")).status).toBe(403);
+    expect((await post("cart/decline")).status).toBe(202);
+    await until(() => steps(demo).slice(before).find((s) => s.step === "cart.declined"));
+    await demo.scenarios.settled();
+    expect(posts()).toBe(n);
+    expect(steps(demo).slice(before).some((s) => s.step === "cart.created")).toBe(false);
+    // Поручение не использовано: сюжет 2 запускается снова; без ответа карточка ждёт и корзину не запрашивает.
+    before = steps(demo).length;
+    expect((await post("purchase")).status).toBe(202);
+    await until(() => steps(demo).slice(before).find((s) => s.step === "cart.card"));
+    const m = posts();
+    await pause(500);
+    expect(posts()).toBe(m);
+    expect((await post("cart/decline")).status).toBe(202);
+    await demo.scenarios.settled();
+  });
+
   it("человек отклонил поручение — сюжет остановлен с кодом, следующий сюжет 1 запускается (ревью К2.1 № 11)", async () => {
     const before = steps(demo).length;
     expect((await post("intent")).status).toBe(202);
@@ -186,6 +234,25 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
     expect(String(failed.params.code)).toMatch(/^[A-Z_]+$/);
     await demo.scenarios.settled();
     expect((await post("purchase")).status).toBe(409);
+    const again = steps(demo).length;
     expect((await post("intent")).status).toBe(202);
+    pendingIntent = String((await until(() => steps(demo).slice(again).find((s) => s.step === "intent.awaiting_signature"))).params.mandate_id);
+  });
+
+  // Последним: отмена сюжетов необратима для этого стенда (close).
+  it("отмена при ожидающей карточке корзины: корзина не запрошена, ответ после отмены — 409 (ревью К2.1а № 3, № 5)", async () => {
+    // Сюжет 1 из прошлого теста ждёт подписи — подписываем, затем сюжет 2 до карточки.
+    expect((await demo.stand.stand.issuer.sign(pendingIntent)).statusCode).toBe(200);
+    await demo.scenarios.settled();
+    const before = steps(demo).length;
+    expect((await post("purchase")).status).toBe(202);
+    await until(() => steps(demo).slice(before).find((s) => s.step === "cart.card"));
+    const posts = demo.stand.stand.calls().filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates").length;
+    await demo.scenarios.close();
+    const r = await post("cart/accept");
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ ok: false, code: "NOT_AWAITING" });
+    await pause(300);
+    expect(demo.stand.stand.calls().filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates").length).toBe(posts);
   });
 });

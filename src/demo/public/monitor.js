@@ -62,9 +62,9 @@
 
   // Шаг сюжета: текст из словаря, {параметр} → значение; сумма — готовый текст на языке страницы. Всё — textContent.
   const param = (v) => (v && typeof v === "object" && v.text ? v.text[lang] : String(v));
+  const fill = (tpl, params) => String(tpl).replace(/\{([a-z_]+)\}/g, (_, k) => (params && params[k] !== undefined ? param(params[k]) : m["value.none"]));
   function addStep(l) {
-    const tpl = m["step." + l.step] || l.step;
-    const text = tpl.replace(/\{([a-z_]+)\}/g, (_, k) => (l.params && l.params[k] !== undefined ? param(l.params[k]) : m["value.none"]));
+    const text = fill(m["step." + l.step] || l.step, l.params);
     const li = document.createElement("li");
     li.className = l.step === "failed" ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
     li.textContent = time(l.at) + "  " + text;
@@ -73,19 +73,47 @@
     document.getElementById("console-empty").hidden = true;
   }
 
+  // Карточка корзины (Р-1248 п. 1): заполняется из шага cart.card через textContent; любой другой шаг её скрывает.
+  const cartCard = document.getElementById("cart-card");
+  function cartCardFor(l) {
+    if (!cartCard) return;
+    if (l.step !== "cart.card") {
+      cartCard.hidden = true;
+      return;
+    }
+    const p = Object.assign({}, l.params);
+    if (p.delivery_method !== undefined) p.delivery_method = m["delivery." + p.delivery_method] || String(p.delivery_method);
+    for (const el of cartCard.querySelectorAll("[data-tpl]")) {
+      const none = el.dataset.tplNone;
+      const useNone = none && el.dataset.tpl === "card.line.delivery" && p.delivery_method === undefined;
+      el.textContent = fill(m[useNone ? none : el.dataset.tpl], p);
+    }
+    cartCard.hidden = false;
+  }
+
   const msg = document.getElementById("scenario-msg");
+  const answer = (r) => {
+    msg.hidden = false;
+    msg.textContent = r.ok ? m["scenario.started"] : r.code === "BUSY" ? m["scenario.busy"] : r.code === "NEED_INTENT" ? m["scenario.need_intent"] : r.code === "NOT_AWAITING" ? m["scenario.not_awaiting"] : m["scenario.error"];
+  };
+  for (const b of document.querySelectorAll("button[data-cart]")) {
+    b.addEventListener("click", () => {
+      fetch("/scenario/cart/" + b.dataset.cart, { method: "POST" })
+        .then((r) => r.json().catch(() => ({ ok: false })))
+        .then((r) => {
+          // Принято или карточка уже не ждёт ответа (отмена, повтор) — карточку скрыть (ревью К2.1а № 4).
+          if (r.ok || r.code === "NOT_AWAITING") cartCard.hidden = true;
+          if (!r.ok) answer(r);
+        })
+        .catch(() => answer({ ok: false }));
+    });
+  }
   for (const b of document.querySelectorAll("button[data-scenario]")) {
     b.addEventListener("click", () => {
       fetch("/scenario/" + b.dataset.scenario, { method: "POST" })
         .then((r) => r.json().catch(() => ({ ok: false })))
-        .then((r) => {
-          msg.hidden = false;
-          msg.textContent = r.ok ? m["scenario.started"] : r.code === "BUSY" ? m["scenario.busy"] : r.code === "NEED_INTENT" ? m["scenario.need_intent"] : m["scenario.error"];
-        })
-        .catch(() => {
-          msg.hidden = false;
-          msg.textContent = m["scenario.error"];
-        });
+        .then(answer)
+        .catch(() => answer({ ok: false }));
     });
   }
 
@@ -101,7 +129,10 @@
       if (seq <= seen) return; // история при переподключении — без повторов
       seen = seq;
       if (item.stream === "monitor") addEvent(item.event);
-      else if (item.stream === "scenario") addStep(item.line);
+      else if (item.stream === "scenario") {
+        addStep(item.line);
+        cartCardFor(item.line);
+      }
       else addLine(item.line);
     };
     es.onerror = () => {

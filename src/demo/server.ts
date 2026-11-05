@@ -41,7 +41,7 @@ export interface MonitorServerOptions {
   defaultLang?: Lang;
   port?: number;
   /** Сюжеты (К2.1); нет — кнопок нет, POST /scenario/* — 405. */
-  scenarios?: { start(name: ScenarioName): ScenarioStart };
+  scenarios?: { start(name: ScenarioName): ScenarioStart; answerCart(agree: boolean): ScenarioStart };
   /** Карточка поручения сюжета 1 — показывается человеку до нажатия кнопки (Т3а: keyTermsShown, ревью К2.1 № 1). */
   intentCard?: IntentCard;
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
@@ -106,6 +106,19 @@ ${
   }
   <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
   <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
+  <div id="cart-card" class="card" hidden>
+    <dl>
+      <dt>${e("card.cart.title")}</dt>
+      <dd data-tpl="card.line.item"></dd>
+      <dd data-tpl="card.line.merchant"></dd>
+      <dd data-tpl="card.line.price"></dd>
+      <dd data-tpl="card.line.total"></dd>
+      <dd data-tpl="card.line.delivery" data-tpl-none="card.line.no_delivery"></dd>
+      <dd>${e("card.delivery_note")}</dd>
+    </dl>
+    <button type="button" data-cart="accept">${e("card.accept")}</button>
+    <button type="button" data-cart="decline" class="secondary">${e("card.decline")}</button>
+  </div>
   <p id="scenario-msg" class="status" hidden></p>
 </section>`
     : ""
@@ -169,10 +182,12 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase)$/.exec(u.pathname);
+    const scenario = /^\/scenario\/(intent|purchase|cart\/accept|cart\/decline)$/.exec(u.pathname);
     if (req.method === "POST" && scenario && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
-      const r = o.scenarios.start(scenario[1] as ScenarioName);
+      const what = scenario[1]!;
+      // Ответ на карточку корзины — действие человека на этой странице (Р-1248 п. 1); сюжет его только ждёт.
+      const r = what.startsWith("cart/") ? o.scenarios.answerCart(what === "cart/accept") : o.scenarios.start(what as ScenarioName);
       return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
     }
     if (req.method !== "GET") return send(res, 405, plain, t(lang, "http.method_not_allowed"));

@@ -36,6 +36,9 @@ td.what { font-family: ui-monospace, monospace; font-size: 12px; white-space: no
 .card { margin: 4px 0 8px; padding: 6px 10px; border: 1px solid #d9dde3; border-radius: 6px; background: #fafbfc; }
 .card dt { font-weight: 600; margin-bottom: 2px; }
 .card dd { margin: 0; }
+.card dl { margin: 0 0 6px; }
+#cart-card { border-color: var(--brand-accent); }
+.scenarios button.secondary { background: #e7e9ee; color: #1d1d1f; }
 #console li.step { color: #12406b; font-family: system-ui, sans-serif; }
 #console li.step.outcome { color: var(--c-outcome); font-weight: 600; }
 td.cls { font-weight: 600; }

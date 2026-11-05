@@ -7,6 +7,7 @@
 //  - итог — только по событию operation.* (authorize ядра ждёт события, инвариант 6), не по ответу продавца.
 import { MERCHANT_FIXTURES } from "agentic-ps-platform/fixtures";
 import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
+import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
 import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import type { DemoStand } from "./stand.js";
 
@@ -20,7 +21,7 @@ export type StepSink = (s: ScenarioStep) => void;
 
 export type ScenarioName = "intent" | "purchase";
 
-export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" };
+export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" };
 
 const OPS_KEPT = 50;
 const CLOSE_WAIT_MS = 3000;
@@ -76,6 +77,7 @@ export class DemoScenarios {
   #purchase: Purchase | null = null;
   #intentActive = false;
   #running: Promise<void> | null = null;
+  #consentWaiter: ((agree: boolean) => void) | null = null;
   #seq = 0;
 
   constructor(d: DemoStand, emit: StepSink) {
@@ -116,6 +118,32 @@ export class DemoScenarios {
 
   get busy(): boolean {
     return this.#running !== null;
+  }
+
+  /** Ответ человека на карточку корзины с демо-экрана. Не ждём карточки — NOT_AWAITING. */
+  answerCart(agree: boolean): ScenarioStart {
+    const w = this.#consentWaiter;
+    if (!w) return { ok: false, code: "NOT_AWAITING" };
+    this.#consentWaiter = null;
+    w(agree);
+    return { ok: true };
+  }
+
+  /** Ожидание ответа человека на карточку корзины; отмена сюжета (close) — отказ. */
+  #consent(): Promise<boolean> {
+    return new Promise((ok, fail) => {
+      if (this.#ac.signal.aborted) return fail(new Error("сюжет отменён"));
+      const onAbort = () => {
+        // После отмены ответ человека — NOT_AWAITING, а не «принято» (ревью К2.1а № 3).
+        this.#consentWaiter = null;
+        fail(new Error("сюжет отменён"));
+      };
+      this.#ac.signal.addEventListener("abort", onAbort, { once: true });
+      this.#consentWaiter = (v) => {
+        this.#ac.signal.removeEventListener("abort", onAbort);
+        ok(v);
+      };
+    });
   }
 
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
@@ -203,7 +231,36 @@ export class DemoScenarios {
       return;
     }
     this.#step("search.picked", { merchant_id: pick.merchantId, sku: pick.sku, title: pick.product.title, price: pick.product.price });
-    const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty: 1 }], keyTermsShown: true }, this.#key("cart"));
+    // Карточка корзины (Т3а, Р-1248 п. 1): сюжет стоит, пока человек не ответит на демо-экране. Только после «согласен»
+    // запрашивается корзина, и keyTermsShown: true — правда. Итог корзины считает ядро (шаг «корзина создана»), не
+    // приложение (инвариант 2); на карточке — цена, количество и доставка из выдачи продавца.
+    // Итог — функцией ядра cartTotal (Σ цена × количество, как у CART; ревью К2.1а № 1): приложение его не считает.
+    // Доставка — условие продавца из выдачи; в итог корзины ядра она не входит, и карточка это говорит.
+    const qty = 1;
+    const total = cartTotal([{ price: pick.product.price, qty }]);
+    const delivery = pick.product.delivery.find((d) => d.region === undefined || d.region === standRegion()) ?? pick.product.delivery[0];
+    this.#step("cart.card", {
+      title: pick.product.title,
+      merchant_id: pick.merchantId,
+      sku: pick.sku,
+      price: pick.product.price,
+      qty,
+      ...(total && { total }),
+      ...(delivery && {
+        delivery_method: delivery.method,
+        delivery_days: delivery.minDays === delivery.maxDays ? delivery.minDays : `${delivery.minDays}–${delivery.maxDays}`,
+        delivery_cost: delivery.cost,
+      }),
+    });
+    const agreed = await this.#consent();
+    if (!agreed) {
+      // Корзина не запрошена: поручение не использовано — сюжет 2 можно повторить.
+      this.#intentActive = true;
+      this.#step("cart.declined", { merchant_id: pick.merchantId, sku: pick.sku });
+      return;
+    }
+    this.#step("cart.agreed", { merchant_id: pick.merchantId, sku: pick.sku });
+    const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
     this.#step("cart.created", { mandate_id: cart.id, ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
     const signed = await p.awaitCart(this.#ac.signal);
