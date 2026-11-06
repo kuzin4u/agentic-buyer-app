@@ -1,11 +1,13 @@
 // Сервер экранов демо-стенда (П2 п. 2): node:http, только 127.0.0.1. Страница монитора на ru или en (?lang=), бренд из
 // конфигурации, лента — SSE (/events). CSP — только 'self': скрипт, стили и цвета бренда отдаются файлами, без inline.
 // На странице нет данных витрин в разметке: ленту строит скрипт через textContent (инвариант 4).
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
+import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
 import type { MonitorBus } from "./bus.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
 import { formatMoney } from "./money.js";
@@ -48,6 +50,8 @@ export interface MonitorServerOptions {
   intentCardUpk?: IntentCard;
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
+  /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
+  diag?: DiagSnapshot;
 }
 
 export interface MonitorServer {
@@ -179,6 +183,10 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const js = PUBLIC("monitor.js");
   const css = PUBLIC("monitor.css");
   const logo = logoFile ? readFileSync(logoFile) : null;
+  // Снимок неизменен за время работы стенда — сериализуется один раз.
+  const diagJson = o.diag ? JSON.stringify(o.diag) : null;
+  // Номер экземпляра шины: адаптер дашбордов по нему видит, что стенд перезапущен и номера seq начались заново.
+  const instance = randomUUID();
   const sse = new Set<ServerResponse>();
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
@@ -244,12 +252,16 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       case "/brand/logo":
         if (!logo || !logoFile) return send(res, 404, plain, t(lang, "http.not_found"));
         return send(res, 200, extname(logoFile) === ".svg" ? "image/svg+xml" : "image/png", logo);
+      case "/api/diag":
+        if (!diagJson) return send(res, 404, plain, t(lang, "http.not_found"));
+        return send(res, 200, "application/json; charset=utf-8", diagJson);
       case "/events": {
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
           connection: "keep-alive",
+          [INSTANCE_HEADER]: instance,
         });
         for (const item of o.bus.history()) res.write(`data: ${JSON.stringify(item)}\n\n`);
         const off = o.bus.subscribe((item) => res.write(`data: ${JSON.stringify(item)}\n\n`));

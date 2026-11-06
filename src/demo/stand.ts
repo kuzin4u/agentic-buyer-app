@@ -20,6 +20,7 @@ import { createAgentCore, type AgentCore } from "agentic-buyer-ref/src/agent/com
 import { MemoryJournal } from "agentic-buyer-ref/src/agent/journal/index.js";
 import { generateKey } from "agentic-buyer-ref/src/agent/signer/index.js";
 import type { CallRecord } from "./bus.js";
+import { DEMO_SHOPS } from "./shops.js";
 import { t, type Lang } from "./i18n.js";
 
 /** Адреса экранов и служб демо-стенда. Все на 127.0.0.1. */
@@ -133,7 +134,8 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
     const stateDir = mkdtempSync(join(tmpdir(), "demo-state-"));
     dirs.push(stateDir);
 
-    const s = createStand();
+    // Свой набор витрин (стенд v0.41.0, передача #5): «Масса Мадре» с каталогом пекарни на месте SHOP-1042 (Р-1278).
+    const s = createStand({ shops: DEMO_SHOPS });
     stand = s;
     merchants = createMerchants(s, {
       decide: async (msg) => {
