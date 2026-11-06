@@ -4,6 +4,7 @@
 // ссылке /bank-login на экран мандатов банка — проверяется отдельно.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
+import { parseWireItem } from "../../src/dashboards/wire.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 
@@ -242,6 +243,13 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
     const again = steps(demo).length;
     expect((await post("intent")).status).toBe(202);
     pendingIntent = String((await until(() => steps(demo).slice(again).find((s) => s.step === "intent.awaiting_signature"))).params.mandate_id);
+  });
+
+  it("контракт линии дашбордов DEMO-2 (К1.2): каждая запись шины после сюжетов 1 и 2 разбирается форматом линии", () => {
+    const history = demo.bus.history();
+    expect(history.length).toBeGreaterThan(20);
+    const lost = history.filter((i) => parseWireItem(JSON.parse(JSON.stringify(i))) === undefined);
+    expect(lost).toEqual([]);
   });
 
   // Последним: отмена сюжетов необратима для этого стенда (close).
