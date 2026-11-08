@@ -2,7 +2,6 @@
 // получают записи шины и снимок реестров диагностики только через DashboardSource: сейчас — локальный стенд по HTTP
 // (`localStandSource`), для ACC-2 — песочница только на чтение, через Платформу. Код агента и Платформы не импортируется.
 // Источник только читает: методов, которые что-то меняют на стенде, у него нет.
-import { traceStep } from "./close-trace.js";
 import { INSTANCE_HEADER, isHiddenScenarioItem, parseDiagSnapshot, parseWireItem, seqOfItem, type DiagSnapshot, type WireItem } from "./wire.js";
 
 /** `reset` — источник начал ленту заново (перезапуск стенда): потребитель сбрасывает то, что накопил. */
@@ -51,6 +50,8 @@ export interface LocalStandSourceOptions {
   /** Сколько номеров помнить для отсечения повторов — по каждому потоку отдельно, как шина ведёт историю (по 1000 на
    *  поток): предел потока не меньше его истории, поэтому вытесненный номер в истории уже не встретится (ревью К1.2 Н1). */
   seenLimit?: number;
+  /** Сколько close() ждёт выхода линии, мс (страховка К1.4г, Р-1339): по истечении — выход, линия дорывается сама. */
+  closeWaitMs?: number;
 }
 
 /** Только 127.0.0.1 (П2 п. 2): `localhost` может разрешиться в другой адрес. */
@@ -65,6 +66,7 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
   const maxDiag = o.maxDiagChars ?? 4 * 1024 * 1024;
   const diagTimeoutMs = o.diagTimeoutMs ?? 5000;
   const seenLimit = o.seenLimit ?? 10_000;
+  const closeWaitMs = o.closeWaitMs ?? 1000;
   const items = new Set<(i: WireItem) => void>();
   const statuses = new Set<(s: SourceStatus) => void>();
   /** Полученные номера по потокам, в порядке получения: Set хранит порядок вставки, старые вытесняются по пределу потока.
@@ -139,29 +141,39 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
     instance = inst;
     setStatus("open");
     const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      buf += dec.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
-      let cut: number;
-      while ((cut = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, cut);
-        buf = buf.slice(cut + 2);
-        const data = block
-          .split("\n")
-          .filter((l) => l.startsWith("data:"))
-          .map((l) => l.slice(5).replace(/^ /, ""))
-          .join("\n");
-        if (data) deliver(data);
+    // Отмена fetch на Node 20 и 22 не всегда обрывает уже начатое чтение тела: read() ждал бы конца потока от сервера,
+    // а сервер монитора закрывает поток только после закрытия этой ленты — взаимное ожидание (CI К1.4, К1.4г, Р-1339).
+    // Поэтому при отмене чтение рвётся явно: cancel() завершает ждущий read() с done на любой версии Node.
+    const onAbort = () => void reader.cancel().catch(() => undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    try {
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buf += dec.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+        let cut: number;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const data = block
+            .split("\n")
+            .filter((l) => l.startsWith("data:"))
+            .map((l) => l.slice(5).replace(/^ /, ""))
+            .join("\n");
+          if (data) deliver(data);
+        }
+        if (buf.length > maxEvent) {
+          // Запись без конца длиннее предела — линия не по форме: рвётся и переподключается.
+          rejected++;
+          await reader.cancel().catch(() => undefined);
+          return;
+        }
       }
-      if (buf.length > maxEvent) {
-        // Запись без конца длиннее предела — линия не по форме: рвётся и переподключается.
-        rejected++;
-        await reader.cancel().catch(() => undefined);
-        return;
-      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   };
 
@@ -263,16 +275,23 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
       return rejected;
     },
     async close() {
-      await traceStep(base, "source.close: отмена", () => {
-        closed = true;
-        abort?.abort();
-        for (const ac of pending) ac.abort();
-        if (retry) {
-          clearTimeout(retry.timer);
-          retry.wake();
-        }
-      });
-      await traceStep(base, "source.close: выход из await loop", () => loop);
+      closed = true;
+      abort?.abort();
+      for (const ac of pending) ac.abort();
+      if (retry) {
+        clearTimeout(retry.timer);
+        retry.wake();
+      }
+      // Страховка (Р-1339): линию ждём не дольше closeWaitMs — закрытие не зависит от того, как платформа рвёт чтение.
+      let guard: NodeJS.Timeout | undefined;
+      await Promise.race([
+        loop,
+        new Promise<void>((ok) => {
+          guard = setTimeout(ok, closeWaitMs);
+          guard.unref();
+        }),
+      ]);
+      clearTimeout(guard);
       setStatus("closed");
     },
   };

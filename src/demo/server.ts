@@ -7,7 +7,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
-import { traceStep } from "../dashboards/close-trace.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
 import { SCREEN } from "../dashboards/phrases.js";
@@ -337,12 +336,11 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     server,
     close: async () => {
       // Сначала лента дашбордов (её адаптер держит соединение /events с этим же сервером), затем сервер.
-      // Мягкое закрытие (К1.4б, Р-1336): server.close ждёт закрытия всех соединений. Предположение по CI К1.4 (e1fd41c,
-      // Node 20 и 22: close() дольше 10 с) — его держат соединение ленты или keep-alive. Простаивающие соединения
-      // закрываются сразу; оставшиеся рвутся через ≈ 0,5 с — время дописать конец потоков SSE после r.end().
-      // Подтверждение — зелёный CI на Node 20.19 и 22.
-      await traceStep(url, "feed.close", () => feed?.close().catch(() => undefined));
-      await traceStep(url, "server.close", () => new Promise<void>((ok) => {
+      // Мягкое закрытие (К1.4б, Р-1336): простаивающие соединения закрываются сразу; оставшиеся рвутся через ≈ 0,5 с —
+      // время дописать конец потоков SSE после r.end(). Лента закрывается первой и не ждёт этот сервер: её адаптер рвёт
+      // чтение /events сам (reader.cancel, К1.4г) — иначе на Node 20 и 22 закрытие ждало бы само себя.
+      await feed?.close().catch(() => undefined);
+      await new Promise<void>((ok) => {
         for (const r of sse) r.end();
         const force = setTimeout(() => server.closeAllConnections(), 500);
         force.unref();
@@ -351,7 +349,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           ok();
         });
         server.closeIdleConnections();
-      }));
+      });
     },
   };
 }
