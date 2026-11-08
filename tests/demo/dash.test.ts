@@ -60,7 +60,7 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
     expect(html).toContain(brand.name);
     expect(html).toContain('href="/dash/interpret?lang=en"');
     // Встроенных скриптов нет: у каждого <script> — src или type="application/json" (CSP 'self', ревью К1.4 № 3).
-    const scripts = [...html.matchAll(/<script\b[^>]*>/g)].map((m) => m[0]);
+    const scripts = [...html.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0]);
     expect(scripts.length).toBe(2);
     for (const s of scripts) expect(s).toMatch(/\ssrc="\/dash\/interpret\.js"|type="application\/json"/);
     expect(ru.headers.get("content-security-policy")).not.toContain("unsafe-inline");
@@ -140,6 +140,37 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
       await own.close(); // стенд закрывается и при упавшем ожидании (второй проход № 2)
     }
     expect(await ended).toBe(true);
+  });
+
+  it("close() стенда с открытой лентой экрана после сюжетов 1 и 2 — не дольше 2 с (CI К1.4: зависание на Node 20 и 22; К1.4б)", async () => {
+    // Сюжет 2 — с оплатой: в CI e1fd41c зависали наборы с оплатой, а набор только с сюжетом 1 проходил (ревью К1.4б № 1).
+    // Сюжеты завершены (driver ждёт settled) — ожидание сюжетов в close() (до 3 с) замер не задевает (№ 5).
+    const own = await startDemo();
+    const limit = <T>(p: Promise<T>, what: string) =>
+      Promise.race([
+        p,
+        new Promise<never>((_, fail) => setTimeout(() => fail(new Error(`${what}: дольше 3 с`)), 3000).unref()),
+      ]);
+    let closed = false;
+    try {
+      const d = driver(own);
+      await d.run(1);
+      await d.run(2);
+      const res = await fetch(`${own.monitor.url}/dash/interpret/events`);
+      const reader = res.body!.getReader();
+      await reader.read(); // снимок — лента открыта
+      // Конец ленты — нормальный (done), а не обрыв соединения (мягкое закрытие, Р-1336).
+      const reading = (async () => {
+        for (;;) if ((await reader.read()).done) return "done";
+      })().catch((e: unknown) => `ошибка: ${String(e)}`);
+      const t0 = Date.now();
+      await limit(own.close(), "close()"); // зависание — быстрый отказ, а не тайм-аут describe (№ 4)
+      closed = true;
+      expect(Date.now() - t0).toBeLessThanOrEqual(2000);
+      expect(await limit(reading, "конец ленты экрана")).toBe("done");
+    } finally {
+      if (!closed) void own.close().catch(() => undefined);
+    }
   });
 
   it("словарь экрана полон: каждый ключ, который берёт скрипт, есть в ru и en (ревью К1.4 № 5)", async () => {
