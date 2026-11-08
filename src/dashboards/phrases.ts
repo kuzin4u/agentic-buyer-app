@@ -147,3 +147,34 @@ export const LABELS = {
   pending: p("ждёт передачи реестра Платформы", "awaiting the Platform registry handoff"),
   emulated: p("эмулятор", "emulator"),
 } as const;
+
+/** Подписи экрана «Интерпретация» (К1.4). */
+export const SCREEN = {
+  title: p("Интерпретация", "Interpretation"),
+  subtitle: p(
+    "События шины простыми словами и их квалификация — только чтение; факты — из шины, «кто ошибся» — по реестрам диагностики",
+    "Bus events in plain words and their qualification — read-only; facts come from the bus, “who erred” from the diagnostic registries",
+  ),
+  monitor: p("Монитор операций", "Operations monitor"),
+  lang: p("Язык", "Language"),
+  details: p("Показать служебные обращения", "Show service calls"),
+  empty: p("Событий пока нет — запустите сюжет на мониторе операций", "No events yet — start a scenario on the operations monitor"),
+  "col.time": p("Время", "Time"),
+  "col.stage": p("Стадия", "Stage"),
+  "col.actor": p("Кто действует", "Actor"),
+  "col.kind": p("Тип", "Type"),
+  "col.phrase": p("Что произошло", "What happened"),
+  "col.who": p("Кто ошибся", "Who erred"),
+  "col.situation": p("Ситуация", "Situation"),
+  "who.side": p("сторона", "side"),
+  "who.none": p("сторона не определена", "side not determined"),
+  "situation.ru_only": p("", "card text is in Russian"),
+  "status.connecting": p("подключение к шине…", "connecting to the bus…"),
+  "status.open": p("шина подключена", "bus connected"),
+  "status.reset": p("стенд перезапущен — лента начата заново", "stand restarted — feed started over"),
+  "status.closed": p("шина отключена", "bus disconnected"),
+  "status.screen_offline": p("экран потерял связь с сервером стенда — переподключение…", "the screen lost the stand server — reconnecting…"),
+  "diag.loading": p("реестры диагностики: загрузка", "diagnostic registries: loading"),
+  "diag.ready": p("реестры диагностики: получены", "diagnostic registries: loaded"),
+  "diag.failed": p("реестры диагностики не получены — коды без расшифровки", "diagnostic registries unavailable — codes without explanation"),
+} as const;

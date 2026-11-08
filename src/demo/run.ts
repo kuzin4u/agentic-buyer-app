@@ -1,5 +1,7 @@
 // Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сюжеты, сервер экранов. Общая для npm run demo и тестов.
+import { LOCAL_STAND_EMULATED } from "../dashboards/interpret.js";
 import { MonitorBus } from "./bus.js";
+import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
 import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK } from "./scenarios.js";
@@ -64,6 +66,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       bankLogin: () => `${stand.urls.bankApp}${stand.stand.bankApp.session(DEMO_PRINCIPAL)}`,
       // Реестры диагностики импортирует сборка контура; экраны DEMO-2 видят только снимок (Р-1246 п. 3, Р-1273 п. 3).
       diag: buildDiagSnapshot(),
+      // Экран «Интерпретация» (К1.4): на локальном стенде эмуляторы — банк и продавцы (П2 п. 2).
+      dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles() },
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
     });

@@ -7,8 +7,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
+import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
+import type { Role } from "../dashboards/interpret.js";
+import { SCREEN } from "../dashboards/phrases.js";
+import { localStandSource } from "../dashboards/source.js";
 import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
 import type { MonitorBus } from "./bus.js";
+import { interpretPage } from "./dash.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
 import { formatMoney } from "./money.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
@@ -52,6 +57,14 @@ export interface MonitorServerOptions {
   bankLogin?: () => string;
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
+  /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
+   *  (Р-1246 п. 3) — экран не читает шину напрямую. Нет — маршрутов `/dash/*` нет (404). */
+  dashboards?: {
+    /** Роли-эмуляторы источника (локальный стенд — банк и продавцы). */
+    emulated: readonly Role[];
+    /** Заголовки карточек С-xx библиотеки ситуаций. */
+    situations: Readonly<Record<string, string>>;
+  };
 }
 
 export interface MonitorServer {
@@ -97,7 +110,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)} ${emu}</div>
   <h1>${e("page.title")}</h1>
-  <nav class="lang">${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
+  <nav class="lang">${o.dashboards ? `<a href="/dash/interpret?lang=${lang}">${escapeHtml(SCREEN.title[lang])}</a> · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
 <ul class="links">
@@ -188,6 +201,10 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   // Номер экземпляра шины: адаптер дашбордов по нему видит, что стенд перезапущен и номера seq начались заново.
   const instance = randomUUID();
   const sse = new Set<ServerResponse>();
+  const dashJs = o.dashboards ? PUBLIC("dash/interpret.js") : "";
+  const dashCss = o.dashboards ? PUBLIC("dash/dash.css") : "";
+  /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
+  let feed: InterpretFeed | undefined;
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
     res.writeHead(status, {
@@ -240,6 +257,33 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       res.writeHead(303, { location: o.bankLogin(), "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
     }
+    if (feed && o.dashboards) {
+      switch (u.pathname) {
+        case "/dash/interpret":
+          return send(res, 200, "text/html; charset=utf-8", interpretPage(lang, brand, logo !== null, o.dashboards.situations));
+        case "/dash/interpret.js":
+          return send(res, 200, "text/javascript; charset=utf-8", dashJs);
+        case "/dash/dash.css":
+          return send(res, 200, "text/css; charset=utf-8", dashCss);
+        case "/dash/interpret/events": {
+          const f = feed;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          res.write(`data: ${JSON.stringify({ type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() })}\n\n`);
+          const off = f.subscribe((e: FeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
+      }
+    }
     switch (u.pathname) {
       case "/":
         return send(res, 200, "text/html; charset=utf-8", page(lang, o, brand, logo !== null));
@@ -285,13 +329,18 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const { port } = server.address() as AddressInfo;
   hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   origins = new Set([...hosts].map((h) => `http://${h}`));
+  const url = `http://127.0.0.1:${port}`;
+  if (o.dashboards) feed = createInterpretFeed(localStandSource(url), { emulated: o.dashboards.emulated });
   return {
-    url: `http://127.0.0.1:${port}`,
+    url,
     server,
-    close: () =>
-      new Promise<void>((ok) => {
+    close: async () => {
+      // Сначала лента дашбордов (её адаптер держит соединение /events с этим же сервером), затем сервер.
+      await feed?.close().catch(() => undefined);
+      await new Promise<void>((ok) => {
         for (const r of sse) r.end();
         server.close(() => ok());
-      }),
+      });
+    },
   };
 }

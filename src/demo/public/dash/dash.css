@@ -1,0 +1,40 @@
+/* Экран «Интерпретация» DEMO-2 (К1.4). Цвета бренда — переменные из /brand.css (инвариант 7). */
+:root {
+  --ink: #1d1d1f;
+  --muted: #6b6b70;
+  --line: #e3e3e6;
+  --bg: #ffffff;
+  --norm: #e9f5ec;
+  --conflict: #fff4e0;
+  --error: #fde8e8;
+  --fraud: #f3e5ff;
+}
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; background: var(--brand-primary); color: var(--brand-on-primary); }
+header h1 { margin: 0; font-size: 18px; }
+header nav { margin-left: auto; }
+header a { color: var(--brand-on-primary); }
+.logo { height: 28px; }
+.brand-name { font-weight: 600; }
+main { padding: 12px 16px; }
+.subtitle, .status, .empty, .note, .side { color: var(--muted); }
+.toggle { display: inline-block; margin: 4px 0 8px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; }
+.time { white-space: nowrap; color: var(--muted); }
+tbody tr.level-detail { display: none; }
+tbody.show-details tr.level-detail { display: table-row; color: var(--muted); }
+tr.kind-norm .kind { background: var(--norm); }
+tr.kind-conflict .kind { background: var(--conflict); }
+tr.kind-error .kind { background: var(--error); }
+tr.kind-fraud .kind { background: var(--fraud); font-weight: 600; }
+.badge { margin-left: 6px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--brand-accent); color: var(--brand-accent); font-size: 12px; }
+.verdict-owner { font-weight: 600; }
+.pending { font-style: italic; }
+.operator { margin-top: 2px; }
+.situation-title { max-width: 18em; }
+@media (max-width: 720px) {
+  th:nth-child(1), td:nth-child(1) { display: none; }
+  th, td { padding: 4px; }
+}
