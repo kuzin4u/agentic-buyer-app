@@ -17,6 +17,7 @@ console.log(
   [
     t(lang, "cli.started"),
     row("cli.monitor", `${demo.monitor.url}/?lang=${lang}`),
+    row("cli.interpret", `${demo.monitor.url}/dash/interpret?lang=${lang}`),
     row("cli.agent", agentCode),
     row("cli.pao", urls.pao),
     row("cli.merchants", urls.merchants),

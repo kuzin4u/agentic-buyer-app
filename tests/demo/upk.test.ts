@@ -4,6 +4,7 @@
 // Подпись поручения и корзины в автотесте — эмулятором банка (П2 п. 5).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
+import { parseWireItem } from "../../src/dashboards/wire.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 
@@ -92,5 +93,17 @@ describe("сюжет 4: подтверждение человеком через
     const ev = await until(() => events().find((e) => e.what === "operation.authorized"));
     expect(ev).toMatchObject({ cls: "outcome", amount: { minor: total.minor } });
     await demo.scenarios.settled();
+  });
+
+  it("контракт линии дашбордов DEMO-2 (К1.2): шаг «SMS банка» на линию не идёт, остальные записи — по форме", () => {
+    const history = demo.bus.history();
+    const sms = history.filter((i) => i.stream === "scenario" && i.line.step === "upk.sms");
+    expect(sms.length).toBeGreaterThan(0);
+    for (const i of sms) expect(parseWireItem(JSON.parse(JSON.stringify(i)))).toBeUndefined();
+    const lost = history.filter((i) => !sms.includes(i) && parseWireItem(JSON.parse(JSON.stringify(i))) === undefined);
+    expect(lost).toEqual([]);
+    const upkUrl = history.flatMap((i) => (i.stream === "scenario" && i.line.step === "upk.required" ? [parseWireItem(JSON.parse(JSON.stringify(i)))] : []));
+    expect(upkUrl.length).toBeGreaterThan(0);
+    for (const w of upkUrl) expect(w?.stream === "scenario" && "upk_url" in w.line.params).toBe(false);
   });
 });
