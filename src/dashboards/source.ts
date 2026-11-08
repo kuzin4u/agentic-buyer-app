@@ -82,7 +82,10 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
   let retry: { timer: NodeJS.Timeout; wake: () => void } | undefined;
   const pending = new Set<AbortController>();
 
+  // После close() — тишина: ни записей, ни статусов, кроме «closed» (К1.4д, Р-1341) — даже если линия ещё жива
+  // (close() вышел по страховке closeWaitMs) или ответ fetch пришёл уже после close().
   const setStatus = (s: SourceStatus) => {
+    if (closed && s !== "closed") return;
     if (s === status) return;
     status = s;
     for (const l of [...statuses])
@@ -94,6 +97,7 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
   };
 
   const deliver = (data: string) => {
+    if (closed) return;
     if (data.length > maxEvent) {
       rejected++;
       return;
@@ -128,6 +132,11 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
 
   const readOnce = async (signal: AbortSignal) => {
     const res = await fetch(new URL("/events", base), { signal, redirect: "error", headers: { accept: "text/event-stream" } });
+    if (closed) {
+      // Ответ пришёл, когда close() уже вызван (гонка в один такт или fetch, не слушающий отмену) — тело не читается.
+      await res.body?.cancel().catch(() => undefined);
+      return;
+    }
     if (res.status !== 200 || !res.body || !(res.headers.get("content-type") ?? "").startsWith("text/event-stream")) {
       await res.body?.cancel().catch(() => undefined);
       return;

@@ -1,9 +1,10 @@
 // К1.2 (Р-1246 п. 3, Р-1275 п. 2): адаптер «локальный стенд» — лента SSE и снимок реестров по HTTP, только чтение.
 // Поддельный сервер: история и живые записи, номера не по порядку, запись не по форме, обрыв и переподключение без
-// повторов, перезапуск стенда, перенаправление, предел записи, сбой слушателя.
+// повторов, перезапуск стенда, перенаправление, предел записи, сбой слушателя; закрытие при fetch, который не
+// обрывает чтение по отмене (К1.4д).
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { localStandSource, SourceError, type DashboardSource } from "../../src/dashboards/source.js";
 import { INSTANCE_HEADER, parseDiagSnapshot, parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 
@@ -319,5 +320,68 @@ describe("localStandSource", () => {
     await src.close();
     expect(states.at(-1)).toBe("closed");
     await expect(src.diag()).rejects.toMatchObject({ code: "SOURCE_CLOSED" });
+  });
+});
+
+// К1.4д (Р-1341): поведение Node 20/22 — отмена fetch не обрывает начатое чтение тела. Подменённый fetch отдаёт поток,
+// который сигнала отмены не слушает и сам не кончается; закрыть его можно только reader.cancel() (К1.4г, Р-1339).
+// Тест Б — защитный случай: ответ fetch приходит, когда close() уже вызван (гонка или fetch, не слушающий отмену).
+describe("localStandSource: закрытие при fetch, который не обрывает чтение по отмене (как Node 20/22)", () => {
+  const URL_ = "http://127.0.0.1:9";
+  const sseResponse = (body: ReadableStream<Uint8Array>) =>
+    new Response(body, { status: 200, headers: { "content-type": "text/event-stream", [INSTANCE_HEADER]: "i-1" } });
+  const fast = <T>(p: Promise<T>, ms: number, what: string) =>
+    Promise.race([p, new Promise<never>((_, fail) => setTimeout(() => fail(new Error(`${what}: дольше ${ms} мс`)), ms).unref())]);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // Оба теста закрывают источник сами; при красном тесте общий afterEach не ждёт долгую страховку закрытия
+    // (иначе к настоящей причине добавился бы тайм-аут хука — ревью К1.4д № 1). Хвост линии таймеров не держит.
+    src = undefined;
+  });
+
+  it("А: close() рвёт начатое чтение сам (reader.cancel) — не ждёт страховку и конец потока", async () => {
+    let cancelled = false;
+    // Поток не кончается и не реагирует на отмену fetch: на Node 20/22 так ведёт себя тело при abort().
+    vi.stubGlobal("fetch", async () =>
+      sseResponse(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      ),
+    );
+    src = localStandSource(URL_, { closeWaitMs: 60_000 }); // страховка не выручит: без cancel close() ждал бы минуту
+    const states: string[] = [];
+    src.onStatus((s) => states.push(s));
+    src.subscribe(() => undefined);
+    await until(() => states.includes("open"));
+    const t0 = Date.now();
+    await fast(src.close(), 1000, "close()");
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(cancelled).toBe(true);
+    expect(states.at(-1)).toBe("closed");
+  });
+
+  it("Б: страховка — close() выходит через closeWaitMs; после close() — тишина: ни записей, ни статусов", async () => {
+    let answer!: (r: Response) => void;
+    // fetch не отвечает и не слушает отмену; ответ с записью приходит уже после close().
+    vi.stubGlobal("fetch", () => new Promise<Response>((r) => (answer = r)));
+    src = localStandSource(URL_, { closeWaitMs: 50 });
+    const states: string[] = [];
+    const got: WireItem[] = [];
+    src.onStatus((s) => states.push(s));
+    src.subscribe((i) => got.push(i));
+    await until(() => answer !== undefined);
+    const t0 = Date.now();
+    await fast(src.close(), 1000, "close()");
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(states.at(-1)).toBe("closed");
+    const after = states.length;
+    const enc = new TextEncoder();
+    answer(sseResponse(new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(enc.encode(sse(mon(1)))) })));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(got).toEqual([]);
+    expect(states.slice(after)).toEqual([]);
   });
 });
