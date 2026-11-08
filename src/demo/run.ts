@@ -1,4 +1,5 @@
 // Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сюжеты, сервер экранов. Общая для npm run demo и тестов.
+import { traceStep } from "../dashboards/close-trace.js";
 import { LOCAL_STAND_EMULATED } from "../dashboards/interpret.js";
 import { MonitorBus } from "./bus.js";
 import { loadSituationTitles } from "./situations.js";
@@ -77,12 +78,13 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       scenarios: sc,
       monitor,
       close: async () => {
-        await sc.close().catch(() => undefined);
-        b.stop();
+        const tag = monitor.url;
+        await traceStep(tag, "сюжеты", () => sc.close().catch(() => undefined));
+        await traceStep(tag, "шина", () => b.stop());
         try {
-          await monitor.close();
+          await traceStep(tag, "монитор (лента и сервер)", () => monitor.close());
         } finally {
-          await stand.close();
+          await traceStep(tag, "stand.close", () => stand.close());
         }
       },
     };

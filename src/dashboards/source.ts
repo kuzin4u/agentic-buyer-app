@@ -2,6 +2,7 @@
 // получают записи шины и снимок реестров диагностики только через DashboardSource: сейчас — локальный стенд по HTTP
 // (`localStandSource`), для ACC-2 — песочница только на чтение, через Платформу. Код агента и Платформы не импортируется.
 // Источник только читает: методов, которые что-то меняют на стенде, у него нет.
+import { traceStep } from "./close-trace.js";
 import { INSTANCE_HEADER, isHiddenScenarioItem, parseDiagSnapshot, parseWireItem, seqOfItem, type DiagSnapshot, type WireItem } from "./wire.js";
 
 /** `reset` — источник начал ленту заново (перезапуск стенда): потребитель сбрасывает то, что накопил. */
@@ -262,14 +263,16 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
       return rejected;
     },
     async close() {
-      closed = true;
-      abort?.abort();
-      for (const ac of pending) ac.abort();
-      if (retry) {
-        clearTimeout(retry.timer);
-        retry.wake();
-      }
-      await loop;
+      await traceStep(base, "source.close: отмена", () => {
+        closed = true;
+        abort?.abort();
+        for (const ac of pending) ac.abort();
+        if (retry) {
+          clearTimeout(retry.timer);
+          retry.wake();
+        }
+      });
+      await traceStep(base, "source.close: выход из await loop", () => loop);
       setStatus("closed");
     },
   };
