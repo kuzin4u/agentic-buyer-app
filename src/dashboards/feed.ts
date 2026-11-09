@@ -28,6 +28,8 @@ export interface InterpretFeed {
 export interface InterpretFeedOptions {
   readonly emulated: readonly Role[];
   readonly rogueAgent?: boolean;
+  /** Учебные витрины источника: merchant_id → префиксы кодов учебного сбоя (З10). */
+  readonly training?: Readonly<Record<string, readonly string[]>>;
   /** Сколько интерпретаций помнить; старшие по seq вытесняют младшие. */
   readonly limit?: number;
 }
@@ -78,7 +80,12 @@ export function createInterpretFeed(source: DashboardSource, o: InterpretFeedOpt
     diag = { state: "loading" };
     const ready = (snapshot: DiagSnapshot, d: DiagState) => {
       if (g !== generation) return;
-      env = { snapshot, emulated: o.emulated, ...(o.rogueAgent !== undefined && { rogueAgent: o.rogueAgent }) };
+      env = {
+        snapshot,
+        emulated: o.emulated,
+        ...(o.rogueAgent !== undefined && { rogueAgent: o.rogueAgent }),
+        ...(o.training !== undefined && { training: o.training }),
+      };
       diag = d;
       emit({ type: "diag", diag });
       const q = queue;

@@ -44,3 +44,22 @@ export const MASSA_MADRE: Shop = {
 
 /** Набор стенда: «Масса Мадре» на стенде одна — на месте SHOP-1042 фикстуры (Р-1278 п. 1). */
 export const DEMO_SHOPS: readonly Shop[] = SHOPS.map((s) => (s.id === MASSA_MADRE_ID ? MASSA_MADRE : s));
+
+/** Учебное поведение витрины фикстуры → коды (префиксы), которыми агент на него отвечает. Только они — «учебный сбой
+ *  витрины», так задумано (З10, Р-1361); прочие сбои той же витрины (5xx, чужой код) не помечаются и не прячутся (ревью
+ *  reviewer К1.4а № 2). Поведения без однозначного кода (READ_ONLY, REJECTS_UNIDENTIFIED, REJECTS_FULFILMENT,
+ *  OUT_OF_CATEGORY) не помечаются. */
+const TRAINING_CODES: Readonly<Partial<Record<Shop["behaviour"], readonly string[]>>> = {
+  INCOMPLETE: ["REQUIRED", "BAD_"],
+  CONTRADICTORY: ["A5_"],
+  DUAL_PRICE: ["A5_"],
+  INJECTION: ["A5_"],
+};
+
+/** merchant_id учебной витрины → префиксы кодов её учебного сбоя. */
+export const TRAINING_MERCHANTS: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  DEMO_SHOPS.flatMap((s) => {
+    const codes = TRAINING_CODES[s.behaviour];
+    return codes ? [[s.merchant_id, codes] as const] : [];
+  }),
+);

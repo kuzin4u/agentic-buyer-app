@@ -17,6 +17,7 @@ const ru = {
   "badge.real": "настоящий",
   "link.bank": "Экран мандатов банка (UI-К2)",
   "link.upk": "Страница УПК",
+  "link.upk_note": "откроется в сюжете 4: ссылку на запрос подтверждения даст банк",
   "link.merchants": "Витрины продавцов",
   "link.agent": "Агент покупателя",
   "monitor.title": "Монитор операций",
@@ -83,7 +84,7 @@ const ru = {
   "delivery.PICKUP": "самовывоз",
   "scenario.not_awaiting": "Карточка корзины сейчас не ждёт ответа.",
   "scenario.purchase_note":
-    "Первая волна пилота — немедленный режим: каждую покупку подтверждает клиент (подпись корзины). Покупка в рамках поручения без подписи корзины — автономный режим, второй этап пилота; на Платформе v0.40.0 этого режима нет.",
+    "Первая волна пилота — немедленный режим: каждую покупку подтверждает клиент (подпись корзины). Покупка в рамках поручения без подписи корзины — автономный режим, второй этап пилота; на Платформе {platform} этого режима нет.",
   "scenario.limit": "3. Отказ: превышен лимит клиента в банке",
   "scenario.limit_note":
     "Банк (эмулятор) ставит клиенту лимит на операцию ниже суммы покупки; дальше — как в сюжете 2. Отказывает Платформа (ADP), а не агент: отказ «сверх поручения» честный агент ловит сам, ещё до Платформы. Нужно подписанное поручение (сюжет 1).",
@@ -145,8 +146,13 @@ const ru = {
   "scenario.paying": "Оплата уже передана продавцу — прервать нельзя; итог придёт по событию Платформы.",
   "cli.pass_failed": "демо-стенд: фоновый проход стенда завершился ошибкой (повтор через секунду)",
   "step.purchase.mode_note":
-    "Первая волна пилота — немедленный режим: каждую покупку подтверждает клиент (подпись корзины). Покупка в рамках поручения без подписи корзины — автономный режим, второй этап пилота; на Платформе v0.40.0 этого режима нет.",
+    "Первая волна пилота — немедленный режим: каждую покупку подтверждает клиент (подпись корзины). Покупка в рамках поручения без подписи корзины — автономный режим, второй этап пилота; на Платформе {platform} этого режима нет.",
   "step.aborted": "Сюжет прерван человеком (состояние покупки {state}).",
+  "step.run.intent": "— Сюжет 1: подпись поручения —",
+  "step.run.purchase": "— Сюжет 2: покупка в рамках поручения —",
+  "step.run.limit": "— Сюжет 3: отказ, превышен лимит клиента в банке —",
+  "step.run.upk": "— Сюжет 4: подтверждение человеком через УПК —",
+  "step.run.revoke": "— Сюжет 5: отзыв поручения —",
   "step.cart.card": "Карточка корзины показана: {title}, {merchant_id} / {sku}, {price} × {qty}. Ждём вашего решения на этой странице.",
   "step.cart.agreed": "Человек согласился с карточкой корзины ({merchant_id} / {sku}) — агент запрашивает корзину.",
   "step.cart.declined": "Человек не согласился с карточкой корзины ({merchant_id} / {sku}) — корзина не запрошена; поручение не использовано.",
@@ -185,6 +191,7 @@ const en: Record<MessageKey, string> = {
   "badge.real": "real",
   "link.bank": "Bank mandates screen (UI-K2)",
   "link.upk": "UPK page",
+  "link.upk_note": "opens in scenario 4: the bank gives the link to the confirmation request",
   "link.merchants": "Merchant shops",
   "link.agent": "Buyer agent",
   "monitor.title": "Operations monitor",
@@ -251,7 +258,7 @@ const en: Record<MessageKey, string> = {
   "delivery.PICKUP": "pickup",
   "scenario.not_awaiting": "The cart card is not awaiting an answer.",
   "scenario.purchase_note":
-    "Pilot wave one is the immediate mode: the client confirms every purchase (cart signature). Purchasing within the mandate without a cart signature is the autonomous mode, pilot stage two; Platform v0.40.0 does not have this mode.",
+    "Pilot wave one is the immediate mode: the client confirms every purchase (cart signature). Purchasing within the mandate without a cart signature is the autonomous mode, pilot stage two; Platform {platform} does not have this mode.",
   "scenario.limit": "3. Decline: client bank limit exceeded",
   "scenario.limit_note":
     "The bank (emulator) sets the client a per-operation limit below the purchase amount; then — as in scenario 2. The Platform (ADP) declines, not the agent: an honest agent catches “beyond the mandate” itself, before the Platform. A signed mandate is required (scenario 1).",
@@ -313,8 +320,13 @@ const en: Record<MessageKey, string> = {
   "scenario.paying": "Payment has already been handed to the merchant — it cannot be aborted; the outcome will come by the Platform event.",
   "cli.pass_failed": "demo stand: a background stand pass failed (retry in a second)",
   "step.purchase.mode_note":
-    "Pilot wave one is the immediate mode: the client confirms every purchase (cart signature). Purchasing within the mandate without a cart signature is the autonomous mode, pilot stage two; Platform v0.40.0 does not have this mode.",
+    "Pilot wave one is the immediate mode: the client confirms every purchase (cart signature). Purchasing within the mandate without a cart signature is the autonomous mode, pilot stage two; Platform {platform} does not have this mode.",
   "step.aborted": "Scenario aborted by the human (purchase state {state}).",
+  "step.run.intent": "— Scenario 1: mandate signature —",
+  "step.run.purchase": "— Scenario 2: purchase within the mandate —",
+  "step.run.limit": "— Scenario 3: declined, the client's bank limit exceeded —",
+  "step.run.upk": "— Scenario 4: human confirmation via UPK —",
+  "step.run.revoke": "— Scenario 5: mandate revocation —",
   "step.cart.card": "Cart card shown: {title}, {merchant_id} / {sku}, {price} × {qty}. Waiting for your decision on this page.",
   "step.cart.agreed": "The human agreed with the cart card ({merchant_id} / {sku}) — the agent requests the cart.",
   "step.cart.declined": "The human declined the cart card ({merchant_id} / {sku}) — no cart requested; the mandate is not used.",

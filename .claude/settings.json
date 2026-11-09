@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(gh pr view:*)",
-      "Bash(gh pr checks:*)"
+      "Bash(gh pr checks:*)",
+      "Bash(git describe:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh label list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(uptime)",
+      "Bash(grep:*)",
+      "Bash(cut:*)"
     ],
     "deny": [
       "Bash(gh pr merge:*)",
@@ -18,6 +29,13 @@
     ],
     "ask": [
       "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git revert:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)",
+      "Bash(git reset:*)",
+      "Bash(git pull:*)",
       "Bash(npm install:*)",
       "Bash(npm i:*)",
       "Bash(curl:*)",

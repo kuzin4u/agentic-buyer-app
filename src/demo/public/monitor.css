@@ -18,6 +18,9 @@ header a { color: var(--brand-on-primary); }
 .subtitle { margin: 8px 16px; color: #444; }
 .links { margin: 0 16px 8px; padding-left: 18px; }
 .links a { color: var(--brand-accent); }
+/* Неактивная ссылка (З6): страница УПК — только из панели сюжета 4. */
+.links .link-off { color: #777; text-decoration: line-through dotted; cursor: not-allowed; }
+.links .hint { display: inline; margin: 0; font-size: 12px; }
 .badge { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; vertical-align: middle; }
 .badge.emu { background: #ffe9a8; color: #5a4300; border: 1px dashed #b48a00; }
 .badge.real { background: #d7f2dc; color: #12521d; }

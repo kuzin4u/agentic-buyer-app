@@ -9,13 +9,17 @@ import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
-import { SCREEN } from "../dashboards/phrases.js";
+import { CONTROL, SCREEN } from "../dashboards/phrases.js";
 import { localStandSource } from "../dashboards/source.js";
 import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
 import type { MonitorBus } from "./bus.js";
+import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
+import { controlPage } from "./dash-control.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
+import { PLATFORM_VERSION } from "./platform.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
@@ -23,13 +27,6 @@ const PUBLIC = (name: string) => readFileSync(new URL(`./public/${name}`, import
 
 const CSP = "default-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/** Экранирование текста для HTML: словари и бренд — значения конфигурации, а не разметка. */
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
-
-/** JSON внутри <script type="application/json">: без «<», чтобы строка данных не закрыла тег. */
-const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
 
 /** Бренд из файла конфигурации. Логотип — только файл внутри config/ (на стенде нет внешних адресов); иначе — без картинки. */
 export function loadBrand(path: string): { brand: Brand; logoFile: string | null } {
@@ -64,6 +61,10 @@ export interface MonitorServerOptions {
     emulated: readonly Role[];
     /** Заголовки карточек С-xx библиотеки ситуаций. */
     situations: Readonly<Record<string, string>>;
+    /** Учебные витрины: merchant_id → префиксы кодов учебного сбоя (З10). */
+    training?: Readonly<Record<string, readonly string[]>>;
+    /** Часы шины для «Контроля» (К2.3б): срок ожидания и время вердикта — по тем же часам, что штампуют записи. */
+    now?: () => Date;
   };
 }
 
@@ -110,13 +111,13 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)} ${emu}</div>
   <h1>${e("page.title")}</h1>
-  <nav class="lang">${o.dashboards ? `<a href="/dash/interpret?lang=${lang}">${escapeHtml(SCREEN.title[lang])}</a> · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
+  <nav class="lang">${o.dashboards ? `<a href="/dash/interpret?lang=${lang}">${escapeHtml(SCREEN.title[lang])}</a> · <a href="/dash/control?lang=${lang}">${escapeHtml(CONTROL.title[lang])}</a> · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
-  ${link(o.urls.upk, e("link.upk"), emu)}
+  <li><span class="link-off" aria-describedby="upk-note">${e("link.upk")}</span> ${emu} <span class="hint" id="upk-note">${e("link.upk_note")}</span></li>
   ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
 </ul>
 ${
@@ -127,7 +128,7 @@ ${
   ${o.intentCard ? intentCardHtml(lang, o.intentCard, "intent-card", "card.intent.title") : ""}
   <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
   <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
-  <p class="hint mode-note">${e("scenario.purchase_note")}</p>
+  <p class="hint mode-note">${e("scenario.purchase_note").replace("{platform}", escapeHtml(PLATFORM_VERSION))}</p>
   <button type="button" data-scenario="limit">${e("scenario.limit")}</button>
   <p class="hint">${e("scenario.limit_note")}</p>
   ${o.intentCardUpk ? intentCardHtml(lang, o.intentCardUpk, "intent-card-upk", "card.intent_upk.title") : ""}
@@ -203,8 +204,11 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const sse = new Set<ServerResponse>();
   const dashJs = o.dashboards ? PUBLIC("dash/interpret.js") : "";
   const dashCss = o.dashboards ? PUBLIC("dash/dash.css") : "";
+  const controlJs = o.dashboards ? PUBLIC("dash/control.js") : "";
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
+  /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
+  let control: (ControlFeed & { recompute(): void }) | undefined;
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
     res.writeHead(status, {
@@ -247,6 +251,38 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             : o.scenarios.start(what as ScenarioName);
       return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
     }
+    // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
+    if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const c = control;
+      let body = "";
+      let tooBig = false;
+      req.setEncoding("utf8");
+      req.on("data", (chunk: string) => {
+        body += chunk;
+        if (body.length > 1024) {
+          tooBig = true;
+          req.destroy();
+        }
+      });
+      req.on("end", () => {
+        if (tooBig) return;
+        // Форма тела проверяется до чтения полей: null, массив, число — 400, а не исключение в обработчике (ревью К2.3б № 4).
+        try {
+          const v: unknown = JSON.parse(body);
+          if (typeof v !== "object" || v === null || Array.isArray(v)) return send(res, 400, plain, t(lang, "http.bad_request"));
+          const { epoch, key, decision } = v as { epoch?: unknown; key?: unknown; decision?: unknown };
+          if (typeof epoch !== "string" || !Number.isSafeInteger(key) || (decision !== "accepted" && decision !== "rejected"))
+            return send(res, 400, plain, t(lang, "http.bad_request"));
+          const r = c.verdict(epoch, key as number, decision);
+          return send(res, r.ok ? 200 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+        } catch {
+          return send(res, 400, plain, t(lang, "http.bad_request"));
+        }
+      });
+      // Тело больше 1 КБ — соединение рвётся (req.destroy); ответ не отправляется.
+      return;
+    }
     if (req.method !== "GET") return send(res, 405, plain, t(lang, "http.method_not_allowed"));
     if (u.pathname === "/bank-login" && o.bankLogin) {
       // Вход — только переходом со страницы монитора или вводом адреса: чужая страница (ссылка, <img>, предзагрузка)
@@ -265,6 +301,29 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return send(res, 200, "text/javascript; charset=utf-8", dashJs);
         case "/dash/dash.css":
           return send(res, 200, "text/css; charset=utf-8", dashCss);
+        case "/dash/control":
+          return send(res, 200, "text/html; charset=utf-8", controlPage(lang, brand, logo !== null));
+        case "/dash/control.js":
+          return send(res, 200, "text/javascript; charset=utf-8", controlJs);
+        case "/dash/control/acc1.md":
+          return send(res, 200, "text/markdown; charset=utf-8", control!.markdown(lang));
+        case "/dash/control/events": {
+          const c = control!;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          res.write(`data: ${JSON.stringify({ type: "runs", epoch: c.epoch(), runs: c.runs() })}\n\n`);
+          const off = c.subscribe((e: ControlFeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
         case "/dash/interpret/events": {
           const f = feed;
           res.writeHead(200, {
@@ -330,7 +389,13 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   origins = new Set([...hosts].map((h) => `http://${h}`));
   const url = `http://127.0.0.1:${port}`;
-  if (o.dashboards) feed = createInterpretFeed(localStandSource(url), { emulated: o.dashboards.emulated });
+  if (o.dashboards) {
+    feed = createInterpretFeed(localStandSource(url), {
+      emulated: o.dashboards.emulated,
+      ...(o.dashboards.training && { training: o.dashboards.training }),
+    });
+    control = createControlFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
+  }
   return {
     url,
     server,
@@ -339,6 +404,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       // Мягкое закрытие (К1.4б, Р-1336): простаивающие соединения закрываются сразу; оставшиеся рвутся через ≈ 0,5 с —
       // время дописать конец потоков SSE после r.end(). Лента закрывается первой и не ждёт этот сервер: её адаптер рвёт
       // чтение /events сам (reader.cancel, К1.4г) — иначе на Node 20 и 22 закрытие ждало бы само себя.
+      control?.close();
       await feed?.close().catch(() => undefined);
       await new Promise<void>((ok) => {
         for (const r of sse) r.end();

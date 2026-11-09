@@ -86,7 +86,8 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
     const text = await readSse(`${demo.monitor.url}/dash/interpret/events`, (t) => t.includes('"type":"snapshot"') && t.includes("\n\n"));
     const snap = messages(text).find((m) => m.type === "snapshot")!;
     expect(snap).toMatchObject({ status: "open", diag: { state: "ready" } });
-    const key = snap.items!.filter((r) => r.level === "key");
+    // Метка начала прогона (К2.3а) — служебная стадия, её здесь не считаем.
+    const key = snap.items!.filter((r) => r.level === "key" && !r.ref.startsWith("run."));
     expect(key.length).toBeGreaterThan(3);
     expect(key.every((r) => r.kind === "norm" && r.stage === "mandate")).toBe(true);
     expect(key.some((r) => r.situation === "С-01" && r.phrase.ru.length > 0 && r.phrase.en.length > 0)).toBe(true);
@@ -102,14 +103,97 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
       `${demo.monitor.url}/dash/interpret/events`,
       (t) => {
         if (t.includes('"type":"snapshot"')) snapshotSeen();
-        return messages(t).some((m) => m.type === "item" && m.item!.seq > before);
+        return messages(t).some((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario" && !m.item!.ref.startsWith("run."));
       },
       30_000,
     );
     await gotSnapshot;
     await driver(demo).run(1);
-    const item = messages(await pending).find((m) => m.type === "item" && m.item!.seq > before);
+    // Шаг сюжета после метки прогона (К2.3а); до его номера шина дочитывает журналы (З4), их записи могут прийти раньше.
+    const item = messages(await pending).find((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario" && !m.item!.ref.startsWith("run."));
     expect(item?.item).toMatchObject({ stage: "mandate", kind: "norm" });
+  });
+
+  it("К1.4а, З4 / R.1: порядок строк до и после перезагрузки одинаков — живая лента сюжета 2 и снимок нового подключения", async () => {
+    let snapshotSeen!: () => void;
+    const gotSnapshot = new Promise<void>((r) => (snapshotSeen = r));
+    const done = (t: string) => messages(t).some((m) => m.type === "item" && m.item!.stream === "scenario" && m.item!.stage === "outcome");
+    const pending = readSse(
+      `${demo.monitor.url}/dash/interpret/events`,
+      (t) => {
+        if (t.includes('"type":"snapshot"')) snapshotSeen();
+        return done(t);
+      },
+      60_000,
+    );
+    await gotSnapshot;
+    await driver(demo).run(2);
+    const live = messages(await pending);
+    // Экран до перезагрузки: снимок плюс живые записи, по месту seq (как вставляет скрипт экрана).
+    const before = [...live.find((m) => m.type === "snapshot")!.items!, ...live.filter((m) => m.type === "item").map((m) => m.item!)].sort((a, b) => a.seq - b.seq);
+    // Ленту экран получает до конца сюжета; шаги после итога дождаться вторым чтением не нужно — сравнение по общему префиксу.
+    const last = before[before.length - 1]!.seq;
+    // F5: новое подключение — снимок.
+    const after = messages(await readSse(`${demo.monitor.url}/dash/interpret/events`, (t) => t.includes('"type":"snapshot"') && t.includes("\n\n")))
+      .find((m) => m.type === "snapshot")!
+      .items!.filter((r) => r.seq <= last);
+    const view = (list: readonly Interpretation[]) => list.map((r) => `${r.seq} ${r.phrase.ru}`);
+    expect(view(after)).toEqual(view(before));
+    for (let i = 1; i < after.length; i++) expect(after[i]!.seq).toBeGreaterThan(after[i - 1]!.seq);
+  });
+
+  it("К2.3б «Контроль»: страница ru/en, бренд, CSP 'self', скрипт без разметки из строк; лента — прогон сюжета 1; вердикт до срока — 409, с чужой страницы — 403; выгрузка ACC-1", async () => {
+    const brand = JSON.parse(readFileSync("config/brand.demo.json", "utf8")) as { name: string };
+    const ru = await fetch(`${demo.monitor.url}/dash/control?lang=ru`);
+    expect(ru.status).toBe(200);
+    expect(ru.headers.get("content-security-policy")).toContain("default-src 'self'");
+    const html = await ru.text();
+    expect(html).toContain("<h1>Контроль</h1>");
+    expect(html).toContain(brand.name);
+    expect(html).toContain('href="/dash/control?lang=en"');
+    for (const s of [...html.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0])) expect(s).toMatch(/\ssrc="\/dash\/control\.js"|type="application\/json"/);
+    expect(await (await fetch(`${demo.monitor.url}/dash/control?lang=en`)).text()).toContain("<h1>Control</h1>");
+    const js = readFileSync("src/demo/public/dash/control.js", "utf8");
+    expect(js).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+    expect((await fetch(`${demo.monitor.url}/dash/control.js`)).headers.get("content-type")).toContain("text/javascript");
+    // Монитор и «Интерпретация» ссылаются на «Контроль».
+    expect(await (await fetch(`${demo.monitor.url}/?lang=ru`)).text()).toContain('href="/dash/control?lang=ru"');
+    expect(await (await fetch(`${demo.monitor.url}/dash/interpret?lang=ru`)).text()).toContain('href="/dash/control?lang=ru"');
+
+    // Свежий прогон сюжета 1: срок ожидания (15 с) у него точно не вышел.
+    await driver(demo).run(1);
+    const text = await readSse(`${demo.monitor.url}/dash/control/events`, (t) => t.includes('"type":"runs"') && t.includes("\n\n"));
+    const first = text.split("\n\n").find((b) => b.startsWith("data: "))!;
+    const snap = JSON.parse(first.slice(6)) as { epoch: string; runs: { key: number; name: string; closed: boolean; result?: { state: string } }[] };
+    const intent = snap.runs.filter((r) => r.name === "intent").at(-1)!;
+    expect(intent.result).toBeDefined();
+    expect(intent.closed).toBe(false);
+
+    const post = (body: unknown, origin = demo.monitor.url) =>
+      fetch(`${demo.monitor.url}/dash/control/verdict`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+    const ok = { epoch: snap.epoch, key: intent.key, decision: "accepted" };
+    expect((await post(ok, "http://evil.example")).status).toBe(403);
+    // Форма тела (ревью К2.3б № 4): null, массив, число, не JSON — 400; процесс стенда не падает.
+    for (const bad of ["null", "[]", "5", "{", JSON.stringify({ ...ok, key: "x" }), JSON.stringify({ ...ok, decision: "maybe" }), JSON.stringify({ key: intent.key, decision: "accepted" })])
+      expect((await post(bad)).status, bad).toBe(400);
+    // Тело больше 1 КБ — соединение рвётся, ответа нет.
+    await expect(post({ ...ok, pad: "x".repeat(2000) })).rejects.toThrow();
+    // Прежнее или чужое поколение (ревью К2.3б № 7) — 409 STALE.
+    const stale = await post({ ...ok, epoch: "прежнее" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ ok: false, code: "STALE" });
+    expect((await post({ ...ok, key: 987654 })).status).toBe(409);
+    // Срок не вышел — вердикт не ставится (без условий: прогон свежий).
+    const r = await post(ok);
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ ok: false, code: "WAITING" });
+    // Стенд жив после плохих тел.
+    expect((await fetch(`${demo.monitor.url}/dash/control?lang=ru`)).status).toBe(200);
+    const md = await fetch(`${demo.monitor.url}/dash/control/acc1.md?lang=ru`);
+    expect(md.headers.get("content-type")).toContain("text/markdown");
+    const body = await md.text();
+    expect(body).toContain("# Акт ACC-1 — прогоны сюжетов приёмки демо-стенда");
+    expect(body).toContain("1. Подпись поручения");
   });
 
   it("чужой Host — 421 и на маршрутах экрана (DNS rebinding); close() закрывает открытую ленту экрана со стороны сервера (№ 4)", async () => {
@@ -183,10 +267,11 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
       ...[...ROLES, "environment"].map((s) => `role.${s}`),
       ...KINDS.map((s) => `kind.${s}`),
       ...["expected", "failure", "unknown", "owner"].map((s) => `verdict.${s}`),
-      ...["connecting", "open", "reset", "closed"].map((s) => `status.${s}`),
+      ...["connecting", "open", "reset", "closed", "screen_offline"].map((s) => `status.${s}`),
       ...["loading", "ready", "failed"].map((s) => `diag.${s}`),
     ];
-    expect(literal).toEqual(expect.arrayContaining(["who.side", "who.none", "pending", "emulated", "status.screen_offline"]));
+    // Обрыв связи экрана — через setStatus("screen_offline") (З7), ключ — в перечне статусов выше.
+    expect(literal).toEqual(expect.arrayContaining(["who.side", "who.none", "pending", "emulated", "situation.label", "training"]));
     for (const lang of ["ru", "en"]) {
       const html = await (await fetch(`${demo.monitor.url}/dash/interpret?lang=${lang}`)).text();
       const cfg = JSON.parse(/<script id="i18n" type="application\/json">(.*?)<\/script>/s.exec(html)![1]!) as { labels: Record<string, string> };

@@ -63,6 +63,8 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
     expect(r.status).toBe(409);
     expect(await r.json()).toEqual({ ok: false, code: "NEED_INTENT" });
     expect((await post("intent", "http://evil.example")).status).toBe(403);
+    // Отказ запуска метку прогона не выдаёт (К2.3а, ревью № 1): иначе «Контроль» начал бы пустой прогон.
+    expect(steps(demo).filter((s) => s.step.startsWith("run."))).toEqual([]);
   });
 
   it("страница: кнопки двух сюжетов, ссылка на банк — через вход /bank-login, кнопки «подписать за человека» нет", async () => {
@@ -164,6 +166,17 @@ describe("сюжеты 1–2 на живом стенде", { timeout: 60_000 },
   it("поручение разовое: вторая покупка без нового сюжета 1 не начинается", async () => {
     const r = await post("purchase");
     expect(await r.json()).toEqual({ ok: false, code: "NEED_INTENT" });
+  });
+
+  it("сюжет уже идёт — второй запуск BUSY и без второй метки прогона (К2.3а, ревью № 1)", async () => {
+    const n = steps(demo).length;
+    expect((await post("intent")).status).toBe(202);
+    await until(() => steps(demo).slice(n).find((s) => s.step === "intent.awaiting_signature"));
+    expect(await (await post("intent")).json()).toEqual({ ok: false, code: "BUSY" });
+    expect(await (await post("purchase")).json()).toEqual({ ok: false, code: "BUSY" });
+    expect(steps(demo).slice(n).filter((s) => s.step.startsWith("run.")).map((s) => s.step)).toEqual(["run.intent"]);
+    expect((await post("abort")).status).toBe(202);
+    await demo.scenarios.settled();
   });
 
   it("поправки монитора: открытый адрес — «агент → Платформа (открытый адрес)»; merchant_id — в идентификаторах", async () => {

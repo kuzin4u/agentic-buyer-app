@@ -4,9 +4,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { interpret, LOCAL_STAND_EMULATED, STAGES, type InterpretEnv } from "../../src/dashboards/interpret.js";
-import { PHRASES } from "../../src/dashboards/phrases.js";
+import { codeWords, interpret, LOCAL_STAND_EMULATED, STAGES, type InterpretEnv } from "../../src/dashboards/interpret.js";
+import { CODE_WORDS, PHRASES } from "../../src/dashboards/phrases.js";
+import { rawInHumanText } from "./human-text.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
+import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { parseWireItem, WIRE_SCENARIO_HIDDEN_STEPS, type DiagEntryWire, type DiagSnapshot, type WireItem, type WireMonitorEvent } from "../../src/dashboards/wire.js";
 
 const entry = (code: string, component: DiagEntryWire["component"], source: DiagEntryWire["source"], action: DiagEntryWire["action"]): DiagEntryWire => ({
@@ -75,7 +77,9 @@ describe("интерпретатор: квалификация по правил
     const r = interpret(overreach(), ENV);
     expect(r).toMatchObject({ kind: "error", situation: "С-28" });
     expect(r.who).toMatchObject({ side: ["agent"], verdict: "owner" });
-    expect(r.phrase.ru).toBe("Платформа остановила агента: нарушение поручения (MANDATE_REVOKED) — фрод или дефект агента, вердикт — владелец");
+    // Код в тексте человека — словами (З2); сам код — в «Кто ошибся».
+    expect(r.phrase.ru).toBe("Платформа остановила агента: нарушение поручения (поручение отозвано) — фрод или дефект агента, вердикт — владелец");
+    expect(r.who?.code).toBe("MANDATE_REVOKED");
     expect(r.phrase.en).toContain("the owner decides");
   });
 
@@ -122,7 +126,8 @@ describe("интерпретатор: квалификация по правил
     expect(r.phrase).toEqual({ ru: "Отказ: превышен лимит клиента в банке", en: "Declined: the client's bank limit exceeded" });
     const mandate = interpret(mon({ source: "pao_event", cls: "decline", what: "operation.declined", code: "LIMIT_EXCEEDED", codeDetail: "MANDATE" }), ENV);
     expect(mandate.situation).toBeUndefined();
-    expect(mandate.phrase.ru).toBe("Платформа: оплата отклонена (LIMIT_EXCEEDED)");
+    expect(mandate.phrase.ru).toBe("Платформа: оплата отклонена (превышен лимит)");
+    expect(mandate.phrase.en).toBe("Platform: payment declined (limit exceeded)");
   });
 
   it("сбой среды — ошибка, «сбой»; запрос подтверждения человеку (409 CONFIRMATION_REQUIRED) — норма", () => {
@@ -239,5 +244,58 @@ describe("интерпретатор: квалификация по правил
     expect(steps.size).toBeGreaterThan(20);
     const missing = [...steps].filter((s) => !(WIRE_SCENARIO_HIDDEN_STEPS as readonly string[]).includes(s) && !Object.hasOwn(PHRASES.scenario, s));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("К1.4а: текст человека без кодов и имён полей; учебная витрина", () => {
+  it("коды и статусы в подстановках — словами ru/en, список кодов — через запятую; незнакомый код — как есть (З2)", () => {
+    expect(codeWords("A5_PRICE_MISMATCH", "ru")).toBe("цена в описании не совпадает с ценой витрины");
+    expect(codeWords("REQUIRED,MANDATE_REVOKED", "en")).toBe("a required field is missing in the merchant's card, the mandate was revoked");
+    expect(codeWords("SOMETHING_NEW", "ru")).toBe("SOMETHING_NEW");
+    expect(codeWords("constructor", "ru")).toBe("constructor"); // имя из записи — данные, не ключ прототипа (Б1)
+    const flagged = interpret(step("search.flagged", { sku: "BRD-3301-01", merchant_id: "MER-3301", codes: "A5_PRICE_MISMATCH" }), ENV);
+    expect(flagged.phrase).toEqual({
+      ru: "Предложение BRD-3301-01 продавца MER-3301 исключено: цена в описании не совпадает с ценой витрины",
+      en: "Offer BRD-3301-01 of merchant MER-3301 excluded: the price in the description differs from the shop price",
+    });
+    const reply = interpret(step("order.shop_reply", { order_id: "ORD-1", reply: "PAID" }), ENV);
+    expect(reply.phrase.ru).toBe("Ответ витрины по заказу ORD-1: заказ оплачен (слова продавца, не итог)");
+    expect(reply.phrase.ru).not.toMatch(/оплачено/); // «оплачено» — только у события Платформы (инвариант 6)
+    const outcome = interpret(step("outcome", { status: "AUTHORIZED" }), ENV);
+    expect(outcome.phrase).toEqual({ ru: "Итог по событию Платформы: операция авторизована", en: "Outcome from the Platform event: operation authorized" });
+    // Код остаётся в «Кто ошибся».
+    expect(interpret(con("offer.flagged", { reason: "A5_PRICE_MISMATCH", ref: "BRD-3301-01", merchant: "MER-3301" }), ENV).who?.code).toBe("A5_PRICE_MISMATCH");
+  });
+
+  it("словарь кодов: ru и en непустые, без имён полей и сырых значений (З2)", () => {
+    for (const [code, w] of Object.entries(CODE_WORDS)) {
+      for (const lang of ["ru", "en"] as const) {
+        expect(w[lang].length, code).toBeGreaterThan(0);
+        expect(rawInHumanText(w[lang], lang), `${code} ${lang}`).toBeUndefined();
+      }
+    }
+    // Проверка сама ловит то, что показывал экран до К1.4а (поломка).
+    expect(rawInHumanText("Правило A5: цена не та, что в price; found — null", "ru")).toBe("null");
+    expect(rawInHumanText("Правило A5: цена не та, что в price", "ru")).toBe("price");
+    expect(rawInHumanText("исключено по сигналу A5_PRICE_MISMATCH", "ru")).toBe("A5_PRICE_MISMATCH");
+    expect(rawInHumanText("Ответ витрины по заказу ORD-1: PAID", "en")).toBe("PAID");
+    expect(rawInHumanText("Order ORD-ed177c3d at merchant MER-4401, mandate mnd_5e6da8cc", "en")).toBeUndefined();
+  });
+
+  it("учебная витрина: конфликт или ошибка со стороной «продавец» с кодом её учебного поведения — пометка; прочее — без неё (З10)", () => {
+    const env: InterpretEnv = { ...ENV, snapshot: buildDiagSnapshot(), training: TRAINING_MERCHANTS };
+    expect(interpret(con("offer.excluded", { reason: "REQUIRED", merchant: "MER-5501" }), env).training).toBe(true);
+    expect(interpret(con("offer.flagged", { reason: "A5_PRICE_MISMATCH", ref: "BRD-3301-01", merchant: "MER-3301" }), env).training).toBe(true);
+    // Обычная покупка у витрины с учебным поведением (REJECTS_UNIDENTIFIED) — норма, без пометки.
+    expect(interpret(step("order.placed", { order_id: "ORD-1", merchant_id: "MER-4401", title: "Багет", qty: 1 }), env).training).toBeUndefined();
+    // Настоящий сбой учебной витрины не прячется: 5xx витрины и код не её поведения — без пометки (ревью К1.4а № 2).
+    const down = interpret(mon({ source: "agent_merchant", cls: "decline", what: "POST /v1/shops/{shop_id}/orders", status: 503, code: "UPSTREAM_UNAVAILABLE", ids: { merchant_id: "MER-5501" } }), env);
+    expect(down.kind).toBe("error");
+    expect(down.training).toBeUndefined();
+    expect(interpret(con("offer.flagged", { reason: "A5_PRICE_MISMATCH", merchant: "MER-5501" }), env).training).toBeUndefined();
+    expect(interpret(con("offer.excluded", { reason: "REQUIRED", merchant: "MER-9999" }), env).training).toBeUndefined();
+    expect(interpret(con("offer.excluded", { reason: "REQUIRED", merchant: "MER-5501" }), ENV).training).toBeUndefined();
+    expect(TRAINING_MERCHANTS).toMatchObject({ "MER-5501": ["REQUIRED", "BAD_"], "MER-3301": ["A5_"] });
+    expect(Object.hasOwn(TRAINING_MERCHANTS, "MER-4401")).toBe(false);
   });
 });

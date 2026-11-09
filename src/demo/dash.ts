@@ -2,11 +2,10 @@
 // `public/dash/interpret.js` через textContent (инвариант 4). Язык ru/en и бренд из конфигурации (правило совместимости 3,
 // инвариант 7). Подписи — словарь дашбордов; заголовки карточек С-xx — из библиотеки ситуаций.
 import type { Brand } from "../brand.js";
-import { LABELS, SCREEN } from "../dashboards/phrases.js";
+import { CONTROL, LABELS, SCREEN } from "../dashboards/phrases.js";
 import type { WireLang } from "../dashboards/wire.js";
 
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
+import { escapeHtml, jsonForScript } from "./html.js";
 
 /** Словарь одного языка: { "kind.fraud": "фрод", … }. */
 function dictionary(lang: WireLang): Record<string, string> {
@@ -37,11 +36,11 @@ export function interpretPage(lang: WireLang, brand: Brand, hasLogo: boolean, si
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)}</div>
   <h1>${s("title")}</h1>
-  <nav><a href="/?lang=${lang}">${s("monitor")}</a> · ${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></nav>
+  <nav><a href="/?lang=${lang}">${s("monitor")}</a> <a href="/dash/control?lang=${lang}">${escapeHtml(CONTROL.title[lang])}</a> <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></span></nav>
 </header>
 <main>
   <p class="subtitle">${s("subtitle")}</p>
-  <p class="status"><span id="status">${s("status.connecting")}</span> · <span id="diag">${s("diag.loading")}</span></p>
+  <p class="status"><span id="conn" class="conn conn-wait"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span> · <span id="diag">${s("diag.loading")}</span></p>
   <label class="toggle"><input type="checkbox" id="details"> ${s("details")}</label>
   <table id="feed">
     <thead><tr>${col("col.time")}${col("col.stage")}${col("col.actor")}${col("col.kind")}${col("col.phrase")}${col("col.who")}${col("col.situation")}</tr></thead>

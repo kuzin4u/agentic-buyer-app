@@ -10,6 +10,7 @@ import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
 import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
 import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import { ISO4217_MINOR_UNITS } from "./money.js";
+import { PLATFORM_VERSION } from "./platform.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -23,6 +24,15 @@ export type StepSink = (s: ScenarioStep) => void;
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
  *  «подтверждение человеком через УПК» (своё поручение). */
 export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke";
+
+/** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
+export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
+  intent: "run.intent",
+  purchase: "run.purchase",
+  limit: "run.limit",
+  upk: "run.upk",
+  revoke: "run.revoke",
+};
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
@@ -189,6 +199,9 @@ export class DemoScenarios {
     this.#paying = false;
     this.#payJournalFrom = -1;
     this.#orderId = null;
+    // Метка начала прогона — первым шагом (К2.3а, Р-1391): по ней экран «Контроль» режет ленту на прогоны и знает, какой
+    // это сюжет. Угадывать сюжет по шагам нельзя: 1 и 4, 2 и 3 начинаются одинаково.
+    this.#step(RUN_STEP[name]);
     const work =
       name === "intent"
         ? this.#intent()
@@ -476,7 +489,7 @@ export class DemoScenarios {
     // Поручение считается использованным с запроса корзины (ниже), а не с начала сюжета: прерванный или отклонённый до
     // корзины сюжет его не тратит (ревью К2.2а № 3). Второго сюжета, пока этот идёт, нет — start() отвечает BUSY.
     // Р-1251 п. 2: первая волна — немедленный режим (подпись корзины клиентом); автономный — второй этап.
-    this.#step("purchase.mode_note");
+    this.#step("purchase.mode_note", { platform: PLATFORM_VERSION }); // версия — из пакета стенда, не литералом (З8)
     const zones = await p.search();
     this.#step("search.found", { contour: zones.contour.length, market: zones.market.length, unavailable: zones.unavailable.length });
     for (const o of zones.contour.filter((x) => x.a5.length > 0)) {

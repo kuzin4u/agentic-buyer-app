@@ -3,8 +3,8 @@
 // снимка `/api/diag`, карточка ситуации С-xx. Чистые функции: факты — только из записи линии и снимка (Р-1245 п. 1),
 // код агента и Платформы не импортируется (Р-1246 п. 3). Фразы — данные для `textContent` (инвариант 4).
 // Таблицы читаются только по собственным ключам (`own`): имя из записи — данные, не ключ прототипа (ревью К1.3 Б1).
-import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney } from "./wire.js";
-import { PHRASES, type Phrase } from "./phrases.js";
+import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney, WireMonitorEvent } from "./wire.js";
+import { CODE_WORDS, PHRASES, type Phrase } from "./phrases.js";
 
 export const STAGES = ["mandate", "search", "cart", "payment", "confirmation", "outcome", "revoke", "service"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -52,6 +52,18 @@ export interface Interpretation {
   readonly who?: Who;
   /** Карточка библиотеки ситуаций `docs/reference/situations.md`. */
   readonly situation?: string;
+  /** Конфликт или ошибка у витрины с учебным поведением стенда — «учебный сбой витрины», так задумано (З10, Р-1361). */
+  readonly training?: true;
+  /** Что это за запись у источника: шаблон обращения или тип события (`what`), шаг сюжета, тип записи журнала агента.
+   *  Для контролёра (К2.2) — сверка с паспортом сюжета; экран не показывает. */
+  readonly ref: string;
+  /** Машинный статус шага сюжета, если он код: `params.status` (статус итога, `AUTHORIZED`), а если его нет — `params.reply`
+   *  (ответ витрины, `PAID`). Шагов с обоими полями нет; появится такой — поле разделить. Для контролёра. */
+  readonly status?: string;
+  /** Кто прислал обращение на шине (только записи монитора): `agent_platform` — наш агент своим ключом, `stand` — участник
+   *  стенда (эмулятор банка — действия клиента), `network_*` — без подписи агента, `pao_event` — событие Платформы.
+   *  Участник (`actor`) ставится по маршруту; кто на самом деле прислал запрос клиента — только отсюда (ревью К2.1 № 1). */
+  readonly source?: WireMonitorEvent["source"];
 }
 
 export interface InterpretEnv {
@@ -61,6 +73,10 @@ export interface InterpretEnv {
   /** Агент на линии — подставной (синтетика ч. 1, сюжет подставного агента ч. 3). Только тогда нарушение поручения — «фрод»;
    *  иначе — «фрод или дефект, вердикт — владелец»: честный агент с дефектом или гонка с отзывом (С-28) дают ту же запись. */
   readonly rogueAgent?: boolean;
+  /** Учебные витрины источника: merchant_id → префиксы кодов их учебного сбоя (демо-стенд: по поведению витрины фикстуры).
+   *  Конфликт или ошибка со стороной «продавец» с таким кодом — «учебный сбой витрины» (З10). Таблицу даёт сборка
+   *  источника: интерпретатор код Платформы не импортирует (Р-1246 п. 3). */
+  readonly training?: Readonly<Record<string, readonly string[]>>;
 }
 
 export const LOCAL_STAND_EMULATED: readonly Role[] = ["bank", "merchant"];
@@ -173,10 +189,27 @@ const fmt = (v: unknown, lang: WireLang): string => {
   return "";
 };
 
+/** Подстановки, в которых приходят коды и статусы: в тексте человека — словами (З2). */
+const CODE_PARAMS = new Set(["code", "codes", "reply", "status"]);
+
+/** Код или список кодов через запятую — словами по словарю; кода нет в словаре — как есть. */
+export function codeWords(v: string, lang: WireLang): string {
+  return v
+    .split(",")
+    .map((c) => c.trim())
+    .filter((c) => c !== "")
+    .map((c) => own(CODE_WORDS, c)?.[lang] ?? c)
+    .join(", ");
+}
+
 /** Подстановка `{ключ}`. Необязательная часть шаблона — в `[…]`: выпадает целиком, если подставить в ней нечего
  *  (сумма или код не пришли — ревью К1.3 № 9, № 10). Скобки разбираются в шаблоне до подстановки данных. */
 function fill(p: Phrase, params: Readonly<Record<string, unknown>>): Texts {
-  const value = (k: string, lang: WireLang) => (Object.hasOwn(params, k) ? fmt(params[k], lang) : "");
+  const value = (k: string, lang: WireLang) => {
+    if (!Object.hasOwn(params, k)) return "";
+    const v = params[k];
+    return CODE_PARAMS.has(k) && typeof v === "string" ? codeWords(v, lang) : fmt(v, lang);
+  };
   const one = (lang: WireLang) =>
     p[lang]
       .replace(/\[([^[\]]*)\]/g, (_, inner: string) => ([...inner.matchAll(/\{([a-z_]+)\}/g)].every((m) => value(m[1]!, lang) !== "") ? inner : ""))
@@ -279,6 +312,8 @@ function interpretMonitor(item: Extract<WireItem, { stream: "monitor" }>, env: I
     seq: e.seq,
     at: e.at,
     stream: "monitor",
+    ref: e.what,
+    source: e.source,
     level: kind === "norm" ? rule?.level ?? "detail" : "key",
     stage: rule?.stage ?? "service",
     actor,
@@ -358,10 +393,13 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     who = q.who;
     situation = q.situation ?? situation;
   }
+  const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
   return {
     seq: l.seq,
     at: l.at,
     stream: "scenario",
+    ref: l.step,
+    ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
     stage: (l.step === "failed" && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
@@ -430,6 +468,7 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
     seq: l.seq,
     at: l.at,
     stream: "console",
+    ref: l.kind,
     level: CONSOLE_KEY.has(l.kind) || kind !== "norm" ? "key" : "detail",
     stage,
     actor: "agent",
@@ -443,9 +482,26 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
 
 /** Запись линии → интерпретация. Не бросает на записи, прошедшей `parseWireItem`: незнакомая — нейтральная фраза с её именем. */
 export function interpret(item: WireItem, env: InterpretEnv): Interpretation {
-  if (item.stream === "monitor") return interpretMonitor(item, env);
-  if (item.stream === "scenario") return interpretScenario(item, env);
-  return interpretConsole(item, env);
+  const r = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  return isTraining(r, merchantOf(item), env) ? { ...r, training: true } : r;
+}
+
+/** Продавец записи: идентификатор из обращения или события, из журнала агента, из шага сюжета. */
+function merchantOf(item: WireItem): string | undefined {
+  if (item.stream === "monitor") return item.event.ids.merchant_id;
+  if (item.stream === "console") return item.line.merchant;
+  const m = item.line.params.merchant_id;
+  return typeof m === "string" ? m : undefined;
+}
+
+/** Учебный сбой витрины: конфликт или ошибка со стороной «продавец» с кодом учебного поведения этой витрины (З10).
+ *  Нормальные записи и другие сбои той же витрины не помечаются: настоящий сбой не прячется за «так задумано». */
+function isTraining(r: Interpretation, merchant: string | undefined, env: InterpretEnv): boolean {
+  if (merchant === undefined || env.training === undefined || (r.kind !== "conflict" && r.kind !== "error")) return false;
+  const who = r.who;
+  if (!who || !who.side.includes("merchant")) return false;
+  const codes = own(env.training, merchant);
+  return codes !== undefined && codes.some((c) => who.code.startsWith(c));
 }
 
 /** Подписи ролей, типов, стадий и вердиктов для экранов. */
