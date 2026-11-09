@@ -16,6 +16,7 @@ import type { MonitorBus } from "./bus.js";
 import { interpretPage } from "./dash.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
 import { formatMoney } from "./money.js";
+import { PLATFORM_VERSION } from "./platform.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
@@ -129,7 +130,7 @@ ${
   ${o.intentCard ? intentCardHtml(lang, o.intentCard, "intent-card", "card.intent.title") : ""}
   <button type="button" data-scenario="intent">${e("scenario.intent")}</button>
   <button type="button" data-scenario="purchase">${e("scenario.purchase")}</button>
-  <p class="hint mode-note">${e("scenario.purchase_note")}</p>
+  <p class="hint mode-note">${e("scenario.purchase_note").replace("{platform}", escapeHtml(PLATFORM_VERSION))}</p>
   <button type="button" data-scenario="limit">${e("scenario.limit")}</button>
   <p class="hint">${e("scenario.limit_note")}</p>
   ${o.intentCardUpk ? intentCardHtml(lang, o.intentCardUpk, "intent-card-upk", "card.intent_upk.title") : ""}

@@ -1,8 +1,10 @@
 // К2.2а: кнопка «прервать сюжет» (ревью К2.1 № 6) и надпись режима сюжета 2 (Р-1251 п. 2) на живом стенде.
 // Подпись в автотесте — эмулятором банка (П2 п. 5).
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
+import { PLATFORM_VERSION, platformPackageVersion } from "../../src/demo/platform.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -30,9 +32,20 @@ describe("прервать сюжет; надпись режима сюжета 
     await demo?.close();
   });
 
-  it("надпись режима — у кнопки сюжета 2 на обоих языках", async () => {
-    expect(await (await fetch(`${demo.monitor.url}/`)).text()).toContain(MESSAGES.ru["scenario.purchase_note"]);
-    expect(await (await fetch(`${demo.monitor.url}/?lang=en`)).text()).toContain(MESSAGES.en["scenario.purchase_note"]);
+  it("надпись режима — у кнопки сюжета 2 на обоих языках; версия Платформы — из пакета стенда, не литералом (З8, К3.1а)", async () => {
+    // Версия — из package.json установленного пакета, прочитанного здесь напрямую, а не из модуля под проверкой.
+    const installed = (JSON.parse(readFileSync(new URL("../../node_modules/agentic-ps-platform/package.json", import.meta.url), "utf8")) as { version: string }).version;
+    expect(platformPackageVersion()).toBe(installed);
+    expect(PLATFORM_VERSION).toBe(`v${installed}`);
+    for (const [lang, url] of [["ru", "/"], ["en", "/?lang=en"]] as const) {
+      const html = await (await fetch(`${demo.monitor.url}${url}`)).text();
+      expect(MESSAGES[lang]["scenario.purchase_note"]).toContain("{platform}");
+      // Видимая надпись — с версией; в словаре скрипта (JSON) шаблон {platform} остаётся для шага консоли.
+      const note = /<p class="hint mode-note">(.*?)<\/p>/s.exec(html)?.[1];
+      expect(note).toBe(MESSAGES[lang]["scenario.purchase_note"].replace("{platform}", `v${installed}`));
+    }
+    // Литерала версии Платформы в словаре нет (было «v0.40.0» при стенде v0.41.0).
+    expect(readFileSync(new URL("../../src/demo/i18n.ts", import.meta.url), "utf8")).not.toMatch(/Платформе v\d|Platform v\d/);
   });
 
   it("прервать без сюжета — 409", async () => {
@@ -61,7 +74,10 @@ describe("прервать сюжет; надпись режима сюжета 
     n = steps().length;
     expect((await post("purchase")).status).toBe(202);
     await until(after(n, "cart.card"));
-    expect(steps().slice(n)[0]?.step).toBe("purchase.mode_note");
+    expect(steps().slice(n)[0]).toMatchObject({ step: "purchase.mode_note", params: { platform: PLATFORM_VERSION } });
+    // В консоли монитора шаг идёт по шаблону словаря: {platform} подставляется из параметра шага.
+    expect(MESSAGES.ru["step.purchase.mode_note"]).toContain("{platform}");
+    expect(MESSAGES.en["step.purchase.mode_note"]).toContain("{platform}");
     const posts = demo.stand.stand.calls().filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates").length;
     expect((await post("abort")).status).toBe(202);
     await until(after(n, "aborted"));

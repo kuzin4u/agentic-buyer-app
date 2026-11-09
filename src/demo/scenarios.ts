@@ -10,6 +10,7 @@ import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
 import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
 import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import { ISO4217_MINOR_UNITS } from "./money.js";
+import { PLATFORM_VERSION } from "./platform.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -476,7 +477,7 @@ export class DemoScenarios {
     // Поручение считается использованным с запроса корзины (ниже), а не с начала сюжета: прерванный или отклонённый до
     // корзины сюжет его не тратит (ревью К2.2а № 3). Второго сюжета, пока этот идёт, нет — start() отвечает BUSY.
     // Р-1251 п. 2: первая волна — немедленный режим (подпись корзины клиентом); автономный — второй этап.
-    this.#step("purchase.mode_note");
+    this.#step("purchase.mode_note", { platform: PLATFORM_VERSION }); // версия — из пакета стенда, не литералом (З8)
     const zones = await p.search();
     this.#step("search.found", { contour: zones.contour.length, market: zones.market.length, unavailable: zones.unavailable.length });
     for (const o of zones.contour.filter((x) => x.a5.length > 0)) {
