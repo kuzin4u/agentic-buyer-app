@@ -1,7 +1,7 @@
 // К2.3б DEMO-2: лента «Контроля» — прогоны поверх ленты интерпретаций, вердикт владельца (только после срока, фиксирует итог,
 // при котором поставлен), пометки раннего запуска, прогон без паспорта, выгрузка Markdown для акта ACC-1 (Р-1395, Р-1396).
 import { describe, expect, it } from "vitest";
-import { createControlFeed } from "../../src/dashboards/control-feed.js";
+import { createControlFeed, markdownCell } from "../../src/dashboards/control-feed.js";
 import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation } from "../../src/dashboards/interpret.js";
 import { PASSPORTS, type Match } from "../../src/dashboards/passports.js";
@@ -193,6 +193,24 @@ describe("лента «Контроля» (К2.3б)", () => {
     const en = s.c.markdown("en");
     expect(en).toContain("at outcome “accepted”, ");
     expect(en).not.toMatch(/[«»]/);
+  });
+
+  it("ячейка выгрузки (К2.3в; CodeQL js/incomplete-sanitization): «\\» первым, «|», перевод строки, «& < >» — колонка не распадается, HTML не проходит", () => {
+    expect(markdownCell("a\\|b")).toBe("a\\\\\\|b");
+    expect(markdownCell("a|b")).toBe("a\\|b");
+    expect(markdownCell("a\r\nb\nc")).toBe("a b c");
+    expect(markdownCell("<i>&amp;</i>")).toBe("&lt;i&gt;&amp;amp;&lt;/i&gt;");
+    // Метка неизвестного сюжета с «\|» и HTML в имени: в строке выгрузки — ровно 8 колонок, тегов нет.
+    const s = setup();
+    s.add([rec(10, { stream: "scenario", ref: "run.a\\|b<i>x</i>\nz" }, T0)]);
+    s.at(T0 + 3_600_000);
+    const row = s.c.markdown("ru").split("\n").find((l) => l.startsWith("| 10 "))!;
+    // Разделитель колонки — «|», перед которым чётное число «\».
+    const seps = [...row.matchAll(/(\\*)\|/g)].filter((m) => m[1]!.length % 2 === 0).length;
+    expect(seps).toBe(9); // 8 колонок — 9 разделителей
+    expect(row).not.toMatch(/<[a-z/]/i);
+    // Имя — в ячейке целиком, экранированным (повторное ревью К2.3в № 1).
+    expect(row).toContain("| a\\\\\\|b&lt;i&gt;x&lt;/i&gt; z |");
   });
 
   it("слушатель получает прогоны при изменении, без повторов одного и того же", () => {

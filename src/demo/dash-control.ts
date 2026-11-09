@@ -4,9 +4,7 @@
 import type { Brand } from "../brand.js";
 import { CONTROL } from "../dashboards/phrases.js";
 import type { WireLang } from "../dashboards/wire.js";
-import { escapeHtml } from "./server.js";
-
-const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
+import { escapeHtml, jsonForScript } from "./html.js";
 
 export function controlPage(lang: WireLang, brand: Brand, hasLogo: boolean): string {
   const s = (k: keyof typeof CONTROL) => escapeHtml(CONTROL[k][lang]);

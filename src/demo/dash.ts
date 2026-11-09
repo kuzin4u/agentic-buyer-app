@@ -5,8 +5,7 @@ import type { Brand } from "../brand.js";
 import { CONTROL, LABELS, SCREEN } from "../dashboards/phrases.js";
 import type { WireLang } from "../dashboards/wire.js";
 
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
+import { escapeHtml, jsonForScript } from "./html.js";
 
 /** Словарь одного языка: { "kind.fraud": "фрод", … }. */
 function dictionary(lang: WireLang): Record<string, string> {

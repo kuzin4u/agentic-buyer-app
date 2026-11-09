@@ -130,7 +130,7 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
   recompute();
 
   const L = (k: keyof typeof CONTROL, lang: WireLang) => CONTROL[k][lang];
-  const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  const cell = markdownCell;
 
   return {
     runs: () => views,
@@ -190,4 +190,17 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
     },
     recompute,
   };
+}
+
+/** Ячейка Markdown-таблицы выгрузки для акта ACC-1 (К2.3в; находка CodeQL `js/incomplete-sanitization` на PR #7):
+ *  сначала «\» — иначе «\|» из входа стал бы «\\|», то есть экранированная косая и настоящий разделитель колонки; затем «|»;
+ *  перевод строки — пробел; затем «&» (первым из сущностей), «<», «>» — чтобы HTML в акте не отрисовывался. */
+export function markdownCell(s: string): string {
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }

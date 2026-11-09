@@ -17,6 +17,7 @@ import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../d
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
@@ -26,13 +27,6 @@ const PUBLIC = (name: string) => readFileSync(new URL(`./public/${name}`, import
 
 const CSP = "default-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/** Экранирование текста для HTML: словари и бренд — значения конфигурации, а не разметка. */
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
-
-/** JSON внутри <script type="application/json">: без «<», чтобы строка данных не закрыла тег. */
-const jsonForScript = (v: unknown) => JSON.stringify(v).replace(/</g, "\\u003c");
 
 /** Бренд из файла конфигурации. Логотип — только файл внутри config/ (на стенде нет внешних адресов); иначе — без картинки. */
 export function loadBrand(path: string): { brand: Brand; logoFile: string | null } {
