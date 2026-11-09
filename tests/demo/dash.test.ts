@@ -86,7 +86,8 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
     const text = await readSse(`${demo.monitor.url}/dash/interpret/events`, (t) => t.includes('"type":"snapshot"') && t.includes("\n\n"));
     const snap = messages(text).find((m) => m.type === "snapshot")!;
     expect(snap).toMatchObject({ status: "open", diag: { state: "ready" } });
-    const key = snap.items!.filter((r) => r.level === "key");
+    // Метка начала прогона (К2.3а) — служебная стадия, её здесь не считаем.
+    const key = snap.items!.filter((r) => r.level === "key" && !r.ref.startsWith("run."));
     expect(key.length).toBeGreaterThan(3);
     expect(key.every((r) => r.kind === "norm" && r.stage === "mandate")).toBe(true);
     expect(key.some((r) => r.situation === "С-01" && r.phrase.ru.length > 0 && r.phrase.en.length > 0)).toBe(true);
@@ -102,14 +103,14 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
       `${demo.monitor.url}/dash/interpret/events`,
       (t) => {
         if (t.includes('"type":"snapshot"')) snapshotSeen();
-        return messages(t).some((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario");
+        return messages(t).some((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario" && !m.item!.ref.startsWith("run."));
       },
       30_000,
     );
     await gotSnapshot;
     await driver(demo).run(1);
-    // Шаг сюжета; до его номера шина дочитывает журналы (З4), их записи могут прийти раньше.
-    const item = messages(await pending).find((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario");
+    // Шаг сюжета после метки прогона (К2.3а); до его номера шина дочитывает журналы (З4), их записи могут прийти раньше.
+    const item = messages(await pending).find((m) => m.type === "item" && m.item!.seq > before && m.item!.stream === "scenario" && !m.item!.ref.startsWith("run."));
     expect(item?.item).toMatchObject({ stage: "mandate", kind: "norm" });
   });
 

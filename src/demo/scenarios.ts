@@ -25,6 +25,15 @@ export type StepSink = (s: ScenarioStep) => void;
  *  «подтверждение человеком через УПК» (своё поручение). */
 export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke";
 
+/** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
+export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
+  intent: "run.intent",
+  purchase: "run.purchase",
+  limit: "run.limit",
+  upk: "run.upk",
+  revoke: "run.revoke",
+};
+
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
 const OPS_KEPT = 50;
@@ -190,6 +199,9 @@ export class DemoScenarios {
     this.#paying = false;
     this.#payJournalFrom = -1;
     this.#orderId = null;
+    // Метка начала прогона — первым шагом (К2.3а, Р-1391): по ней экран «Контроль» режет ленту на прогоны и знает, какой
+    // это сюжет. Угадывать сюжет по шагам нельзя: 1 и 4, 2 и 3 начинаются одинаково.
+    this.#step(RUN_STEP[name]);
     const work =
       name === "intent"
         ? this.#intent()

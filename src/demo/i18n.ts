@@ -148,6 +148,11 @@ const ru = {
   "step.purchase.mode_note":
     "Первая волна пилота — немедленный режим: каждую покупку подтверждает клиент (подпись корзины). Покупка в рамках поручения без подписи корзины — автономный режим, второй этап пилота; на Платформе {platform} этого режима нет.",
   "step.aborted": "Сюжет прерван человеком (состояние покупки {state}).",
+  "step.run.intent": "— Сюжет 1: подпись поручения —",
+  "step.run.purchase": "— Сюжет 2: покупка в рамках поручения —",
+  "step.run.limit": "— Сюжет 3: отказ, превышен лимит клиента в банке —",
+  "step.run.upk": "— Сюжет 4: подтверждение человеком через УПК —",
+  "step.run.revoke": "— Сюжет 5: отзыв поручения —",
   "step.cart.card": "Карточка корзины показана: {title}, {merchant_id} / {sku}, {price} × {qty}. Ждём вашего решения на этой странице.",
   "step.cart.agreed": "Человек согласился с карточкой корзины ({merchant_id} / {sku}) — агент запрашивает корзину.",
   "step.cart.declined": "Человек не согласился с карточкой корзины ({merchant_id} / {sku}) — корзина не запрошена; поручение не использовано.",
@@ -317,6 +322,11 @@ const en: Record<MessageKey, string> = {
   "step.purchase.mode_note":
     "Pilot wave one is the immediate mode: the client confirms every purchase (cart signature). Purchasing within the mandate without a cart signature is the autonomous mode, pilot stage two; Platform {platform} does not have this mode.",
   "step.aborted": "Scenario aborted by the human (purchase state {state}).",
+  "step.run.intent": "— Scenario 1: mandate signature —",
+  "step.run.purchase": "— Scenario 2: purchase within the mandate —",
+  "step.run.limit": "— Scenario 3: declined, the client's bank limit exceeded —",
+  "step.run.upk": "— Scenario 4: human confirmation via UPK —",
+  "step.run.revoke": "— Scenario 5: mandate revocation —",
   "step.cart.card": "Cart card shown: {title}, {merchant_id} / {sku}, {price} × {qty}. Waiting for your decision on this page.",
   "step.cart.agreed": "The human agreed with the cart card ({merchant_id} / {sku}) — the agent requests the cart.",
   "step.cart.declined": "The human declined the cart card ({merchant_id} / {sku}) — no cart requested; the mandate is not used.",

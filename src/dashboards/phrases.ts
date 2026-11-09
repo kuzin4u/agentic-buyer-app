@@ -42,6 +42,12 @@ const monitor: Readonly<Record<string, Phrase>> = {
 };
 
 const scenario: Readonly<Record<string, Phrase>> = {
+  // Метки начала прогона (К2.3а): по ним «Контроль» режет ленту на прогоны.
+  "run.intent": p("Начат сюжет 1 «Подпись поручения»", "Scenario 1 “Mandate signature” started"),
+  "run.purchase": p("Начат сюжет 2 «Покупка в рамках поручения»", "Scenario 2 “Purchase within the mandate” started"),
+  "run.limit": p("Начат сюжет 3 «Отказ: превышен лимит клиента в банке»", "Scenario 3 “Declined: the client's bank limit exceeded” started"),
+  "run.upk": p("Начат сюжет 4 «Подтверждение человеком через УПК»", "Scenario 4 “Human confirmation via UPK” started"),
+  "run.revoke": p("Начат сюжет 5 «Отзыв поручения»", "Scenario 5 “Mandate revocation” started"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),

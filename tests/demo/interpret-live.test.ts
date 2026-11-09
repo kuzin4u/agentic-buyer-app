@@ -3,8 +3,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation } from "../../src/dashboards/interpret.js";
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
-import { control, DEFAULT_WAIT_MS } from "../../src/dashboards/control.js";
-import { matches, PASSPORTS } from "../../src/dashboards/passports.js";
+import { control, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
+import { matches } from "../../src/dashboards/passports.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
@@ -44,7 +44,9 @@ describe("интерпретатор на пяти сюжетах приёмки
   });
 
   it("сюжет 1: поручение — норма, стадия «поручение», карточка С-01; подпись — клиентом", () => {
-    const k = key(1);
+    // Метка начала прогона (К2.3а) — служебная стадия; остальные ключевые строки — поручение.
+    const k = key(1).filter((r) => r.ref !== "run.intent");
+    expect(key(1).find((r) => r.ref === "run.intent")).toMatchObject({ stage: "service", kind: "norm" });
     expect(k.every((r) => r.kind === "norm" && r.stage === "mandate")).toBe(true);
     expect(k.some((r) => r.situation === "С-01")).toBe(true);
     expect(k.some((r) => r.actor === "client")).toBe(true);
@@ -120,30 +122,38 @@ describe("интерпретатор на пяти сюжетах приёмки
     for (let i = 1; i < own.length; i++) expect(own[i]!.at >= own[i - 1]!.at, `seq ${own[i]!.seq}`).toBe(true);
   });
 
-  it("К2.1: паспорт каждого сюжета сходится с фактом стенда — всё ожидаемое есть (ровно столько раз, где указано), запрещённого нет", () => {
-    for (const p of PASSPORTS) {
-      const list = runs.get(p.no)!;
+  // К2.3а: общая лента драйвера режется на прогоны по меткам run.<имя>, как на экране «Контроль». Драйвер перед сюжетами
+  // 2, 3 и 5 сам запускает сюжет 1 (подпись поручения) — это отдельные прогоны «intent».
+  const segments = () => splitRuns([...new Map([...runs.values()].flat().map((r) => [r.seq, r])).values()]);
+
+  it("К2.3а: нарезка по меткам — прогоны в порядке запуска драйвером, каждый начинается своей меткой", () => {
+    expect(segments().map((s) => s.passport.name)).toEqual(["intent", "intent", "purchase", "intent", "limit", "upk", "intent", "revoke"]);
+    for (const s of segments()) expect(s.items[0]).toMatchObject({ stream: "scenario", ref: `run.${s.passport.name}`, seq: s.startSeq });
+  });
+
+  it("К2.1: паспорт каждого прогона сходится с фактом стенда — всё ожидаемое есть (ровно столько раз, где указано), запрещённого нет", () => {
+    for (const s of segments()) {
+      const p = s.passport;
       for (const e of p.expect) {
-        const n = list.filter((r) => matches(r, e.match)).length;
-        if (e.times !== undefined) expect(n, `сюжет ${p.no}, ${e.id}`).toBe(e.times);
-        else expect(n, `сюжет ${p.no}, ${e.id}`).toBeGreaterThan(0);
+        const n = s.items.filter((r) => matches(r, e.match)).length;
+        if (e.times !== undefined) expect(n, `сюжет ${p.no} (seq ${s.startSeq}), ${e.id}`).toBe(e.times);
+        else expect(n, `сюжет ${p.no} (seq ${s.startSeq}), ${e.id}`).toBeGreaterThan(0);
       }
-      for (const e of p.forbid) expect(list.filter((r) => matches(r, e.match)).map((r) => `${r.seq} ${r.ref}`), `сюжет ${p.no}, запрет ${e.id}`).toEqual([]);
+      for (const e of p.forbid) expect(s.items.filter((r) => matches(r, e.match)).map((r) => `${r.seq} ${r.ref}`), `сюжет ${p.no}, запрет ${e.id}`).toEqual([]);
     }
   });
 
-  it("К2.2: контролёр на пяти сюжетах — до срока «ждёт» (выполнено N из N), после срока «принято N из N»", () => {
-    for (const p of PASSPORTS) {
-      const list = runs.get(p.no)!;
-      const own = list.filter((r) => r.source !== "pao_event").map((r) => Date.parse(r.at));
+  it("К2.2: контролёр на каждом прогоне — до срока «ждёт» (выполнено N из N), после срока «принято N из N»; начало — метка", () => {
+    for (const s of segments()) {
+      const p = s.passport;
+      const own = s.items.filter((r) => r.source !== "pao_event").map((r) => Date.parse(r.at));
       expect(own.every(Number.isFinite), `сюжет ${p.no}: время записей`).toBe(true);
-      const startedAt = new Date(Math.min(...own));
       const last = Math.max(...own);
-      const before = control(p, list, { now: new Date(last + 1), startedAt });
+      const before = control(p, s.items, { now: new Date(last + 1), startedAt: s.startedAt });
       expect(before.state, `сюжет ${p.no}`).toBe("waiting");
       expect(before.met, `сюжет ${p.no}`).toBe(before.total);
-      const done = control(p, list, { now: new Date(last + DEFAULT_WAIT_MS), startedAt });
-      expect(done.items.filter((i) => i.state !== "accepted").map((i) => `${i.id}: ${i.state} ${i.reasons.join(",")}`), `сюжет ${p.no}`).toEqual([]);
+      const done = control(p, s.items, { now: new Date(last + DEFAULT_WAIT_MS), startedAt: s.startedAt });
+      expect(done.items.filter((i) => i.state !== "accepted").map((i) => `${i.id}: ${i.state} ${i.reasons.join(",")}`), `сюжет ${p.no} (seq ${s.startSeq})`).toEqual([]);
       expect(done.accepted).toBe(done.total);
     }
   });

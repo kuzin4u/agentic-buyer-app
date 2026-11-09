@@ -6,6 +6,8 @@ import { AGENT_CODES, KEY_CODES, matches, PASSPORTS, SCENARIOS } from "../../src
 import { rawInHumanText } from "./human-text.js";
 import { PHRASES } from "../../src/dashboards/phrases.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
+import { MESSAGES } from "../../src/demo/i18n.js";
+import { RUN_STEP } from "../../src/demo/scenarios.js";
 import { loadSituationTitles } from "../../src/demo/situations.js";
 
 describe("паспорта пяти сюжетов (К2.1)", () => {
@@ -84,6 +86,23 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
       expect(matches(sign(s), expectSign.match), s).toBe(false);
       expect(matches(sign(s), forbidSign.match), s).toBe(true);
     }
+  });
+
+  it("метки прогонов (К2.3а): у каждого сюжета — метка run.<имя> в сюжетах, словаре интерпретатора и словаре монитора ru/en; первое ожидание паспорта — метка", () => {
+    expect(Object.keys(RUN_STEP).sort()).toEqual(SCENARIOS.map((s) => s.name).sort());
+    for (const s of SCENARIOS) {
+      const step = RUN_STEP[s.name];
+      expect(step).toBe(`run.${s.name}`);
+      expect(Object.hasOwn(PHRASES.scenario, step), step).toBe(true);
+      for (const lang of ["ru", "en"] as const) expect(MESSAGES[lang][`step.${step}` as keyof (typeof MESSAGES)["ru"]], `${lang} ${step}`).toBeTruthy();
+      expect(PASSPORTS.find((p) => p.name === s.name)!.expect[0]).toMatchObject({ id: "start", times: 1, match: { stream: "scenario", ref: step } });
+    }
+  });
+
+  it("подписи клиента за прогон с монитора: 1 — поручение, 2 и 3 — корзина, 4 — обе, 5 — ни одной (Р-1391)", () => {
+    const signs = (no: number) => PASSPORTS[no - 1]!.expect.find((e) => e.id === "client-signs")?.times;
+    expect([1, 2, 3, 4, 5].map(signs)).toEqual([1, 1, 1, 2, undefined]);
+    expect(PASSPORTS[4]!.forbid.some((f) => f.id === "no-sign")).toBe(true);
   });
 
   it("сопоставление: заданные признаки совпадают все; «кто ошибся» — код, деталь, вердикт, все стороны", () => {

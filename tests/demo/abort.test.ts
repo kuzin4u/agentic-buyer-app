@@ -74,7 +74,9 @@ describe("прервать сюжет; надпись режима сюжета 
     n = steps().length;
     expect((await post("purchase")).status).toBe(202);
     await until(after(n, "cart.card"));
-    expect(steps().slice(n)[0]).toMatchObject({ step: "purchase.mode_note", params: { platform: PLATFORM_VERSION } });
+    // Первым — метка прогона (К2.3а), затем надпись режима.
+    expect(steps().slice(n)[0]).toMatchObject({ step: "run.purchase" });
+    expect(steps().slice(n)[1]).toMatchObject({ step: "purchase.mode_note", params: { platform: PLATFORM_VERSION } });
     // В консоли монитора шаг идёт по шаблону словаря: {platform} подставляется из параметра шага.
     expect(MESSAGES.ru["step.purchase.mode_note"]).toContain("{platform}");
     expect(MESSAGES.en["step.purchase.mode_note"]).toContain("{platform}");

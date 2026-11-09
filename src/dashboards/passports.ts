@@ -112,15 +112,14 @@ const REVOKE = "POST /participants/v1/mandates/{mandate_id}/revoke";
 const BY_BANK: Pick<Match, "stream" | "actor" | "source"> = { stream: "monitor", actor: "client", source: ["stand"] };
 const NOT_BANK: readonly WireMonitorEvent["source"][] = ["agent_platform", "agent_platform_open", "network_platform"];
 
-const clientSigns = (times: number): Expectation => ({
-  id: "client-signs",
-  what: t(
-    `Подписывает клиент в банке, не агент: подписей — ${times} (поручение${times > 1 ? " и корзина" : ""})`,
-    `The client signs in the bank, not the agent: ${times} signature(s) (mandate${times > 1 ? " and cart" : ""})`,
-  ),
-  match: { ...BY_BANK, ref: SIGN },
-  times,
-});
+/** Подписи клиента в банке за прогон с монитора (Р-1391): сюжет 1 — поручение; 2 и 3 — корзина (поручение — из сюжета 1);
+ *  4 — своё поручение и корзина; 5 — подписей нет (отзыв поручения из сюжета 1). */
+const SIGNS = {
+  mandate: { times: 1, what: t("Подписывает клиент в банке, не агент: одна подпись — поручение", "The client signs in the bank, not the agent: one signature — the mandate") },
+  cart: { times: 1, what: t("Подписывает клиент в банке, не агент: одна подпись — корзина", "The client signs in the bank, not the agent: one signature — the cart") },
+  both: { times: 2, what: t("Подписывает клиент в банке, не агент: две подписи — поручение и корзина", "The client signs in the bank, not the agent: two signatures — the mandate and the cart") },
+} as const;
+const clientSigns = (s: keyof typeof SIGNS): Expectation => ({ id: "client-signs", what: SIGNS[s].what, match: { ...BY_BANK, ref: SIGN }, times: SIGNS[s].times });
 
 // --- Общие запреты всех сюжетов: честный агент, честный стенд ---
 
@@ -178,7 +177,7 @@ const NO_PAID: readonly Forbid[] = [
   { id: "no-outcome", what: t("Шага итога оплаты нет", "No payment outcome step"), match: { stream: "scenario", ref: "outcome" } },
 ];
 
-export const PASSPORTS: readonly Passport[] = [
+const RAW: readonly Passport[] = [
   {
     no: 1,
     name: "intent",
@@ -188,7 +187,7 @@ export const PASSPORTS: readonly Passport[] = [
     expect: [
       step("created", "intent.created", t("Агент просит поручение (С-01)", "The agent asks for a mandate (С-01)"), { situation: "С-01" }),
       step("awaiting", "intent.awaiting_signature", t("Поручение ждёт подписи клиента", "The mandate awaits the client's signature")),
-      clientSigns(1),
+      clientSigns("mandate"),
       event("signed-event", "mandate.signed", t("Платформа: поручение подписано", "Platform: mandate signed")),
       step("signed", "intent.signed", t("Поручение действует", "The mandate is active"), { status: "ACTIVE" }),
     ],
@@ -220,7 +219,7 @@ export const PASSPORTS: readonly Passport[] = [
       },
       step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
       step("agreed", "cart.agreed", t("Клиент согласился с корзиной", "The client agreed to the cart")),
-      clientSigns(2),
+      clientSigns("cart"),
       step("cart-signed", "cart.signed", t("Корзина подписана", "The cart is signed")),
       step("order", "order.placed", t("Заказ у продавца", "Order at the merchant")),
       step("reply", "order.shop_reply", t("Ответ витрины «оплачен» — слова продавца, не итог", "Shop reply “paid” — merchant's words, not the outcome"), { status: "PAID" }),
@@ -237,12 +236,13 @@ export const PASSPORTS: readonly Passport[] = [
     statuses: { mandate: t("корзина подписана, оплаты нет", "cart signed, no payment"), operation: t("операция отклонена", "operation declined"), ...ACTIVE },
     expect: [
       step("limit-set", "bank.limit_set", t("Эмулятор банка поставил лимит ниже покупки (С-26)", "The bank emulator set a limit below the purchase (С-26)")),
-      clientSigns(2),
+      clientSigns("cart"),
       {
         id: "declined",
         what: t("Платформа отказала: лимит клиента — конфликт, сторона клиент и банк, «так и должно быть» (С-26)", "Platform declined: client limit — conflict, client and bank side, works as intended (С-26)"),
         match: { stream: "monitor", ref: "operation.declined", source: ["pao_event"], code: "LIMIT_EXCEEDED", codeDetail: "CLIENT", kind: "conflict", side: ["client", "bank"], verdict: "expected", situation: "С-26" },
       },
+      step("cart-signed", "cart.signed", t("Корзина подписана", "The cart is signed")),
       step("limit-declined", "limit.declined", t("Отказ: превышен лимит клиента в банке", "Declined: the client's bank limit exceeded")),
       step("limit-reset", "bank.limit_reset", t("Эмулятор банка снял лимит", "The bank emulator removed the limit")),
     ],
@@ -256,7 +256,7 @@ export const PASSPORTS: readonly Passport[] = [
     statuses: { mandate: t("корзина подписана, покупка подтверждена", "cart signed, purchase confirmed"), operation: t("операция авторизована", "operation authorized"), ...ACTIVE },
     expect: [
       step("qty", "upk.qty", t("Сумма выше порога подтверждения", "The amount is above the confirmation threshold")),
-      clientSigns(2),
+      clientSigns("both"),
       // Сумма не дробится: один заказ и один реквизит на всю покупку (ревью К2.1 № 5).
       { id: "one-order", what: t("Один заказ на всю сумму — покупка не дробится", "One order for the whole amount — the purchase is not split"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" }, times: 1 },
       { id: "one-credential", what: t("Один платёжный реквизит на покупку", "One payment credential for the purchase"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" }, times: 1 },
@@ -276,7 +276,6 @@ export const PASSPORTS: readonly Passport[] = [
     outcome: { kind: "stopped", text: t("Клиент отозвал поручение; агент остановил попытку сам — до витрин и оплаты", "The client revoked the mandate; the agent stopped the attempt itself — before shops and payment") },
     statuses: { mandate: t("поручение отозвано", "mandate revoked"), operation: t("операции нет", "no operation"), ...ACTIVE },
     expect: [
-      clientSigns(1),
       step("ask", "revoke.ask", t("Сюжет просит клиента отозвать поручение в банке (С-28)", "The scenario asks the client to revoke the mandate in the bank (С-28)")),
       { id: "client-revokes", what: t("Отзывает клиент в банке", "The client revokes in the bank"), match: { ...BY_BANK, ref: REVOKE }, times: 1 },
       event("revoked-event", "mandate.revoked", t("Платформа: поручение отозвано (С-28)", "Platform: mandate revoked (С-28)"), { situation: "С-28" }),
@@ -292,8 +291,15 @@ export const PASSPORTS: readonly Passport[] = [
     forbid: [
       ...COMMON_FORBID,
       ...NO_PAID,
+      { id: "no-sign", what: t("Новых подписей нет: отзывается поручение сюжета 1", "No new signatures: the mandate of scenario 1 is revoked"), match: { stream: "monitor", ref: SIGN } },
       { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
     ],
   },
 ];
+
+/** Паспорта прогонов с монитора: первым ожиданием — метка начала `run.<имя>` (К2.3а, Р-1391). */
+export const PASSPORTS: readonly Passport[] = RAW.map((p) => ({
+  ...p,
+  expect: [step("start", `run.${p.name}`, t(`Начат сюжет ${p.no} — метка прогона`, `Scenario ${p.no} started — run marker`), {}, 1), ...p.expect],
+}));
