@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation } from "../../src/dashboards/interpret.js";
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
+import { control, DEFAULT_WAIT_MS } from "../../src/dashboards/control.js";
 import { matches, PASSPORTS } from "../../src/dashboards/passports.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
@@ -128,6 +129,22 @@ describe("интерпретатор на пяти сюжетах приёмки
         else expect(n, `сюжет ${p.no}, ${e.id}`).toBeGreaterThan(0);
       }
       for (const e of p.forbid) expect(list.filter((r) => matches(r, e.match)).map((r) => `${r.seq} ${r.ref}`), `сюжет ${p.no}, запрет ${e.id}`).toEqual([]);
+    }
+  });
+
+  it("К2.2: контролёр на пяти сюжетах — до срока «ждёт» (выполнено N из N), после срока «принято N из N»", () => {
+    for (const p of PASSPORTS) {
+      const list = runs.get(p.no)!;
+      const own = list.filter((r) => r.source !== "pao_event").map((r) => Date.parse(r.at));
+      expect(own.every(Number.isFinite), `сюжет ${p.no}: время записей`).toBe(true);
+      const startedAt = new Date(Math.min(...own));
+      const last = Math.max(...own);
+      const before = control(p, list, { now: new Date(last + 1), startedAt });
+      expect(before.state, `сюжет ${p.no}`).toBe("waiting");
+      expect(before.met, `сюжет ${p.no}`).toBe(before.total);
+      const done = control(p, list, { now: new Date(last + DEFAULT_WAIT_MS), startedAt });
+      expect(done.items.filter((i) => i.state !== "accepted").map((i) => `${i.id}: ${i.state} ${i.reasons.join(",")}`), `сюжет ${p.no}`).toEqual([]);
+      expect(done.accepted).toBe(done.total);
     }
   });
 

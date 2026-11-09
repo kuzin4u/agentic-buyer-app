@@ -23,6 +23,11 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
     for (const p of PASSPORTS) {
       const ids = [...p.expect, ...p.forbid].map((e) => e.id);
       expect(new Set(ids).size, `${p.no}`).toBe(ids.length);
+      // «после» — ссылка на ожидание этого же паспорта.
+      for (const e of p.expect) if (e.after !== undefined) expect(p.expect.some((x) => x.id === e.after), `${p.no}/${e.id}`).toBe(true);
+      // Итог оплаты в сюжете — только после события Платформы «оплачено» (инвариант 6).
+      const outcome = p.expect.find((e) => e.match.ref === "outcome");
+      if (outcome) expect(outcome.after, `${p.no}`).toBe("paid");
       for (const e of [...p.expect, ...p.forbid]) {
         expect(e.what.ru.length && e.what.en.length, `${p.no}/${e.id}`).toBeGreaterThan(0);
         const m = e.match;

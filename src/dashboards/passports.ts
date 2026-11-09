@@ -44,9 +44,12 @@ export interface Forbid {
   readonly match: Match;
 }
 
-/** Что ожидается; `times` — сколько раз ровно (например, «оплачено» — одно событие Платформы), нет — хотя бы один раз. */
+/** Что ожидается; `times` — сколько раз ровно (например, «оплачено» — одно событие Платформы), нет — хотя бы один раз.
+ *  `after` — id другого ожидания этого паспорта, которое должно случиться раньше (по seq шины): например, итог оплаты
+ *  в сюжете — только после события Платформы «оплачено» (инвариант 6; ревью К2.2 № 5). */
 export interface Expectation extends Forbid {
   readonly times?: number;
+  readonly after?: string;
 }
 
 /** Исход сюжета. */
@@ -222,7 +225,7 @@ export const PASSPORTS: readonly Passport[] = [
       step("order", "order.placed", t("Заказ у продавца", "Order at the merchant")),
       step("reply", "order.shop_reply", t("Ответ витрины «оплачен» — слова продавца, не итог", "Shop reply “paid” — merchant's words, not the outcome"), { status: "PAID" }),
       PAID_EVENT(1),
-      step("outcome", "outcome", t("Итог по событию Платформы: авторизовано", "Outcome from the Platform event: authorized"), { status: "AUTHORIZED" }),
+      { ...step("outcome", "outcome", t("Итог — после события Платформы «оплачено»: авторизовано", "Outcome — after the Platform “paid” event: authorized"), { status: "AUTHORIZED" }), after: "paid" },
     ],
     forbid: [...COMMON_FORBID],
   },
@@ -262,7 +265,7 @@ export const PASSPORTS: readonly Passport[] = [
       { id: "client-confirms", what: t("Подтверждает клиент на странице банка, не агент", "The client confirms on the bank page, not the agent"), match: { ...BY_BANK, ref: CONFIRM }, times: 1 },
       event("approved", "confirmation.approved", t("Платформа: клиент подтвердил покупку", "Platform: the client confirmed the purchase")),
       PAID_EVENT(1),
-      step("outcome", "outcome", t("Итог по событию Платформы: авторизовано", "Outcome from the Platform event: authorized"), { status: "AUTHORIZED" }),
+      { ...step("outcome", "outcome", t("Итог — после события Платформы «оплачено»: авторизовано", "Outcome — after the Platform “paid” event: authorized"), { status: "AUTHORIZED" }), after: "paid" },
     ],
     forbid: [...COMMON_FORBID, { id: "no-split", what: t("Попытки разбить покупку под порог нет", "No attempt to split the purchase below the threshold"), match: { code: "SPLIT_WINDOW" } }],
   },
