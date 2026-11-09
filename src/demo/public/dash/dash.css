@@ -50,6 +50,20 @@ tbody.show-details .service-only { display: block; color: var(--muted); }
 .conn-ok .conn-icon { color: var(--ok); }
 .conn-wait .conn-icon { color: var(--muted); }
 .conn-lost { color: var(--alert); }
+/* Экран «Контроль» (К2.3б): карточки прогонов; цвет — дополнительно к значку и тексту. */
+.run { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 0 0 10px; }
+.run-head { margin: 0 0 2px; font-size: 16px; }
+.run-sum { margin: 4px 0; }
+.run-accepted .conn-icon { color: var(--ok); }
+.run-waiting .conn-icon { color: var(--muted); }
+.run-rejected { color: var(--alert); font-weight: 600; }
+.checks { margin: 4px 0; padding-left: 18px; }
+.check-rejected { color: var(--alert); }
+.early, .no-passport { color: var(--alert); margin: 2px 0; }
+.verdict-box { margin-top: 6px; }
+.verdict-btn { margin: 0 6px 0 0; }
+.verdict-accepted { color: var(--ok); font-weight: 600; }
+.verdict-rejected { color: var(--alert); font-weight: 600; }
 @media (max-width: 720px) {
   th:nth-child(1), td:nth-child(1) { display: none; }
   th, td { padding: 4px; }

@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Interpretation } from "../../src/dashboards/interpret.js";
-import { SCREEN } from "../../src/dashboards/phrases.js";
+import { CONTROL, SCREEN } from "../../src/dashboards/phrases.js";
 import { interpretPage } from "../../src/demo/dash.js";
 
 const SCRIPT = readFileSync(new URL("../../src/demo/public/dash/interpret.js", import.meta.url), "utf8");
@@ -216,4 +216,75 @@ describe("скрипт экрана «Интерпретация» (К1.4а)", (
     const header = CSS.split("\n").filter((l) => l.startsWith("header"));
     expect(header.join("\n")).not.toMatch(/display:\s*none|overflow:\s*hidden|text-overflow/);
   });
+});
+
+// --- К2.3б: скрипт экрана «Контроль» (public/dash/control.js) на том же фальшивом DOM ---
+
+const CONTROL_SCRIPT = readFileSync(new URL("../../src/demo/public/dash/control.js", import.meta.url), "utf8");
+
+function controlScreen(lang: "ru" | "en") {
+  const nodes: Record<string, Node> = {};
+  for (const id of ["runs", "empty", "status", "status-icon", "conn"]) nodes[id] = new Node("div", id);
+  nodes["i18n"] = new Node("script", "i18n");
+  nodes["i18n"]!.textContent = JSON.stringify({ lang, labels: Object.fromEntries(Object.entries(CONTROL).map(([k, v]) => [k, v[lang]])) });
+  let es: { onmessage?: (m: { data: string }) => void; onerror?: () => void } = {};
+  const posts: unknown[] = [];
+  const document = { getElementById: (id: string) => nodes[id] ?? null, createElement: (tag: string) => new Node(tag) };
+  class EventSource {
+    constructor() {
+      es = this as typeof es;
+    }
+  }
+  const fetch = (url: string, init: { body: string }) => (posts.push({ url, body: JSON.parse(init.body) }), Promise.resolve({ ok: true }));
+  new Function("document", "EventSource", "fetch", CONTROL_SCRIPT)(document, EventSource, fetch);
+  return { box: nodes["runs"]!, empty: nodes["empty"]!, conn: nodes["conn"]!, posts, send: (runs: unknown[]) => es.onmessage!({ data: JSON.stringify({ type: "runs", epoch: "e1", runs }) }), error: () => es.onerror!() };
+}
+
+const item = (id: string, state: string, met: boolean, reasons: string[] = []) => ({ id, what: { ru: `пункт ${id}`, en: `item ${id}` }, type: "expect", state, reasons, met, count: 0, seqs: [] });
+const result = (state: string, items: unknown[]) => ({ no: 1, state, accepted: state === "accepted" ? 2 : 0, met: 2, total: 2, items, deadline: "2026-11-09T12:00:15.000Z" });
+const view = (key: number, extra: Record<string, unknown>) => ({ key, name: "intent", no: 1, title: { ru: "1. Подпись поручения", en: "1. Mandate signature" }, startedAt: "2026-11-09T12:00:00.000Z", early: { next: false, prev: false }, ...extra });
+
+describe("скрипт экрана «Контроль» (К2.3б)", () => {
+  for (const lang of ["ru", "en"] as const) {
+    it(`${lang}: до срока — «ждёт», «выполнено N из N», кнопок вердикта нет; «не принято» до срока — тоже без кнопок; после срока — кнопки; пункты — с причинами словами`, () => {
+      const s = controlScreen(lang);
+      s.send([view(10, { closed: false, result: result("waiting", [item("a", "waiting", true), item("b", "waiting", true)]) })]);
+      const card = s.box.children[0]!;
+      expect(card.text()).toContain(CONTROL["state.waiting"][lang]);
+      expect(card.text()).toContain(`${CONTROL.met[lang]} 2 ${CONTROL.of[lang]} 2`);
+      expect(card.text()).toContain(CONTROL["verdict.wait"][lang]);
+      expect(card.all().some((n) => n.tag === "button")).toBe(false);
+      expect(s.empty.hidden).toBe(true);
+
+      // «Не принято» до срока (ревью К2.3б № 1, № 2): кнопок нет — вердикт только после срока.
+      s.send([view(10, { closed: false, result: result("rejected", [item("b", "rejected", false, ["forbidden"])]) })]);
+      expect(s.box.children[0]!.all().some((n) => n.tag === "button")).toBe(false);
+      expect(s.box.children[0]!.text()).toContain(CONTROL["verdict.wait"][lang]);
+
+      s.send([view(10, { closed: true, result: result("rejected", [item("a", "accepted", true), item("b", "rejected", false, ["missing"])]) })]);
+      const c2 = s.box.children[0]!;
+      expect(c2.text()).toContain(`${lang === "ru" ? "пункт b" : "item b"} — ${CONTROL["state.rejected"][lang]} (${CONTROL["reason.missing"][lang]})`);
+      expect(c2.text()).not.toContain(lang === "ru" ? "пункт a" : "item a"); // принятое — свёрнуто
+      const buttons = c2.all().filter((n) => n.tag === "button");
+      expect(buttons.map((b) => b.dataset["decision"])).toEqual(["accepted", "rejected"]);
+      buttons[1]!.listeners["click"]![0]!();
+      expect(s.posts).toEqual([{ url: "/dash/control/verdict", body: { epoch: "e1", key: 10, decision: "rejected" } }]);
+    });
+
+    it(`${lang}: вердикт поставлен — решение, итог при вердикте и пометка раннего запуска; прогон без паспорта — «паспорта нет», без кнопок`, () => {
+      const s = controlScreen(lang);
+      const verdict = { decision: "accepted", at: "2026-11-09T12:00:20.000Z", state: "accepted", accepted: 2, total: 2, early: { next: true, prev: false } };
+      s.send([view(10, { closed: true, result: result("accepted", []), verdict, early: { next: true, prev: false } }), { key: 30, name: "unknown", startedAt: "2026-11-09T12:01:00.000Z", closed: true, early: { next: false, prev: false } }]);
+      const [unknown, run] = s.box.children; // новые — сверху
+      expect(unknown!.text()).toContain(CONTROL["no.passport"][lang]);
+      expect(unknown!.all().some((n) => n.tag === "button")).toBe(false);
+      expect(run!.text()).toContain(CONTROL["verdict.accepted"][lang]);
+      expect(run!.text()).toContain(`${CONTROL["verdict.at"][lang]} ${CONTROL["q.open"][lang]}${CONTROL["state.accepted"][lang]}${CONTROL["q.close"][lang]}, 2 ${CONTROL.of[lang]} 2`);
+      if (lang === "en") expect(run!.text()).not.toMatch(/[«»]/);
+      expect(run!.text()).toContain(CONTROL["early.next"][lang]);
+      expect(run!.all().some((n) => n.tag === "button")).toBe(false);
+      s.error();
+      expect(s.conn.className).toBe("conn conn-lost");
+    });
+  }
 });

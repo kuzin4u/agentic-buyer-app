@@ -140,14 +140,15 @@ describe("контролёр (К2.2)", () => {
     expect(() => control(P1, list, { now: new Date(T0), startedAt: started, waitMs: -1 })).toThrow(ControlInputError);
   });
 
-  it("нарезка по меткам (К2.3а): от метки до следующей; до первой метки — вне прогонов; метка неизвестного сюжета — прогон не сверяется", () => {
+  it("нарезка по меткам (К2.3а): от метки до следующей; до первой метки — вне прогонов; метка неизвестного сюжета — прогон без паспорта", () => {
     const m = (seq: number, name: string) => rec(seq, { stream: "scenario", ref: `run.${name}` });
     const x = (seq: number) => rec(seq, { stream: "monitor", ref: "GET /v1/shops" });
     const runs = splitRuns([x(5), m(10, "intent"), x(11), m(20, "purchase"), x(25), x(21), m(30, "unknown"), x(31), m(40, "revoke"), x(41), x(1)]);
-    expect(runs.map((r) => [r.passport.name, r.startSeq, r.items.map((i) => i.seq)])).toEqual([
-      ["intent", 10, [10, 11]],
-      ["purchase", 20, [20, 21, 25]],
-      ["revoke", 40, [40, 41]],
+    expect(runs.map((r) => [r.name, r.passport?.no ?? null, r.startSeq, r.items.map((i) => i.seq)])).toEqual([
+      ["intent", 1, 10, [10, 11]],
+      ["purchase", 2, 20, [20, 21, 25]],
+      ["unknown", null, 30, [30, 31]],
+      ["revoke", 5, 40, [40, 41]],
     ]);
     expect(runs[0]!.startedAt.toISOString()).toBe(new Date(T0 + 10).toISOString());
     expect(splitRuns([x(1), x(2)])).toEqual([]);

@@ -142,6 +142,60 @@ describe("экран «Интерпретация»", { timeout: 90_000 }, () =>
     for (let i = 1; i < after.length; i++) expect(after[i]!.seq).toBeGreaterThan(after[i - 1]!.seq);
   });
 
+  it("К2.3б «Контроль»: страница ru/en, бренд, CSP 'self', скрипт без разметки из строк; лента — прогон сюжета 1; вердикт до срока — 409, с чужой страницы — 403; выгрузка ACC-1", async () => {
+    const brand = JSON.parse(readFileSync("config/brand.demo.json", "utf8")) as { name: string };
+    const ru = await fetch(`${demo.monitor.url}/dash/control?lang=ru`);
+    expect(ru.status).toBe(200);
+    expect(ru.headers.get("content-security-policy")).toContain("default-src 'self'");
+    const html = await ru.text();
+    expect(html).toContain("<h1>Контроль</h1>");
+    expect(html).toContain(brand.name);
+    expect(html).toContain('href="/dash/control?lang=en"');
+    for (const s of [...html.matchAll(/<script\b[^>]*>/gi)].map((m) => m[0])) expect(s).toMatch(/\ssrc="\/dash\/control\.js"|type="application\/json"/);
+    expect(await (await fetch(`${demo.monitor.url}/dash/control?lang=en`)).text()).toContain("<h1>Control</h1>");
+    const js = readFileSync("src/demo/public/dash/control.js", "utf8");
+    expect(js).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+    expect((await fetch(`${demo.monitor.url}/dash/control.js`)).headers.get("content-type")).toContain("text/javascript");
+    // Монитор и «Интерпретация» ссылаются на «Контроль».
+    expect(await (await fetch(`${demo.monitor.url}/?lang=ru`)).text()).toContain('href="/dash/control?lang=ru"');
+    expect(await (await fetch(`${demo.monitor.url}/dash/interpret?lang=ru`)).text()).toContain('href="/dash/control?lang=ru"');
+
+    // Свежий прогон сюжета 1: срок ожидания (15 с) у него точно не вышел.
+    await driver(demo).run(1);
+    const text = await readSse(`${demo.monitor.url}/dash/control/events`, (t) => t.includes('"type":"runs"') && t.includes("\n\n"));
+    const first = text.split("\n\n").find((b) => b.startsWith("data: "))!;
+    const snap = JSON.parse(first.slice(6)) as { epoch: string; runs: { key: number; name: string; closed: boolean; result?: { state: string } }[] };
+    const intent = snap.runs.filter((r) => r.name === "intent").at(-1)!;
+    expect(intent.result).toBeDefined();
+    expect(intent.closed).toBe(false);
+
+    const post = (body: unknown, origin = demo.monitor.url) =>
+      fetch(`${demo.monitor.url}/dash/control/verdict`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+    const ok = { epoch: snap.epoch, key: intent.key, decision: "accepted" };
+    expect((await post(ok, "http://evil.example")).status).toBe(403);
+    // Форма тела (ревью К2.3б № 4): null, массив, число, не JSON — 400; процесс стенда не падает.
+    for (const bad of ["null", "[]", "5", "{", JSON.stringify({ ...ok, key: "x" }), JSON.stringify({ ...ok, decision: "maybe" }), JSON.stringify({ key: intent.key, decision: "accepted" })])
+      expect((await post(bad)).status, bad).toBe(400);
+    // Тело больше 1 КБ — соединение рвётся, ответа нет.
+    await expect(post({ ...ok, pad: "x".repeat(2000) })).rejects.toThrow();
+    // Прежнее или чужое поколение (ревью К2.3б № 7) — 409 STALE.
+    const stale = await post({ ...ok, epoch: "прежнее" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ ok: false, code: "STALE" });
+    expect((await post({ ...ok, key: 987654 })).status).toBe(409);
+    // Срок не вышел — вердикт не ставится (без условий: прогон свежий).
+    const r = await post(ok);
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ ok: false, code: "WAITING" });
+    // Стенд жив после плохих тел.
+    expect((await fetch(`${demo.monitor.url}/dash/control?lang=ru`)).status).toBe(200);
+    const md = await fetch(`${demo.monitor.url}/dash/control/acc1.md?lang=ru`);
+    expect(md.headers.get("content-type")).toContain("text/markdown");
+    const body = await md.text();
+    expect(body).toContain("# Акт ACC-1 — прогоны сюжетов приёмки демо-стенда");
+    expect(body).toContain("1. Подпись поручения");
+  });
+
   it("чужой Host — 421 и на маршрутах экрана (DNS rebinding); close() закрывает открытую ленту экрана со стороны сервера (№ 4)", async () => {
     const port = new URL(demo.monitor.url).port;
     const { request } = await import("node:http");

@@ -69,7 +69,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       diag: buildDiagSnapshot(),
       // Экран «Интерпретация» (К1.4): на локальном стенде эмуляторы — банк и продавцы (П2 п. 2).
       // Учебные витрины — по поведению витрины фикстуры стенда (З10): их учебные сбои — так задумано.
-      dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles(), training: TRAINING_MERCHANTS },
+      // Часы «Контроля» — те же, что у шины (К2.3б): срок ожидания и время вердикта.
+      dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles(), training: TRAINING_MERCHANTS, now: () => stand.stand.now() },
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
     });

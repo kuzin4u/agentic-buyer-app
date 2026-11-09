@@ -22,7 +22,10 @@ import { matches, PASSPORTS, type Expectation, type Forbid, type Passport } from
 
 /** Прогон сюжета: записи от метки `run.<имя>` до следующей метки (К2.3а, Р-1391). */
 export interface Run {
-  readonly passport: Passport;
+  /** Имя сюжета из метки. */
+  readonly name: string;
+  /** Паспорт сюжета; нет — метка неизвестного сюжета: «паспорта нет — сюжет не сверяется» (ревью К2.3а № 5). */
+  readonly passport?: Passport;
   /** seq метки начала. */
   readonly startSeq: number;
   /** Время метки начала — по часам шины: начало прогона для срока ожидания контролёра. */
@@ -34,17 +37,18 @@ export interface Run {
 const RUN_PREFIX = "run.";
 
 /** Разбивка ленты на прогоны по меткам начала сюжета: прогон — от метки до следующей метки. Записи до первой метки — вне
- *  сюжетов, в прогоны не входят; угадывать сюжет по шагам нельзя (Р-1391). Метка неизвестного сюжета начинает прогон,
- *  который не сверяется (записи до следующей метки отбрасываются). Порядок — по seq шины (П2, дополнение 5). */
+ *  сюжетов, в прогоны не входят; угадывать сюжет по шагам нельзя (Р-1391). Метка неизвестного сюжета начинает прогон без
+ *  паспорта — его показывают, но не сверяют (ревью К2.3а № 5). Порядок — по seq шины (П2, дополнение 5). */
 export function splitRuns(list: readonly Interpretation[]): Run[] {
-  const runs: { passport: Passport | undefined; startSeq: number; startedAt: Date; items: Interpretation[] }[] = [];
+  const runs: { name: string; passport?: Passport; startSeq: number; startedAt: Date; items: Interpretation[] }[] = [];
   for (const r of [...list].sort((a, b) => a.seq - b.seq)) {
     if (r.stream === "scenario" && r.ref.startsWith(RUN_PREFIX)) {
       const name = r.ref.slice(RUN_PREFIX.length);
-      runs.push({ passport: PASSPORTS.find((p) => p.name === name), startSeq: r.seq, startedAt: new Date(r.at), items: [r] });
+      const passport = PASSPORTS.find((p) => p.name === name);
+      runs.push({ name, ...(passport && { passport }), startSeq: r.seq, startedAt: new Date(r.at), items: [r] });
     } else runs[runs.length - 1]?.items.push(r);
   }
-  return runs.flatMap((x) => (x.passport ? [{ ...x, passport: x.passport }] : []));
+  return runs;
 }
 
 /** Срок ожидания по умолчанию, мс. Не меньше окна перестановки событий Платформы `event_reorder_window_ms` (5000 мс;

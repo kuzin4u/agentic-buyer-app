@@ -124,7 +124,11 @@ describe("интерпретатор на пяти сюжетах приёмки
 
   // К2.3а: общая лента драйвера режется на прогоны по меткам run.<имя>, как на экране «Контроль». Драйвер перед сюжетами
   // 2, 3 и 5 сам запускает сюжет 1 (подпись поручения) — это отдельные прогоны «intent».
-  const segments = () => splitRuns([...new Map([...runs.values()].flat().map((r) => [r.seq, r])).values()]);
+  const segments = () =>
+    splitRuns([...new Map([...runs.values()].flat().map((r) => [r.seq, r])).values()]).map((s) => {
+      if (!s.passport) throw new Error(`прогон без паспорта: ${s.name}`);
+      return { ...s, passport: s.passport };
+    });
 
   it("К2.3а: нарезка по меткам — прогоны в порядке запуска драйвером, каждый начинается своей меткой", () => {
     expect(segments().map((s) => s.passport.name)).toEqual(["intent", "intent", "purchase", "intent", "limit", "upk", "intent", "revoke"]);

@@ -2,7 +2,7 @@
 // `public/dash/interpret.js` через textContent (инвариант 4). Язык ru/en и бренд из конфигурации (правило совместимости 3,
 // инвариант 7). Подписи — словарь дашбордов; заголовки карточек С-xx — из библиотеки ситуаций.
 import type { Brand } from "../brand.js";
-import { LABELS, SCREEN } from "../dashboards/phrases.js";
+import { CONTROL, LABELS, SCREEN } from "../dashboards/phrases.js";
 import type { WireLang } from "../dashboards/wire.js";
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -37,7 +37,7 @@ export function interpretPage(lang: WireLang, brand: Brand, hasLogo: boolean, si
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)}</div>
   <h1>${s("title")}</h1>
-  <nav><a href="/?lang=${lang}">${s("monitor")}</a> <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></span></nav>
+  <nav><a href="/?lang=${lang}">${s("monitor")}</a> <a href="/dash/control?lang=${lang}">${escapeHtml(CONTROL.title[lang])}</a> <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></span></nav>
 </header>
 <main>
   <p class="subtitle">${s("subtitle")}</p>
