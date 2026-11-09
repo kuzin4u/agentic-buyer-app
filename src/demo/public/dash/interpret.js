@@ -40,17 +40,23 @@
     td.appendChild(el("div", label("verdict." + w.verdict), "verdict verdict-" + w.verdict));
     if (w.status === "pending") td.appendChild(el("div", label("pending"), "pending"));
     if (w.operator) {
-      // Текст для оператора — из реестра; английского нет — показывается русский, не выдумывается.
+      // Текст для оператора — из реестра, с именами полей и сырыми значениями: только в служебном виде (З2, Р-1361);
+      // английского нет — показывается русский, не выдумывается.
       const text = lang === "en" && w.operator.en ? w.operator.en : w.operator.ru;
-      td.appendChild(el("div", text, "operator"));
+      td.appendChild(el("div", text, "operator service-only"));
     }
     return td;
   }
 
-  function situationCell(id) {
+  // Цветом выделяется только ситуация у конфликта и фрода; у нормы и ошибки — нейтрально, серым (З1, Р-1361).
+  const ALERT_KINDS = ["conflict", "fraud"];
+
+  function situationCell(id, kind) {
     const td = el("td", undefined, "situation");
     if (!id) return td;
-    td.appendChild(el("strong", id));
+    const alert = ALERT_KINDS.indexOf(kind) >= 0;
+    td.classList.add(alert ? "situation-alert" : "situation-neutral");
+    td.appendChild(el(alert ? "strong" : "span", label("situation.label") + " " + id, "situation-id"));
     if (Object.prototype.hasOwnProperty.call(titles, id)) {
       td.appendChild(el("div", titles[id], "situation-title"));
       const note = label("situation.ru_only");
@@ -68,11 +74,27 @@
     const actor = el("td", label("role." + r.actor));
     if (r.emulated) actor.appendChild(el("span", label("emulated"), "badge"));
     tr.appendChild(actor);
-    tr.appendChild(el("td", label("kind." + r.kind), "kind"));
+    const kind = el("td", label("kind." + r.kind), "kind");
+    // Учебная витрина стенда: сбой задуман (З10).
+    if (r.training) kind.appendChild(el("div", label("training"), "training"));
+    tr.appendChild(kind);
     tr.appendChild(el("td", r.phrase && r.phrase[lang], "phrase"));
     tr.appendChild(whoCell(r.who));
-    tr.appendChild(situationCell(r.situation));
+    tr.appendChild(situationCell(r.situation, r.kind));
     return tr;
+  }
+
+  // Состояние ленты — значок, цвет и текст (З7): цвет не единственный носитель смысла.
+  const CONN = { open: "ok", connecting: "wait", reset: "wait", closed: "lost", screen_offline: "lost" };
+  const CONN_ICON = { ok: "●", wait: "◌", lost: "✕" };
+  const statusIcon = document.getElementById("status-icon");
+  const statusBox = document.getElementById("conn");
+
+  function setStatus(s) {
+    const state = Object.prototype.hasOwnProperty.call(CONN, s) ? CONN[s] : "wait";
+    status.textContent = label("status." + s);
+    statusIcon.textContent = CONN_ICON[state];
+    statusBox.className = "conn conn-" + state;
   }
 
   // По seq: событие Платформы может прийти после записей с большим номером. Поиск места — с конца: seq почти всегда
@@ -96,6 +118,7 @@
   }
 
   details.addEventListener("change", refresh);
+  setStatus("connecting");
 
   const es = new EventSource("/dash/interpret/events");
   es.onmessage = (m) => {
@@ -108,7 +131,7 @@
     if (e.type === "snapshot") {
       while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
       for (const r of e.items) insert(r);
-      status.textContent = label("status." + e.status);
+      setStatus(e.status);
       setDiag(e.diag);
       refresh();
     } else if (e.type === "item") {
@@ -117,12 +140,12 @@
     } else if (e.type === "reset") {
       while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
       refresh();
-    } else if (e.type === "status") status.textContent = label("status." + e.status);
+    } else if (e.type === "status") setStatus(e.status);
     else if (e.type === "diag") setDiag(e.diag);
   };
   // Обрыв связи экрана с сервером — не то же, что отключение шины у источника (ревью К1.4 № 9); EventSource переподключится
   // и получит снимок заново.
   es.onerror = () => {
-    status.textContent = label("status.screen_offline");
+    setStatus("screen_offline");
   };
 })();

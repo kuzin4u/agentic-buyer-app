@@ -47,7 +47,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
   "purchase.mode_note": p("Покупка в немедленном режиме: корзина подписывается сразу", "Immediate mode: the cart is signed right away"),
   "search.found": p("Найдено предложений в контуре гарантий: {contour}, вне контура: {market}", "Offers inside the guarantee contour: {contour}, outside: {market}"),
-  "search.flagged": p("Предложение {sku} продавца[ {merchant_id}] исключено по сигналу {codes}", "Offer {sku} of merchant[ {merchant_id}] excluded on signal {codes}"),
+  "search.flagged": p("Предложение {sku} продавца[ {merchant_id}] исключено: {codes}", "Offer {sku} of merchant[ {merchant_id}] excluded: {codes}"),
   "search.compared": p("Агент сравнил кандидатов: {candidates}", "The agent compared candidates: {candidates}"),
   "search.picked": p("Агент выбрал «{title}» — {price}", "The agent picked “{title}” — {price}"),
   "upk.qty": p("Количество {qty} — чтобы сумма была выше порога подтверждения {threshold}", "Quantity {qty} — to exceed the confirmation threshold {threshold}"),
@@ -91,6 +91,56 @@ const console_: Readonly<Record<string, Phrase>> = {
   "mandate.revoked": p("Агент узнал об отзыве поручения", "The agent learned the mandate was revoked"),
   "agent.refused": p("Агент сам отказался действовать: {code}", "The agent refused to act on its own: {code}"),
   "purchase.unfinished": p("Покупка не завершена: {code}", "Purchase not completed: {code}"),
+};
+
+/** Коды и статусы словами для текста человека (З2, Р-1361, Р-1364): в подстановках `{code}`, `{codes}`, `{reply}`, `{status}`
+ *  код заменяется фразой; сам код остаётся в колонке «Кто ошибся». Кода нет в словаре — он выводится как есть, чтобы
+ *  причина не пропала; коды пяти сюжетов демо-стенда словарь покрывает (тест). Тексты реестров (для оператора) сюда не
+ *  попадают: они — только в служебном виде экрана. «Оплачено» — только у события Платформы (инвариант 6), поэтому
+ *  ответ витрины PAID — «заказ оплачен» со слов продавца, итог AUTHORIZED — «операция авторизована». */
+export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
+  // ответы витрины и итоги операции
+  PAID: p("заказ оплачен", "order paid"),
+  AWAITING_CONFIRMATION: p("заказ ждёт подтверждения клиента", "order awaits the client's confirmation"),
+  DECLINED: p("отклонено", "declined"),
+  AUTHORIZED: p("операция авторизована", "operation authorized"),
+  SETTLED: p("списание подтверждено", "settlement confirmed"),
+  REFUNDED: p("оформлен возврат", "refund issued"),
+  // передача решения человеку
+  CONFIRMATION_REQUIRED: p("нужно подтверждение клиента", "client confirmation required"),
+  CONFIRMATION_PENDING: p("клиент ещё не ответил", "the client has not answered yet"),
+  // сигналы A5 и карточка продавца
+  A5_PRICE_MISMATCH: p("цена в описании не совпадает с ценой витрины", "the price in the description differs from the shop price"),
+  A5_DECISION_FORGED: p("в описании товара — подложенное «решение» для агента", "the item description contains a forged “decision” for the agent"),
+  REQUIRED: p("в карточке продавца не заполнено обязательное поле", "a required field is missing in the merchant's card"),
+  BAD_TYPE: p("поле карточки продавца заполнено неверно", "a merchant card field has the wrong type"),
+  BAD_AMOUNT: p("неверная цена в карточке продавца", "invalid price in the merchant's card"),
+  BAD_CURRENCY: p("неверная валюта в карточке продавца", "invalid currency in the merchant's card"),
+  // поручение и пределы
+  MANDATE_REVOKED: p("поручение отозвано", "the mandate was revoked"),
+  MANDATE_NOT_ACTIVE: p("поручение не действует", "the mandate is not active"),
+  MANDATE_EXPIRED: p("срок поручения истёк", "the mandate has expired"),
+  MANDATE_SCOPE: p("покупка вне пределов поручения", "the purchase is outside the mandate"),
+  PRINCIPAL_SIGNATURE_PENDING: p("клиент ещё не подписал поручение", "the client has not signed the mandate yet"),
+  LIMIT_EXCEEDED: p("превышен лимит", "limit exceeded"),
+  DECLINED_LIMIT_EXCEEDED: p("отказ: превышен лимит", "declined: limit exceeded"),
+  DECLINED_MANDATE_REVOKED: p("отказ: поручение отозвано", "declined: the mandate was revoked"),
+  DECLINED_MANDATE_SCOPE: p("отказ: покупка вне пределов поручения", "declined: the purchase is outside the mandate"),
+  DECLINED_MANDATE_EXPIRED: p("отказ: срок поручения истёк", "declined: the mandate has expired"),
+  DECLINED_CONFIRMATION_REQUIRED: p("отказ: нужно подтверждение клиента", "declined: client confirmation required"),
+  SPLIT_WINDOW: p("попытка разбить покупку под порог подтверждения", "an attempt to split the purchase below the confirmation threshold"),
+  // заказ и оплата у витрины
+  ORDER_NOT_PAYABLE: p("заказ нельзя оплатить", "the order cannot be paid"),
+  PACKAGE_MISMATCH: p("пакет оплаты не от этого заказа", "the payment package does not match the order"),
+  PACKAGE_AGENT_MISMATCH: p("пакет оплаты другого агента", "the payment package belongs to another agent"),
+  CREDENTIAL_INVALID: p("платёжный реквизит не подходит", "the payment credential is not valid"),
+  // подпись и личность агента
+  SIGNATURE_INVALID: p("неверная подпись агента", "invalid agent signature"),
+  AGENT_UNKNOWN: p("агент неизвестен Платформе", "the agent is unknown to the Platform"),
+  REQUEST_INVALID: p("запрос не по форме", "malformed request"),
+  IDEMPOTENCY_CONFLICT: p("повтор запроса с другим содержимым", "a repeated request with different content"),
+  // сюжеты демо-стенда
+  REVOKED_NOT_ENFORCED: p("агент не остановился после отзыва поручения", "the agent did not stop after the mandate was revoked"),
 };
 
 export const PHRASES = {
@@ -169,6 +219,8 @@ export const SCREEN = {
   "who.side": p("сторона", "side"),
   "who.none": p("сторона не определена", "side not determined"),
   "situation.ru_only": p("", "card text is in Russian"),
+  "situation.label": p("ситуация", "situation"),
+  training: p("учебный сбой витрины", "training fault of the shop"),
   "status.connecting": p("подключение к шине…", "connecting to the bus…"),
   "status.open": p("шина подключена", "bus connected"),
   "status.reset": p("стенд перезапущен — лента начата заново", "stand restarted — feed started over"),

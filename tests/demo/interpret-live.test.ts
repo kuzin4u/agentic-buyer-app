@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation } from "../../src/dashboards/interpret.js";
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
+import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { rawInHumanText } from "../dashboards/human-text.js";
 import { driver, type ScenarioNo } from "./drive.js";
 
 describe("интерпретатор на пяти сюжетах приёмки", { timeout: 180_000 }, () => {
@@ -14,7 +16,7 @@ describe("интерпретатор на пяти сюжетах приёмки
   beforeAll(async () => {
     demo = await startDemo();
     const raw = await (await fetch(`${demo.monitor.url}/api/diag`)).json();
-    const env: InterpretEnv = { snapshot: parseDiagSnapshot(raw)!.snapshot, emulated: LOCAL_STAND_EMULATED };
+    const env: InterpretEnv = { snapshot: parseDiagSnapshot(raw)!.snapshot, emulated: LOCAL_STAND_EMULATED, training: TRAINING_MERCHANTS };
     const d = driver(demo);
     for (const no of [1, 2, 3, 4, 5] as const) runs.set(no, (await d.run(no)).map((i) => interpret(i, env)));
   }, 180_000);
@@ -83,5 +85,42 @@ describe("интерпретатор на пяти сюжетах приёмки
     expect(stops.every((r) => r.actor === "agent" && r.who?.verdict === "expected" && ["MANDATE_REVOKED", "MANDATE_NOT_ACTIVE"].includes(r.who.code))).toBe(true);
     expect(stops.some((r) => r.situation === "С-28")).toBe(true);
     expect(k.some((r) => r.stage === "payment")).toBe(false);
+  });
+
+  it("К1.4а, З2: в тексте человека пяти сюжетов (ключевые строки) нет имён полей, сырых значений и машинных кодов — ru и en", () => {
+    for (const [no] of runs)
+      for (const r of key(no))
+        for (const lang of ["ru", "en"] as const) expect(rawInHumanText(r.phrase[lang], lang), `сюжет ${no}, seq ${r.seq}, ${lang}: ${r.phrase[lang]}`).toBeUndefined();
+  });
+
+  it("К1.4а, инвариант 6: «оплач…» / «paid» — только у события Платформы и в ответе витрины с оговоркой «слова продавца» (ревью К1.4а № 3)", () => {
+    for (const [no, list] of runs)
+      for (const r of list) {
+        const shopReply = r.stream === "scenario" && /слова продавца/.test(r.phrase.ru) && /merchant's words/.test(r.phrase.en);
+        const platform = r.stream === "monitor" && r.actor === "platform" && r.stage === "outcome";
+        if (/оплач/i.test(r.phrase.ru) || /\bpaid\b/i.test(r.phrase.en)) expect(shopReply || platform, `сюжет ${no}, seq ${r.seq}: ${r.phrase.ru}`).toBe(true);
+      }
+  });
+
+  it("К1.4а, З4: порядок — по времени возникновения: записи агента о подборе выше корзины; шаг сюжета не выше записи, которую пересказывает", () => {
+    const all = runs.get(2)!;
+    const seqOf = (p: (r: Interpretation) => boolean) => all.find(p)?.seq;
+    const flagged = seqOf((r) => r.stream === "console" && r.who?.code === "A5_PRICE_MISMATCH");
+    const excluded = seqOf((r) => r.stream === "console" && r.who?.code === "REQUIRED");
+    const stepFlagged = seqOf((r) => r.stream === "scenario" && r.who?.code === "A5_PRICE_MISMATCH");
+    const card = seqOf((r) => r.stream === "scenario" && r.stage === "cart" && r.situation === "С-25");
+    expect([flagged, excluded, stepFlagged, card].every((s) => s !== undefined)).toBe(true);
+    expect(flagged!).toBeLessThan(stepFlagged!);
+    expect(excluded!).toBeLessThan(card!);
+    expect(flagged!).toBeLessThan(card!);
+    // Записи агента и шаги сюжета — с одних часов процесса: по возрастанию seq время не убывает.
+    const own = all.filter((r) => r.stream !== "monitor").sort((a, b) => a.seq - b.seq);
+    for (let i = 1; i < own.length; i++) expect(own[i]!.at >= own[i - 1]!.at, `seq ${own[i]!.seq}`).toBe(true);
+  });
+
+  it("К1.4а, З10: неполная карточка MER-5501 — «учебный сбой витрины»; обычная покупка у MER-4401 — без пометки", () => {
+    const k = key(2);
+    expect(k.find((r) => r.who?.code === "REQUIRED")).toMatchObject({ training: true, kind: "error" });
+    expect(k.filter((r) => r.kind === "norm").every((r) => r.training === undefined)).toBe(true);
   });
 });

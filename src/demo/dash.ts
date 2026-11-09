@@ -37,11 +37,11 @@ export function interpretPage(lang: WireLang, brand: Brand, hasLogo: boolean, si
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)}</div>
   <h1>${s("title")}</h1>
-  <nav><a href="/?lang=${lang}">${s("monitor")}</a> · ${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></nav>
+  <nav><a href="/?lang=${lang}">${s("monitor")}</a> <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/interpret?lang=${other}">${other}</a></span></nav>
 </header>
 <main>
   <p class="subtitle">${s("subtitle")}</p>
-  <p class="status"><span id="status">${s("status.connecting")}</span> · <span id="diag">${s("diag.loading")}</span></p>
+  <p class="status"><span id="conn" class="conn conn-wait"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span> · <span id="diag">${s("diag.loading")}</span></p>
   <label class="toggle"><input type="checkbox" id="details"> ${s("details")}</label>
   <table id="feed">
     <thead><tr>${col("col.time")}${col("col.stage")}${col("col.actor")}${col("col.kind")}${col("col.phrase")}${col("col.who")}${col("col.situation")}</tr></thead>

@@ -6,6 +6,7 @@ import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
 import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK } from "./scenarios.js";
 import { startMonitorServer, type MonitorServer } from "./server.js";
+import { TRAINING_MERCHANTS } from "./shops.js";
 import { startDemoStand, type DemoStand } from "./stand.js";
 
 export interface DemoOptions {
@@ -67,7 +68,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       // Реестры диагностики импортирует сборка контура; экраны DEMO-2 видят только снимок (Р-1246 п. 3, Р-1273 п. 3).
       diag: buildDiagSnapshot(),
       // Экран «Интерпретация» (К1.4): на локальном стенде эмуляторы — банк и продавцы (П2 п. 2).
-      dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles() },
+      // Учебные витрины — по поведению витрины фикстуры стенда (З10): их учебные сбои — так задумано.
+      dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles(), training: TRAINING_MERCHANTS },
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
     });

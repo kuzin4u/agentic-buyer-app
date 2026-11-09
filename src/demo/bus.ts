@@ -309,6 +309,13 @@ export class MonitorBus {
 
   /** Прочитать новые записи журналов (по индексу). Открыт для тестов: не ждать таймера. */
   poll(): void {
+    this.#read(true);
+  }
+
+  /** Чтение журналов. age — опрос по таймеру: только он старит ожидающие сопоставления открытых адресов (срок —
+   *  OPEN_MATCH_POLLS опросов таймера). Дочитывание перед номером шага сюжета или события (З4) их не старит: серия шагов
+   *  подбора не превращает обращение агента в «по сети без подписи агента» (ревью reviewer К1.4а № 1). */
+  #read(age: boolean): void {
     // Журнал агента — первым: его записи pao.call об открытых адресах нужны, чтобы подписать обращения стенда ниже.
     const j = this.#src.journal();
     for (; this.#journal < j.length; this.#journal++) {
@@ -324,7 +331,7 @@ export class MonitorBus {
     const still: OpenPending[] = [];
     for (const p of this.#openPending) {
       if (this.#takeOpen(p.key)) this.#monitor({ ...p.k, source: "agent_platform_open" });
-      else if (++p.polls >= OPEN_MATCH_POLLS) this.#monitor({ ...p.k, source: "network_platform" });
+      else if (age && ++p.polls >= OPEN_MATCH_POLLS) this.#monitor({ ...p.k, source: "network_platform" });
       else still.push(p);
     }
     this.#openPending = still;
@@ -348,7 +355,7 @@ export class MonitorBus {
       const k = classifyCall(c, "merchants");
       if (k) this.#monitor({ ...k, source: this.#byAgent(c) ? "agent_merchant" : "network_merchant" });
     }
-    this.#openByAgent = this.#openByAgent.filter((o) => ++o.polls < OPEN_MATCH_POLLS);
+    if (age) this.#openByAgent = this.#openByAgent.filter((o) => ++o.polls < OPEN_MATCH_POLLS);
   }
 
   /** Самая старая несопоставленная запись журнала агента с этим ключом — по порядку, одна на обращение. */
@@ -361,6 +368,9 @@ export class MonitorBus {
 
   /** Шаг сюжета в ленту. Суммы — минимальные единицы + валюта → текст на обоих языках; неверная сумма — без суммы. */
   scenario(s: ScenarioStep): void {
+    // Порядок — по времени возникновения (Р-1364): журналы агента и стенда читаются опросом, поэтому до номера шага
+    // дочитываются записи, которые уже произошли. Иначе шаг сюжета встаёт выше записей, которые он пересказывает (З4).
+    this.#read(false);
     const params: Record<string, string | number | MoneyView> = {};
     for (const [k, v] of Object.entries(s.params)) {
       if (typeof v === "string" || typeof v === "number") params[k] = v;
@@ -383,6 +393,8 @@ export class MonitorBus {
   async #onFeed(item: FeedItem): Promise<void> {
     // Номер — при приёме события, до ожиданий суммы и кода: следствия (шаги сюжета) не встают в ленте раньше причины
     // (ревью К2.2б, Н3). Строка уходит позже с этим номером; клиент принимает номера не по возрастанию.
+    // До номера — дочитать журналы: обращение, после которого Платформа выпустила событие, встаёт выше события (З4).
+    this.#read(false);
     const seq = ++this.#seq;
     let k: ReturnType<typeof classifyFeedItem>;
     try {

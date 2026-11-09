@@ -104,6 +104,28 @@ describe("классы обращений", () => {
     expect(h.filter((i) => i.stream === "console")).toHaveLength(5);
   });
 
+  it("К1.4а: дочитывание перед шагами сюжета не старит сопоставление открытого адреса — серия шагов не делает обращение агента «по сети» (ревью К1.4а № 1)", () => {
+    const calls: CallRecord[] = [];
+    const journal: JournalEntry[] = [];
+    const bus = new MonitorBus({
+      calls: () => calls,
+      merchantCalls: () => [],
+      journal: () => journal,
+      listenFeed: () => () => undefined,
+      isAgentKid: () => false,
+      confirmation: async () => undefined,
+      now: () => new Date(),
+    });
+    // Стенд записал неподписанное обращение к открытому адресу раньше, чем агент — свою запись журнала.
+    calls.push(call("GET", "/.well-known/pao-configuration"));
+    bus.poll();
+    for (let i = 0; i < 10; i++) bus.scenario({ step: "search.compared", params: { candidates: i } });
+    journal.push({ at: "2026-11-09T10:00:00Z", kind: "pao.call", method: "GET /.well-known/pao-configuration", result: "ok", detail: "200" } as JournalEntry);
+    bus.poll();
+    const src = bus.history().flatMap((i) => (i.stream === "monitor" ? [i.event.source] : []));
+    expect(src).toEqual(["agent_platform_open"]);
+  });
+
   it("опрос ленты и подписка — не в ленте; неизвестный путь — без пути", () => {
     expect(classifyCall(call("GET", "/pao/v1/events"), "pao")).toBeNull();
     expect(classifyCall(call("GET", "/somewhere/secret_x"), "pao")?.what).toBe("GET (pao)");
@@ -251,16 +273,19 @@ describe("монитор на живом стенде", () => {
     expect(ruHtml).toContain(brand.name);
     // Пометка «эмулятор» — у бренда банка в шапке и у каждой ссылки на эмулятор: банк, УПК, витрины (ревью К1.3 № 9).
     const badge = `<span class="badge emu">${MESSAGES.ru["badge.emulator"]}</span>`;
-    // 4 — шапка и три ссылки; ещё 2 — панель УПК сюжета 4 (у её заголовка и у ссылки на страницу УПК, К2.2в);
-    // ещё 1 — заголовок панели «Заказы в витрине продавца» (К2.3).
+    // 4 — шапка, банк, УПК (неактивная), витрины; ещё 2 — панель УПК сюжета 4 (у её заголовка и у ссылки на страницу УПК,
+    // К2.2в); ещё 1 — заголовок панели «Заказы в витрине продавца» (К2.3).
     expect(ruHtml.split(badge).length - 1).toBe(7);
     for (const [url, key] of [
       ["/bank-login", "link.bank"],
-      [demo.stand.urls.upk, "link.upk"],
       [`${demo.stand.urls.merchants}/v1/shops`, "link.merchants"],
     ] as const) {
       expect(ruHtml).toContain(`<a href="${url}" target="_blank" rel="noopener">${MESSAGES.ru[key]}</a> ${badge}`);
     }
+    // З6: страница УПК в шапке — неактивна, с пояснением; ссылка на неё — только в панели сюжета 4.
+    expect(ruHtml).not.toContain(`<a href="${demo.stand.urls.upk}"`);
+    expect(ruHtml).toContain(`<span class="link-off" aria-describedby="upk-note">${MESSAGES.ru["link.upk"]}</span> ${badge} <span class="hint" id="upk-note">${MESSAGES.ru["link.upk_note"]}</span>`);
+    expect(MESSAGES.en["link.upk_note"]).toMatch(/scenario 4/);
     expect(ruHtml).toContain(`<span class="badge real">${MESSAGES.ru["badge.real"]}</span>`);
     const enHtml = await (await fetch(`${demo.monitor.url}/?lang=en`)).text();
     expect(enHtml).toContain('<html lang="en">');

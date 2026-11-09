@@ -4,7 +4,7 @@
 // код агента и Платформы не импортируется (Р-1246 п. 3). Фразы — данные для `textContent` (инвариант 4).
 // Таблицы читаются только по собственным ключам (`own`): имя из записи — данные, не ключ прототипа (ревью К1.3 Б1).
 import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney } from "./wire.js";
-import { PHRASES, type Phrase } from "./phrases.js";
+import { CODE_WORDS, PHRASES, type Phrase } from "./phrases.js";
 
 export const STAGES = ["mandate", "search", "cart", "payment", "confirmation", "outcome", "revoke", "service"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -52,6 +52,8 @@ export interface Interpretation {
   readonly who?: Who;
   /** Карточка библиотеки ситуаций `docs/reference/situations.md`. */
   readonly situation?: string;
+  /** Конфликт или ошибка у витрины с учебным поведением стенда — «учебный сбой витрины», так задумано (З10, Р-1361). */
+  readonly training?: true;
 }
 
 export interface InterpretEnv {
@@ -61,6 +63,10 @@ export interface InterpretEnv {
   /** Агент на линии — подставной (синтетика ч. 1, сюжет подставного агента ч. 3). Только тогда нарушение поручения — «фрод»;
    *  иначе — «фрод или дефект, вердикт — владелец»: честный агент с дефектом или гонка с отзывом (С-28) дают ту же запись. */
   readonly rogueAgent?: boolean;
+  /** Учебные витрины источника: merchant_id → префиксы кодов их учебного сбоя (демо-стенд: по поведению витрины фикстуры).
+   *  Конфликт или ошибка со стороной «продавец» с таким кодом — «учебный сбой витрины» (З10). Таблицу даёт сборка
+   *  источника: интерпретатор код Платформы не импортирует (Р-1246 п. 3). */
+  readonly training?: Readonly<Record<string, readonly string[]>>;
 }
 
 export const LOCAL_STAND_EMULATED: readonly Role[] = ["bank", "merchant"];
@@ -173,10 +179,27 @@ const fmt = (v: unknown, lang: WireLang): string => {
   return "";
 };
 
+/** Подстановки, в которых приходят коды и статусы: в тексте человека — словами (З2). */
+const CODE_PARAMS = new Set(["code", "codes", "reply", "status"]);
+
+/** Код или список кодов через запятую — словами по словарю; кода нет в словаре — как есть. */
+export function codeWords(v: string, lang: WireLang): string {
+  return v
+    .split(",")
+    .map((c) => c.trim())
+    .filter((c) => c !== "")
+    .map((c) => own(CODE_WORDS, c)?.[lang] ?? c)
+    .join(", ");
+}
+
 /** Подстановка `{ключ}`. Необязательная часть шаблона — в `[…]`: выпадает целиком, если подставить в ней нечего
  *  (сумма или код не пришли — ревью К1.3 № 9, № 10). Скобки разбираются в шаблоне до подстановки данных. */
 function fill(p: Phrase, params: Readonly<Record<string, unknown>>): Texts {
-  const value = (k: string, lang: WireLang) => (Object.hasOwn(params, k) ? fmt(params[k], lang) : "");
+  const value = (k: string, lang: WireLang) => {
+    if (!Object.hasOwn(params, k)) return "";
+    const v = params[k];
+    return CODE_PARAMS.has(k) && typeof v === "string" ? codeWords(v, lang) : fmt(v, lang);
+  };
   const one = (lang: WireLang) =>
     p[lang]
       .replace(/\[([^[\]]*)\]/g, (_, inner: string) => ([...inner.matchAll(/\{([a-z_]+)\}/g)].every((m) => value(m[1]!, lang) !== "") ? inner : ""))
@@ -443,9 +466,26 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
 
 /** Запись линии → интерпретация. Не бросает на записи, прошедшей `parseWireItem`: незнакомая — нейтральная фраза с её именем. */
 export function interpret(item: WireItem, env: InterpretEnv): Interpretation {
-  if (item.stream === "monitor") return interpretMonitor(item, env);
-  if (item.stream === "scenario") return interpretScenario(item, env);
-  return interpretConsole(item, env);
+  const r = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  return isTraining(r, merchantOf(item), env) ? { ...r, training: true } : r;
+}
+
+/** Продавец записи: идентификатор из обращения или события, из журнала агента, из шага сюжета. */
+function merchantOf(item: WireItem): string | undefined {
+  if (item.stream === "monitor") return item.event.ids.merchant_id;
+  if (item.stream === "console") return item.line.merchant;
+  const m = item.line.params.merchant_id;
+  return typeof m === "string" ? m : undefined;
+}
+
+/** Учебный сбой витрины: конфликт или ошибка со стороной «продавец» с кодом учебного поведения этой витрины (З10).
+ *  Нормальные записи и другие сбои той же витрины не помечаются: настоящий сбой не прячется за «так задумано». */
+function isTraining(r: Interpretation, merchant: string | undefined, env: InterpretEnv): boolean {
+  if (merchant === undefined || env.training === undefined || (r.kind !== "conflict" && r.kind !== "error")) return false;
+  const who = r.who;
+  if (!who || !who.side.includes("merchant")) return false;
+  const codes = own(env.training, merchant);
+  return codes !== undefined && codes.some((c) => who.code.startsWith(c));
 }
 
 /** Подписи ролей, типов, стадий и вердиктов для экранов. */

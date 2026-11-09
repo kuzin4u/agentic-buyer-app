@@ -64,6 +64,8 @@ export interface MonitorServerOptions {
     emulated: readonly Role[];
     /** Заголовки карточек С-xx библиотеки ситуаций. */
     situations: Readonly<Record<string, string>>;
+    /** Учебные витрины: merchant_id → префиксы кодов учебного сбоя (З10). */
+    training?: Readonly<Record<string, readonly string[]>>;
   };
 }
 
@@ -116,7 +118,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
-  ${link(o.urls.upk, e("link.upk"), emu)}
+  <li><span class="link-off" aria-describedby="upk-note">${e("link.upk")}</span> ${emu} <span class="hint" id="upk-note">${e("link.upk_note")}</span></li>
   ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
 </ul>
 ${
@@ -330,7 +332,11 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   origins = new Set([...hosts].map((h) => `http://${h}`));
   const url = `http://127.0.0.1:${port}`;
-  if (o.dashboards) feed = createInterpretFeed(localStandSource(url), { emulated: o.dashboards.emulated });
+  if (o.dashboards)
+    feed = createInterpretFeed(localStandSource(url), {
+      emulated: o.dashboards.emulated,
+      ...(o.dashboards.training && { training: o.dashboards.training }),
+    });
   return {
     url,
     server,
