@@ -79,6 +79,8 @@
 
 ## Нюансы
 
+- **Адреса git-зависимостей после `npm install` (К3.1, Р-1369):** установка по тегу (`npm install -D "agentic-ps-platform@git+https://…#v0.43.0"`) переписывает git-зависимости в `package.json` на `github:…` и `resolved` в `package-lock.json` на `git+ssh://` — у всех трёх: `agentic-ps-platform`, `agentic-buyer-ref`, `@kuzin4u/agentic-core`. CI клонирует по https без ssh-ключа. После установки — вернуть `git+https://` в обоих файлах и проверить `grep -c 'git+ssh\|github:' package.json package-lock.json` = 0, затем `npm ci`. `npm ls` показывает `git+ssh` у установленного пакета — это вид установки, не содержимое файлов.
+
 - **Сессия 2:** один раз файл репозитория (`src/dashboards/interpret.ts`) поправлен `sed -i` вместо Edit — против Р-1164 (замечание reviewer К1.3). Правка проверена ревью и тестами; дальше — только Edit.
 - Отмена fetch на Node 20/22 не обрывает начатое чтение тела — потоки SSE закрываются через reader.cancel(); сервер не ждёт клиента, которого закрывает сам (CI К1.4 и К1.4б красный, разбор К1.4в, исправление К1.4г; Р-1339).
 - Адаптер источника К1.2 (`localStandSource`): линию `subscribe` закрывает только `close()` (ревью reviewer К1.2, п. 8) — экран, который отписался, но не закрыл источник, держит соединение SSE со стендом.
