@@ -3,7 +3,7 @@
 // снимка `/api/diag`, карточка ситуации С-xx. Чистые функции: факты — только из записи линии и снимка (Р-1245 п. 1),
 // код агента и Платформы не импортируется (Р-1246 п. 3). Фразы — данные для `textContent` (инвариант 4).
 // Таблицы читаются только по собственным ключам (`own`): имя из записи — данные, не ключ прототипа (ревью К1.3 Б1).
-import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney } from "./wire.js";
+import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney, WireMonitorEvent } from "./wire.js";
 import { CODE_WORDS, PHRASES, type Phrase } from "./phrases.js";
 
 export const STAGES = ["mandate", "search", "cart", "payment", "confirmation", "outcome", "revoke", "service"] as const;
@@ -54,6 +54,16 @@ export interface Interpretation {
   readonly situation?: string;
   /** Конфликт или ошибка у витрины с учебным поведением стенда — «учебный сбой витрины», так задумано (З10, Р-1361). */
   readonly training?: true;
+  /** Что это за запись у источника: шаблон обращения или тип события (`what`), шаг сюжета, тип записи журнала агента.
+   *  Для контролёра (К2.2) — сверка с паспортом сюжета; экран не показывает. */
+  readonly ref: string;
+  /** Машинный статус шага сюжета, если он код: `params.status` (статус итога, `AUTHORIZED`), а если его нет — `params.reply`
+   *  (ответ витрины, `PAID`). Шагов с обоими полями нет; появится такой — поле разделить. Для контролёра. */
+  readonly status?: string;
+  /** Кто прислал обращение на шине (только записи монитора): `agent_platform` — наш агент своим ключом, `stand` — участник
+   *  стенда (эмулятор банка — действия клиента), `network_*` — без подписи агента, `pao_event` — событие Платформы.
+   *  Участник (`actor`) ставится по маршруту; кто на самом деле прислал запрос клиента — только отсюда (ревью К2.1 № 1). */
+  readonly source?: WireMonitorEvent["source"];
 }
 
 export interface InterpretEnv {
@@ -302,6 +312,8 @@ function interpretMonitor(item: Extract<WireItem, { stream: "monitor" }>, env: I
     seq: e.seq,
     at: e.at,
     stream: "monitor",
+    ref: e.what,
+    source: e.source,
     level: kind === "norm" ? rule?.level ?? "detail" : "key",
     stage: rule?.stage ?? "service",
     actor,
@@ -381,10 +393,13 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     who = q.who;
     situation = q.situation ?? situation;
   }
+  const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
   return {
     seq: l.seq,
     at: l.at,
     stream: "scenario",
+    ref: l.step,
+    ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
     stage: (l.step === "failed" && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
@@ -453,6 +468,7 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
     seq: l.seq,
     at: l.at,
     stream: "console",
+    ref: l.kind,
     level: CONSOLE_KEY.has(l.kind) || kind !== "norm" ? "key" : "detail",
     stage,
     actor: "agent",

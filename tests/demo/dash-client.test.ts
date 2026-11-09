@@ -122,7 +122,7 @@ function labels(lang: "ru" | "en"): Record<string, string> {
   return (JSON.parse(json) as { labels: Record<string, string> }).labels;
 }
 
-const base = { at: "2026-11-09T10:54:03.200Z", stream: "scenario", level: "key", stage: "cart", actor: "agent", emulated: false } as const;
+const base = { at: "2026-11-09T10:54:03.200Z", stream: "scenario", ref: "cart.card", level: "key", stage: "cart", actor: "agent", emulated: false } as const;
 const norm: Interpretation = { ...base, seq: 1, kind: "norm", phrase: { ru: "Клиенту показана карточка корзины", en: "The client sees the cart card" }, situation: "С-25" };
 const conflict: Interpretation = {
   ...base,

@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation } from "../../src/dashboards/interpret.js";
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
+import { matches, PASSPORTS } from "../../src/dashboards/passports.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
@@ -116,6 +117,18 @@ describe("интерпретатор на пяти сюжетах приёмки
     // Записи агента и шаги сюжета — с одних часов процесса: по возрастанию seq время не убывает.
     const own = all.filter((r) => r.stream !== "monitor").sort((a, b) => a.seq - b.seq);
     for (let i = 1; i < own.length; i++) expect(own[i]!.at >= own[i - 1]!.at, `seq ${own[i]!.seq}`).toBe(true);
+  });
+
+  it("К2.1: паспорт каждого сюжета сходится с фактом стенда — всё ожидаемое есть (ровно столько раз, где указано), запрещённого нет", () => {
+    for (const p of PASSPORTS) {
+      const list = runs.get(p.no)!;
+      for (const e of p.expect) {
+        const n = list.filter((r) => matches(r, e.match)).length;
+        if (e.times !== undefined) expect(n, `сюжет ${p.no}, ${e.id}`).toBe(e.times);
+        else expect(n, `сюжет ${p.no}, ${e.id}`).toBeGreaterThan(0);
+      }
+      for (const e of p.forbid) expect(list.filter((r) => matches(r, e.match)).map((r) => `${r.seq} ${r.ref}`), `сюжет ${p.no}, запрет ${e.id}`).toEqual([]);
+    }
   });
 
   it("К1.4а, З10: неполная карточка MER-5501 — «учебный сбой витрины»; обычная покупка у MER-4401 — без пометки", () => {

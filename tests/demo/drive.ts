@@ -33,7 +33,19 @@ export function driver(demo: Demo) {
     const id = String(w.params.mandate_id);
     if ((await demo.stand.stand.issuer.sign(id)).statusCode !== 200) throw new Error("подпись поручения");
     await until(n, "intent.signed");
+    // Событие Платформы о подписи приходит на шину лентой ПАО и может отстать от шага сюжета: без ожидания оно иногда
+    // попадало в следующий прогон (паспорт сюжета 1, К2.1).
+    await untilEvent(n, "mandate.signed", id);
     return id;
+  }
+
+  async function untilEvent(from: number, what: string, mandateId: string, ms = 30_000): Promise<void> {
+    const end = Date.now() + ms;
+    for (;;) {
+      if (demo.bus.history().some((i) => i.stream === "monitor" && i.event.seq > from && i.event.what === what && i.event.ids.mandate_id === mandateId)) return;
+      if (Date.now() > end) throw new Error(`не дождались события ${what}`);
+      await pause(50);
+    }
   }
 
   async function purchase(name: "purchase" | "limit" | "upk", from: number): Promise<void> {
