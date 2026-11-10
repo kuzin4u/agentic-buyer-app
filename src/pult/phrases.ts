@@ -39,6 +39,18 @@ export const PULT = {
   "status.reset": p("стенд перезапущен — лента начата заново", "stand restarted — feed started over"),
   "status.closed": p("шина отключена", "bus disconnected"),
   "status.screen_offline": p("пульт потерял связь с сервером стенда — переподключение…", "the console lost the stand server — reconnecting…"),
+  "mode.label": p("Вид", "View"),
+  "mode.board": p("Ход по стадиям", "Progress by stage"),
+  "mode.graph": p("График", "Timeline"),
+  "graph.note": p(
+    "По времени: отрезок — сколько транзакция стояла в стадии; «Завершены» — с события Платформы; метка — запись с ошибкой, конфликтом или фродом.",
+    "Over time: a segment is how long the transaction stayed in a stage; “Done” — from the Platform event; a mark is a record with an error, conflict or fraud.",
+  ),
+  "graph.now": p("сейчас", "now"),
+  "graph.legend": p("Стадии", "Stages"),
+  "mark.conflict": p("конфликт", "conflict"),
+  "mark.error": p("ошибка", "error"),
+  "mark.fraud": p("фрод", "fraud"),
   "board.note": p(
     "Транзакция стоит в стадии, пока не придёт событие, и перескакивает в следующую колонку в момент события. Завершена — только по событию Платформы.",
     "A transaction stays in its stage until an event arrives and jumps to the next column at that moment. Done — only by a Platform event.",

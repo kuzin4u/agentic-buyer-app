@@ -13,8 +13,13 @@ function paneHtml(pane: Pane, lang: WireLang): string {
   const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
   const title = s(`pane.${pane}` as const);
   const hint = s(`pane.${pane}.hint` as const);
+  // Виды панели «Ход» (модель 1.23 `PROC_MODES`): на MVP — «Ход по стадиям» и «График» (П-2.2); остальные — после MVP.
+  const modes =
+    pane === "proc"
+      ? `<span class="pmodes" role="group" aria-label="${s("mode.label")}"><button type="button" data-mode="board" aria-pressed="true">${s("mode.board")}</button> <button type="button" data-mode="graph" aria-pressed="false">${s("mode.graph")}</button></span>`
+      : "";
   return `<section class="pane" id="p-${pane}" data-pane="${pane}" aria-labelledby="h-${pane}">
-    <div class="ph"><h2 id="h-${pane}">${title}</h2><span class="hint">${hint}</span><button type="button" class="icon" data-max="${pane}" aria-describedby="h-${pane}">${s("pane.maximize")}</button></div>
+    <div class="ph"><h2 id="h-${pane}">${title}</h2><span class="hint">${hint}</span>${modes}<button type="button" class="icon" data-max="${pane}" aria-describedby="h-${pane}">${s("pane.maximize")}</button></div>
     <div class="pb" id="b-${pane}"><p class="empty">${s(`empty.${pane}` as const)}</p></div>
   </section>`;
 }

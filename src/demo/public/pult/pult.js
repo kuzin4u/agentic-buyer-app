@@ -19,12 +19,15 @@
 
   // ---- раскладка ----
   const STORE = "pult.layout.v1";
-  const state = { layout: "grid", max: null, tab: PANES[0] };
+  // mode — вид панели «Ход»: board (доска) или graph («График», П-2.2).
+  const MODES = ["board", "graph"];
+  const state = { layout: "grid", max: null, tab: PANES[0], mode: "board" };
 
   function load() {
     try {
       const v = JSON.parse(localStorage.getItem(STORE) || "null");
       if (v && (v.layout === "grid" || v.layout === "tabs")) state.layout = v.layout;
+      if (v && MODES.indexOf(v.mode) >= 0) state.mode = v.mode;
       if (v && PANES.indexOf(v.tab) >= 0) state.tab = v.tab;
       if (v && PANES.indexOf(v.max) >= 0) state.max = v.max;
     } catch {
@@ -57,6 +60,7 @@
       btn.textContent = label(on ? "pane.restore" : "pane.maximize");
     }
     for (const t of tabbar.querySelectorAll("[data-tab]")) t.setAttribute("aria-pressed", String(t.dataset.tab === state.tab));
+    for (const m of document.querySelectorAll("[data-mode]")) m.setAttribute("aria-pressed", String(m.dataset.mode === state.mode));
   }
 
   document.addEventListener("click", (ev) => {
@@ -69,6 +73,12 @@
       state.max = state.max === t.dataset.max ? null : t.dataset.max;
     } else if (t.dataset.tab) {
       state.tab = t.dataset.tab;
+    } else if (t.dataset.mode && MODES.indexOf(t.dataset.mode) >= 0) {
+      state.mode = t.dataset.mode;
+      save();
+      render();
+      renderProc();
+      return;
     } else return;
     save();
     render();
@@ -259,11 +269,119 @@
   };
   procBox.addEventListener("pointerdown", select);
   procBox.addEventListener("click", select);
-  document.addEventListener("pult:focus", renderBoard);
-  // Счётчик «в стадии N с» — раз в секунду меняется только его текст: узлы карточек не пересоздаются, фокус и щелчок не
-  // теряются (ревью П-2.1 № 4).
+
+  // ---- «График» (П-2.2, модель 1.23 `renderGraph`): строки — транзакции, отрезки стадий по времени, «сейчас» ----
+  // Узлы строятся по событию (новая доска, смена фокуса, смена вида); раз в секунду — только положения (layoutGraph):
+  // отрезок, идущий до «сейчас», растёт, узлы и фокус клавиатуры не пересоздаются.
+  const nowMs = () => Date.parse(board.now) + (Date.now() - boardAt);
+
+  function renderGraph() {
+    if (!board) return;
+    const rows = board.graph && Array.isArray(board.graph.rows) ? board.graph.rows : [];
+    const active = document.activeElement;
+    const keep = active && procBox.contains(active) && active.dataset ? active.dataset.card : undefined;
+    const wrap = document.createDocumentFragment();
+    if (rows.length === 0) wrap.appendChild(el("p", label("empty.proc"), "empty"));
+    wrap.appendChild(el("p", label("graph.note"), "note"));
+    const legend = el("div", undefined, "glegend");
+    legend.appendChild(el("span", label("graph.legend") + ": ", "muted"));
+    for (const k of COLUMNS) {
+      const it = el("span", label("col." + k), "gl col-" + k);
+      legend.appendChild(it);
+    }
+    wrap.appendChild(legend);
+    const g = el("div", undefined, "graph");
+    const axis = el("div", undefined, "gaxis");
+    axis.appendChild(el("span", "", "gax-start"));
+    axis.appendChild(el("span", label("graph.now"), "gax-now"));
+    g.appendChild(axis);
+    for (const r of rows) {
+      const row = el("button", undefined, "grow" + (focus && focus.tx === r.id ? " cur" : ""));
+      row.type = "button";
+      row.dataset.card = r.id;
+      const lastSeg = r.segs[r.segs.length - 1];
+      if (lastSeg && lastSeg.col === "done") row.dataset.done = "1";
+      row.appendChild(el("span", r.id, "gname"));
+      const track = el("span", undefined, "gtrack");
+      for (const sg of r.segs) {
+        const s = el("span", undefined, "seg col-" + sg.col);
+        s.dataset.from = sg.from;
+        if (sg.to) s.dataset.to = sg.to;
+        s.title = label("col." + sg.col);
+        track.appendChild(s);
+      }
+      for (const mk of r.marks) {
+        const m = el("span", undefined, "gmark k-" + mk.kind);
+        m.dataset.at = mk.at;
+        m.title = label("mark." + mk.kind);
+        track.appendChild(m);
+      }
+      track.appendChild(el("span", undefined, "gnow"));
+      row.appendChild(track);
+      g.appendChild(row);
+    }
+    wrap.appendChild(g);
+    while (procBox.firstChild) procBox.removeChild(procBox.firstChild);
+    procBox.appendChild(wrap);
+    layoutGraph();
+    if (keep !== undefined) {
+      for (const b of procBox.querySelectorAll("[data-card]")) {
+        if (b.dataset.card === keep) {
+          b.focus();
+          break;
+        }
+      }
+    }
+  }
+
+  /** Положения отрезков и меток в процентах ширины дорожки. Шкала — от начала самой ранней незавершённой строки (нет
+   *  таких — самой ранней строки) до «сейчас», но не дальше GRAPH_WINDOW_MS назад: давние строки и открытые «Завершены»
+   *  не сжимают идущие покупки; ранние отрезки обрезаются у левого края (ревью П-2.2 № 2). */
+  const GRAPH_WINDOW_MS = 10 * 60 * 1000;
+  function layoutGraph() {
+    if (!board) return;
+    const segs = procBox.querySelectorAll(".seg");
+    const marksEls = procBox.querySelectorAll(".gmark");
+    if (segs.length === 0 && marksEls.length === 0) return;
+    const end = nowMs();
+    const rowStart = (row) => {
+      const first = row.querySelector(".seg");
+      return first ? Date.parse(first.dataset.from) : end;
+    };
+    const rowsEls = procBox.querySelectorAll(".grow");
+    const open = Array.prototype.filter.call(rowsEls, (r) => !r.dataset.done);
+    const pool = open.length > 0 ? open : Array.prototype.slice.call(rowsEls);
+    let start = end;
+    for (const r of pool) start = Math.min(start, rowStart(r));
+    start = Math.max(start, end - GRAPH_WINDOW_MS);
+    const span = Math.max(1000, end - start);
+    const pct = (t) => Math.max(0, Math.min(100, ((t - start) / span) * 100));
+    for (const s of segs) {
+      const a = pct(Date.parse(s.dataset.from));
+      const b = s.dataset.to ? pct(Date.parse(s.dataset.to)) : 100;
+      s.style.left = a + "%";
+      // Отрезок целиком левее шкалы — нулевой ширины (обрезан), иначе не уже 0,5 % (см. «Открыто», П-9: № 4).
+      s.style.width = (b <= 0 ? 0 : Math.max(0.5, b - a)) + "%";
+    }
+    for (const m of marksEls) m.style.left = pct(Date.parse(m.dataset.at)) + "%";
+    const st = procBox.querySelector(".gax-start");
+    if (st) st.textContent = clock(new Date(start).toISOString());
+  }
+
+  function renderProc() {
+    if (state.mode === "graph") renderGraph();
+    else renderBoard();
+  }
+
+  document.addEventListener("pult:focus", renderProc);
+  // Раз в секунду — только текст счётчиков доски и положения «Графика»: узлы не пересоздаются, фокус и щелчок не теряются
+  // (ревью П-2.1 № 4).
   setInterval(() => {
     if (!board) return;
+    if (state.mode === "graph") {
+      layoutGraph();
+      return;
+    }
     for (const t of procBox.querySelectorAll(".bc-t")) {
       if (t.dataset.since) t.textContent = stageText(t.dataset.since);
     }
@@ -286,7 +404,7 @@
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
       board = e.board;
       boardAt = Date.now();
-      renderBoard();
+      renderProc();
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если

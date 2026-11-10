@@ -12,8 +12,8 @@ import type { PultMandate, PultTx, TxModel, TxOutcomeKind } from "./tx.js";
 export const BOARD_COLUMNS = ["mandate", "select", "cart", "confirmation", "pay", "result", "post", "done"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 
-/** Стадия интерпретатора → колонка доски. `service` колонки не меняет. */
-const STAGE_COLUMN: Readonly<Record<Stage, BoardColumn | undefined>> = {
+/** Стадия интерпретатора → колонка доски. `service` колонки не меняет. Общая для доски и «Графика» (П-2.2). */
+export const STAGE_COLUMN: Readonly<Record<Stage, BoardColumn | undefined>> = {
   mandate: "mandate",
   search: "select",
   cart: "cart",

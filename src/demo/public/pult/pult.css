@@ -79,6 +79,32 @@ main { padding: 10px 16px 24px; }
 .bc-w { color: var(--alert); font-weight: 600; }
 .bc-t, .bc-k { color: var(--muted); }
 .bc-e { color: var(--muted); font-size: 10.5px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Виды панели «Ход» (П-2.2): «Ход по стадиям» | «График». */
+.pmodes { display: inline-flex; gap: 4px; }
+.pmodes button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 8px; font: inherit; font-size: 12px; color: inherit; cursor: pointer; }
+.pmodes button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+/* «График» (П-2.2, модель 1.23 renderGraph): стадии — цветом и подписью в легенде и подсказке отрезка. */
+:root { --st-mandate: #5b7bb0; --st-select: #3e8e8a; --st-cart: #7c9a3a; --st-confirmation: #b07a2e; --st-pay: #9a5b9e; --st-result: #2e7d4f; --st-post: #8a97a8; --st-done: #aeb8c4; }
+.glegend { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 0; font-size: 11.5px; }
+.gl::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--st-done); }
+.gl.col-mandate::before, .seg.col-mandate { background: var(--st-mandate); }
+.gl.col-select::before, .seg.col-select { background: var(--st-select); }
+.gl.col-cart::before, .seg.col-cart { background: var(--st-cart); }
+.gl.col-confirmation::before, .seg.col-confirmation { background: var(--st-confirmation); }
+.gl.col-pay::before, .seg.col-pay { background: var(--st-pay); }
+.gl.col-result::before, .seg.col-result { background: var(--st-result); }
+.gl.col-post::before, .seg.col-post { background: var(--st-post); }
+.gl.col-done::before, .seg.col-done { background: var(--st-done); }
+.graph { display: grid; gap: 2px; padding: 4px 0; min-width: 0; }
+.gaxis { display: flex; justify-content: space-between; margin-left: 11em; font-size: 11px; color: var(--muted); }
+.grow { display: grid; grid-template-columns: 10.5em minmax(0, 1fr); gap: 6px; align-items: center; width: 100%; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 3px 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.grow.cur { background: var(--bg); outline: 2px solid var(--brand-accent); }
+.gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.gtrack { position: relative; height: 18px; background: var(--bg); border-radius: 2px; }
+.seg { position: absolute; top: 3px; height: 12px; border-radius: 2px; }
+.gmark { position: absolute; top: 0; width: 2px; height: 18px; background: var(--ink); }
+.gmark.k-error, .gmark.k-fraud { background: var(--alert); width: 3px; }
+.gnow { position: absolute; top: 0; right: 0; width: 2px; height: 18px; background: var(--brand-accent); }
 .conn-icon { font-weight: 700; }
 .conn-ok .conn-icon { color: var(--ok); }
 .conn-wait .conn-icon { color: var(--muted); }

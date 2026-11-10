@@ -59,6 +59,8 @@ export class FakeElement {
   readonly attributes = new Map<string, string>();
   #text = "";
   readonly listeners = new Listeners();
+  /** Свойства стиля, заданные скриптом (CSSOM): left, width… */
+  readonly style: Record<string, string> = {};
   readonly ownerDocument: FakeDocument;
   readonly dataset: Record<string, string>;
   readonly classList: { add(c: string): void; remove(c: string): void; contains(c: string): boolean; toggle(c: string, on?: boolean): boolean };

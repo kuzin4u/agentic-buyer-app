@@ -258,6 +258,21 @@ describe("пульт: доска «Ход по стадиям» на живом 
     const toDone = first.board.jumps.find((j) => j.id === tx[0]!.id && j.to === "done");
     expect(toDone).toBeDefined();
     expect(tx[0]!.since).toBe(toDone!.at);
+    // «График» (П-2.2): у покупки — отрезки по стадиям, последний — «Завершены», открытый, предыдущие закрыты.
+    const row = first.board.graph.rows.find((r) => r.id === tx[0]!.id)!;
+    expect(row.kind).toBe("tx");
+    expect(row.segs.length).toBeGreaterThanOrEqual(2);
+    expect(row.segs.at(-1)).toMatchObject({ col: "done" });
+    expect(row.segs.at(-1)!.to).toBeUndefined();
+    expect(row.segs.slice(0, -1).every((s) => s.to !== undefined)).toBe(true);
+    expect(first.board.graph.rows.some((r) => r.kind === "mandate")).toBe(true);
+    // Монотонность по всем строкам (ревью П-2.2 № 10): from ≤ to, конец отрезка — начало следующего.
+    for (const r of first.board.graph.rows) {
+      r.segs.forEach((s, i) => {
+        if (s.to) expect(Date.parse(s.to), r.id).toBeGreaterThanOrEqual(Date.parse(s.from));
+        if (i > 0) expect(s.from, r.id).toBe(r.segs[i - 1]!.to);
+      });
+    }
   });
 });
 

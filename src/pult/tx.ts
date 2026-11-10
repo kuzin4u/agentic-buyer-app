@@ -227,8 +227,14 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
       const k = OUTCOME_EVENT[r.ref] ?? (r.ref === "mandate.revoked" && cart !== undefined && r.ids?.mandate_id === cart ? "revoked" : undefined);
       // Первый итог остаётся итогом; «проведено» (settled) — уточнение «оплачено», а не новый исход. Итог после отзыва и
       // повтор операции — правила движка условий (STATUS «Открыто», П-3.2).
+      // Время итога — первого итогового события: «проведено» уточняет вид, но «Завершены» — с «оплачено» (ревью П-2.2 № 1).
       if (k !== undefined && (outcome === undefined || (outcome.kind === "paid" && k === "settled")))
-        outcome = { kind: k, ...(r.who?.code !== undefined && k !== "paid" && k !== "settled" && { code: r.who.code }), seq: r.seq, at: r.at };
+        outcome = {
+          kind: k,
+          ...(r.who?.code !== undefined && k !== "paid" && k !== "settled" && { code: r.who.code }),
+          seq: outcome?.seq ?? r.seq,
+          at: outcome?.at ?? r.at,
+        };
     }
     const NODE_TYPE: Readonly<Record<string, string>> = { m: "cart", o: "order", p: "op", c: "confirmation" };
     const firstNode = [...acc.nodes].sort()[0]!;
