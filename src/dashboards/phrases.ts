@@ -48,6 +48,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.limit": p("Начат сюжет 3 «Отказ: превышен лимит клиента в банке»", "Scenario 3 “Declined: the client's bank limit exceeded” started"),
   "run.upk": p("Начат сюжет 4 «Подтверждение человеком через УПК»", "Scenario 4 “Human confirmation via UPK” started"),
   "run.revoke": p("Начат сюжет 5 «Отзыв поручения»", "Scenario 5 “Mandate revocation” started"),
+  "run.reject": p("Начат сюжет 6 «Клиент отказался от корзины»", "Scenario 6 “The client refused the cart” started"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
@@ -79,6 +80,9 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "revoke.seen": p("Агент получил событие отзыва поручения[ {mandate_id}]", "The agent received the revocation of mandate[ {mandate_id}]"),
   "revoke.attempt": p("Агент пробует покупку по поручению[ {mandate_id}]", "The agent tries a purchase under mandate[ {mandate_id}]"),
   "revoke.refused": p("Покупка остановлена до витрин и оплаты: {code}", "Purchase stopped before shops and payment: {code}"),
+  "reject.ask": p("Сюжет просит клиента отклонить корзину[ {mandate_id}] в банке", "The scenario asks the client to decline cart[ {mandate_id}] in the bank"),
+  "cart.rejected": p("Корзина[ {mandate_id}] отклонена в банке — агент остановился: {code}", "Cart[ {mandate_id}] declined in the bank — the agent stopped: {code}"),
+  "reject.signed": p("Корзина[ {mandate_id}] подписана, а сюжет ждал отказа — покупка дальше не идёт", "Cart[ {mandate_id}] was signed, but the scenario expected a refusal — the purchase does not continue"),
   aborted: p("Сюжет прерван", "Scenario aborted"),
 };
 

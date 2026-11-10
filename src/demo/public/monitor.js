@@ -68,7 +68,8 @@
   function addStep(l) {
     const text = fill(m["step." + l.step] || l.step, l.params);
     const li = document.createElement("li");
-    li.className = l.step === "failed" ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
+    // Остановка покупки — с пометкой: сбой сюжета и отказ корзины в банке (сюжет 6 и сюжеты 2–4; ревью П-11.1а № 4).
+    li.className = l.step === "failed" || l.step === "cart.rejected" ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
     li.textContent = time(l.at) + "  " + text;
     consoleList.insertBefore(li, consoleList.firstChild);
     while (consoleList.childElementCount > MAX_ROWS) consoleList.removeChild(consoleList.lastChild);

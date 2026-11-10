@@ -121,6 +121,15 @@ const ru = {
   "step.revoke.attempt": "Агент пробует купить по поручению {mandate_id}.",
   "step.revoke.refused":
     "Попытка остановлена агентом до витрин, корзины и оплаты — {code} (состояние {state}): поручение отозвано, к Платформе с этой попыткой агент не обращался.",
+  // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
+  "scenario.reject": "6. Клиент отказался от корзины",
+  "scenario.reject_note":
+    "Нужно подписанное поручение (сюжет 1). Согласитесь с карточкой корзины, затем на экране мандатов банка нажмите «Отклонить» у корзины — подпись не ставьте. По событию Платформы агент перечитает корзину (отклонена) и остановится сам; заказа и оплаты нет.",
+  "step.run.reject": "— Сюжет 6: клиент отказался от корзины —",
+  "step.reject.ask": "Отклоните корзину {mandate_id} на экране мандатов банка (ссылка вверху) — кнопка «Отклонить»; агент ждёт события Платформы.",
+  "step.cart.rejected": "Корзина {mandate_id} отклонена в банке (событие Платформы): агент остановился — {code} (состояние {state}); заказа и оплаты нет.",
+  "step.reject.signed":
+    "Корзина {mandate_id} подписана, а сюжет 6 ждал отказа: заказа нет, корзина остаётся действующей и неиспользованной. Поручение израсходовано — начните с сюжета 1, затем сюжет 6 и «Отклонить».",
   "orders.title": "Заказы в витрине продавца",
   "orders.hint":
     "Номер, сумма и ответ витрины на оплату — слова продавца (эмулятор). Итог оплаты — отдельной колонкой и только по событию Платформы.",
@@ -299,6 +308,14 @@ const en: Record<MessageKey, string> = {
   "step.revoke.attempt": "The agent tries to buy under mandate {mandate_id}.",
   "step.revoke.refused":
     "Attempt stopped by the agent before the shops, cart and payment — {code} (state {state}): the mandate is revoked; the agent did not contact the Platform with this attempt.",
+  "scenario.reject": "6. The client refused the cart",
+  "scenario.reject_note":
+    "A signed mandate is required (scenario 1). Agree to the cart card, then press “Decline” for the cart on the bank mandates screen — do not sign it. On the Platform event the agent re-reads the cart (rejected) and stops itself; no order, no payment.",
+  "step.run.reject": "— Scenario 6: the client refused the cart —",
+  "step.reject.ask": "Decline cart {mandate_id} on the bank mandates screen (link at the top) — the “Decline” button; the agent waits for the Platform event.",
+  "step.cart.rejected": "Cart {mandate_id} declined in the bank (Platform event): the agent stopped — {code} (state {state}); no order, no payment.",
+  "step.reject.signed":
+    "Cart {mandate_id} was signed, but scenario 6 expected a refusal: no order; the cart stays active and unused. The mandate is used up — start with scenario 1, then scenario 6 and “Decline”.",
   "orders.title": "Orders in the merchant shop",
   "orders.hint":
     "Number, amount and the shop reply to payment are the merchant's words (emulator). The payment outcome is a separate column and only by the Platform event.",

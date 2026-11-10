@@ -17,7 +17,7 @@ import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
 import { pultPage } from "./dash-pult.js";
 import { switcherHtml } from "./switcher.js";
-import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
@@ -38,6 +38,15 @@ export function loadBrand(path: string): { brand: Brand; logoFile: string | null
   return { brand, logoFile };
 }
 
+/** Сюжет 6–10 на мониторе: имя кнопки и карточка своего поручения (Т3а: видна до нажатия кнопки). */
+export interface MoreScenario {
+  readonly name: ScenarioName;
+  readonly card?: IntentCard;
+}
+
+/** Сюжеты 1–5 — кнопки разметкой страницы ниже; 6–10 — из `moreScenarios`. */
+const BASE_SCENARIOS: readonly ScenarioName[] = ["intent", "purchase", "limit", "upk", "revoke"];
+
 export interface MonitorServerOptions {
   bus: MonitorBus;
   urls: DemoUrls;
@@ -51,6 +60,10 @@ export interface MonitorServerOptions {
   intentCard?: IntentCard;
   /** Карточка поручения сюжета 4 — у кнопки 4. */
   intentCardUpk?: IntentCard;
+  /** Сюжеты 6–10 для тестов пульта (П-11.1, Р-1457): кнопка, пояснение и карточка поручения, если у сюжета своё поручение.
+   *  Тексты — `scenario.<имя>`, `scenario.<имя>_note`, `card.intent_<имя>.title` словаря. Маршрут `/scenario/<имя>` — только
+   *  для сюжетов 1–5 и этих. */
+  moreScenarios?: readonly MoreScenario[];
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
@@ -88,6 +101,17 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
     <dd>${e("card.merchants")}: ${card.merchants}</dd>
     <dd>${e("card.single_use")}</dd>
   </dl>`;
+}
+
+/** Кнопка сюжета 6–10 с пояснением; карточка поручения — до кнопки. Ключи словаря — по имени сюжета: компилятор их не
+ *  проверяет, проверяет тест (`tests/demo/more-scenarios.test.ts`); имя — из перечня кода, в разметке всё равно
+ *  экранируется (ревью П-11.1а № 6). */
+function moreScenarioHtml(lang: Lang, s: MoreScenario): string {
+  const e = (k: string) => escapeHtml(t(lang, k as MessageKey));
+  const name = escapeHtml(s.name);
+  const card = s.card ? intentCardHtml(lang, s.card, `intent-card-${name}`, `card.intent_${s.name}.title` as MessageKey) : "";
+  return `${card}<button type="button" data-scenario="${name}">${e(`scenario.${s.name}`)}</button>
+  <p class="hint">${e(`scenario.${s.name}_note`)}</p>`;
 }
 
 /** Страница монитора. «Витрины продавцов» — страница для человека на языке монитора (`/shops?lang=…`, Платформа v0.47.0,
@@ -142,6 +166,7 @@ ${
   <p class="hint">${e("scenario.upk_note")}</p>
   <button type="button" data-scenario="revoke">${e("scenario.revoke")}</button>
   <p class="hint">${e("scenario.revoke_note")}</p>
+  ${(o.moreScenarios ?? []).map((s) => moreScenarioHtml(lang, s)).join("\n  ")}
   <div id="upk-panel" class="card" hidden>
     <dl>
       <dt>${e("upk.panel.title")} <span class="badge emu">${e("badge.emulator")}</span></dt>
@@ -223,6 +248,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
   const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
   const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
+  const scenarioNames: ReadonlySet<string> = new Set([...BASE_SCENARIOS, ...(o.moreScenarios ?? []).map((s) => s.name)]);
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
   /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
@@ -256,8 +282,10 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|limit|upk|revoke|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
-    if (req.method === "POST" && scenario && o.scenarios) {
+    // Имя сюжета — только из перечня (1–5 и `moreScenarios`): иное имя маршрутом сюжетов не считается.
+    const scenario = /^\/scenario\/([a-z_]+|cart\/accept|cart\/decline)$/.exec(u.pathname);
+    const known = scenario !== null && (scenario[1]!.startsWith("cart/") || scenario[1] === "abort" || scenarioNames.has(scenario[1]!));
+    if (req.method === "POST" && scenario && known && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;
       // Ответ на карточку корзины — действие человека на этой странице (Р-1248 п. 1); сюжет его только ждёт.

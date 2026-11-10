@@ -347,6 +347,7 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   upk: "confirmation",
   notice: "confirmation",
   revoke: "revoke",
+  reject: "cart",
   failed: "outcome",
   aborted: "service",
 };
@@ -363,6 +364,8 @@ const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "limit.declined": "platform",
   outcome: "platform",
   "revoke.ask": "client",
+  "reject.ask": "client",
+  "reject.signed": "client",
 };
 const STEP_SITUATION: Readonly<Record<string, string>> = {
   "intent.created": "С-01",
