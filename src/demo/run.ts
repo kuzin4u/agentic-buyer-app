@@ -15,6 +15,9 @@ export interface DemoOptions {
   port?: number;
   /** Период фоновых проходов стенда; 0 — без проходов (тесты без сюжетов отказа). */
   passMs?: number;
+  /** Режим сбоев стенда для прогона тестов пульта (`DEMO_FAULTS=1`, Р-1355 ответ 1, П-1.3): `demo: { faults: true }`,
+   *  срок подтверждения 45 с. По умолчанию выключен. Для показа людям не включается. */
+  faults?: boolean;
 }
 
 export interface Demo {
@@ -28,7 +31,11 @@ export interface Demo {
 export const DEFAULT_BRAND_PATH = "config/brand.demo.json";
 
 export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
-  const stand = await startDemoStand({ ...(o.lang && { lang: o.lang }), ...(o.passMs !== undefined && { passMs: o.passMs }) });
+  const stand = await startDemoStand({
+    ...(o.lang && { lang: o.lang }),
+    ...(o.passMs !== undefined && { passMs: o.passMs }),
+    ...(o.faults === true && { faults: true }),
+  });
   let bus: MonitorBus | undefined;
   let scenarios: DemoScenarios | undefined;
   try {
@@ -78,6 +85,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       dashboards: { emulated: LOCAL_STAND_EMULATED, situations: loadSituationTitles(), training: TRAINING_MERCHANTS, now: () => stand.stand.now() },
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
+      faults: stand.faults,
     });
     return {
       stand,

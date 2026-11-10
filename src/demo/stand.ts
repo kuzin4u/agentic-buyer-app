@@ -43,6 +43,8 @@ export interface DemoStand {
   readonly journal: MemoryJournal;
   readonly agentCode: string;
   readonly urls: DemoUrls;
+  /** Режим сбоев стенда включён (`demo: { faults: true }`, П-1.3): прогон тестов пульта, срок подтверждения 45 с. */
+  readonly faults: boolean;
   /** Обращения к витринам эмулятора: метод, путь без строки запроса, статус, код при 4xx и 5xx. Тел нет (инвариант 1).
    *  Живой массив без копии: шина читает его по индексу. */
   merchantCalls(): readonly CallRecord[];
@@ -69,6 +71,16 @@ const ADP_KEPT = 200;
  *  только поле code и только при 4xx и 5xx. */
 function recordCalls(app: MerchantsStand["app"], out: CallRecord[]): void {
   app.addHook("onSend", async (req, reply, payload) => {
+    const path = req.url.split("?")[0] ?? "";
+    // keyid из заголовка, как прислал клиент: подпись здесь не проверяется. Монитор сверяет его с ключами нашего агента
+    // (isAgentKid); в ленту keyid не идёт.
+    const sig = req.headers["signature-input"];
+    const kid = typeof sig === "string" ? /;keyid="([^"]+)"/.exec(sig)?.[1] : undefined;
+    // Неподписанный запрос вне протокола витрин `/v1/…` — страница для человека (`/shops`, `/shops/{id}` — Платформа
+    // v0.47.0, З12) или запрос браузера (favicon): не на шину, иначе он «по сети», а 404 и 429 — «конфликт» (ревью П-8.0
+    // № 3). Подписанный запрос пишется при любом пути: обращение агента не по протоколу монитор должен показать (ревью
+    // П-1.3 № 2).
+    if (kid === undefined && !path.startsWith("/v1/") && path !== "/v1") return payload;
     let code: string | undefined;
     if (reply.statusCode >= 400 && typeof payload === "string") {
       try {
@@ -78,13 +90,9 @@ function recordCalls(app: MerchantsStand["app"], out: CallRecord[]): void {
         // тело не JSON — кода нет
       }
     }
-    // keyid из заголовка, как прислал клиент: подпись здесь не проверяется. Монитор сверяет его с ключами нашего агента
-    // (isAgentKid); в ленту keyid не идёт.
-    const sig = req.headers["signature-input"];
-    const kid = typeof sig === "string" ? /;keyid="([^"]+)"/.exec(sig)?.[1] : undefined;
     out.push({
       method: req.method,
-      path: req.url.split("?")[0] ?? "",
+      path,
       status: reply.statusCode,
       source: "network",
       ...(code !== undefined && { code }),
@@ -103,7 +111,8 @@ function agentParamsPath(): string {
 }
 
 /** passMs — период фоновых проходов стенда; 0 — без проходов (тест вызывает их сам). По умолчанию STAND_PASS_MS. */
-export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): Promise<DemoStand> {
+export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?: boolean } = {}): Promise<DemoStand> {
+  const faults = o.faults === true;
   const fixture = AGENT_FIXTURES.find((f) => f.registered && f.class === "BUYER");
   if (!fixture) throw new Error("в AGENT_FIXTURES нет зарегистрированного агента BUYER");
 
@@ -135,7 +144,9 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
     dirs.push(stateDir);
 
     // Свой набор витрин (стенд v0.41.0, передача #5): «Масса Мадре» с каталогом пекарни на месте SHOP-1042 (Р-1278).
-    const s = createStand({ shops: DEMO_SHOPS });
+    // Режим сбоев (П-1.3, Р-1355 ответ 1) — только для прогона тестов пульта: сбои Н-02…Н-12 по кнопкам, срок 45 с
+    // (ответ Платформы по #112). Без флага стенд — как без режима (показ людям; `{ actions: true }` — П-8.1).
+    const s = createStand({ shops: DEMO_SHOPS, ...(faults && { demo: { faults: true } }) });
     stand = s;
     merchants = createMerchants(s, {
       decide: async (msg) => {
@@ -224,6 +235,7 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number } = {}): 
       journal,
       agentCode: fixture.agent_code,
       urls: { pao, merchants: merchantsUrl, bankApp, upk },
+      faults,
       merchantCalls: () => merchantCalls,
       isAgentKid: (kid) => agentKids.has(kid),
       adpDecision: (opRef) => adpDecisions.get(opRef),

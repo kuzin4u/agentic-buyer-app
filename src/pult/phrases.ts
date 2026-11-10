@@ -39,6 +39,8 @@ export const PULT = {
   "status.reset": p("стенд перезапущен — лента начата заново", "stand restarted — feed started over"),
   "status.closed": p("шина отключена", "bus disconnected"),
   "status.screen_offline": p("пульт потерял связь с сервером стенда — переподключение…", "the console lost the stand server — reconnecting…"),
+  "mode.faults": p("режим сбоев: вкл.", "fault mode: on"),
+  "mode.faults_note": p("прогон тестов пульта: сбои стенда по кнопкам, срок подтверждения 45 с", "console test run: stand faults by buttons, confirmation deadline 45 s"),
   "status.pult_closed": p("пульт отключён от сервера стенда — обновите страницу", "the console is disconnected from the stand server — reload the page"),
 } as const;
 

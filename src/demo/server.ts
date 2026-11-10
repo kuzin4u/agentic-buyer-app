@@ -53,6 +53,8 @@ export interface MonitorServerOptions {
   intentCardUpk?: IntentCard;
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
+  /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
+  faults?: boolean;
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -117,6 +119,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   <nav class="lang">${o.dashboards ? `${switcherHtml("monitor", lang)} · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
+${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${e("mode.faults_note")}</p>` : ""}
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
@@ -188,6 +191,15 @@ ${
 <script src="/monitor.js"></script>
 </body>
 </html>`;
+}
+
+/** Запись в поток SSE — только в открытый: событие в окне между `r.end()` при закрытии сервера и закрытием сокета не
+ *  пишется (иначе ERR_STREAM_WRITE_AFTER_END без обработчика роняет процесс; повторное ревью К1.4б № 1, П-1.3). Все ленты
+ *  сервера пишут только через неё. Вернуть — записано ли. */
+export function sseWrite(res: Pick<ServerResponse, "write" | "writableEnded" | "destroyed">, data: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  return true;
 }
 
 function brandCss(b: Brand): string {
@@ -320,8 +332,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          res.write(`data: ${JSON.stringify({ type: "runs", epoch: c.epoch(), runs: c.runs() })}\n\n`);
-          const off = c.subscribe((e: ControlFeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sseWrite(res, { type: "runs", epoch: c.epoch(), runs: c.runs() });
+          const off = c.subscribe((e: ControlFeedEvent) => void sseWrite(res, e));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -330,14 +342,13 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return;
         }
         case "/pult":
-          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null));
+          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true }));
         case "/pult/pult.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultJs);
         case "/pult/pult.css":
           return send(res, 200, "text/css; charset=utf-8", pultCss);
         case "/pult/events": {
-          // П-1.1: пока — состояние ленты; транзакции — П-1.2. Запись — только в открытый поток: событие в окне между
-          // r.end() и закрытием сокета не пишется (иначе ERR_STREAM_WRITE_AFTER_END, ревью К1.4б № 1).
+          // П-1.1: пока — состояние ленты; транзакции — П-2. Запись — только в открытый поток (sseWrite).
           const f = feed;
           res.writeHead(200, {
             "content-type": "text/event-stream; charset=utf-8",
@@ -345,9 +356,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          res.write(`data: ${JSON.stringify({ type: "hello", status: f.status() })}\n\n`);
+          sseWrite(res, { type: "hello", status: f.status(), faults: o.faults === true });
           const off = f.subscribe((e: FeedEvent) => {
-            if (e.type === "status" && !res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`);
+            if (e.type === "status") sseWrite(res, e);
           });
           sse.add(res);
           req.on("close", () => {
@@ -364,8 +375,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          res.write(`data: ${JSON.stringify({ type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() })}\n\n`);
-          const off = f.subscribe((e: FeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sseWrite(res, { type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() });
+          const off = f.subscribe((e: FeedEvent) => void sseWrite(res, e));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -398,8 +409,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           connection: "keep-alive",
           [INSTANCE_HEADER]: instance,
         });
-        for (const item of o.bus.history()) res.write(`data: ${JSON.stringify(item)}\n\n`);
-        const off = o.bus.subscribe((item) => res.write(`data: ${JSON.stringify(item)}\n\n`));
+        for (const item of o.bus.history()) sseWrite(res, item);
+        const off = o.bus.subscribe((item) => void sseWrite(res, item));
         sse.add(res);
         req.on("close", () => {
           off();

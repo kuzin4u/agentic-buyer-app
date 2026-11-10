@@ -65,7 +65,20 @@ describe("граница экранов DEMO-2 (Р-1246 п. 3)", () => {
     expect(violations(dash, new Set([join(ROOT, "src/brand.ts")]))).toEqual([]);
   });
 
-  // Скрипт страницы пульта (src/demo/public/pult/) и эмулятор клиента (П5 п. 5) — в П-1.3.
+  it("П5 п. 5 (П-1.3): скрипты страницы пульта (весь src/demo/public/pult/) — без импортов, без подписи и подтверждения за клиента и эмулятора клиента", () => {
+    const dir = join(ROOT, "src/demo/public/pult");
+    const files = filesUnder(dir);
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) {
+      const src = readFileSync(f, "utf8");
+      const name = relative(ROOT, f);
+      // Скрипт страницы — без модулей: всё, что ему нужно, — DOM, EventSource и fetch к своему серверу (CSP 'self').
+      expect(specifiers(src), name).toEqual([]);
+      expect(DYNAMIC.test(src), name).toBe(false);
+      expect(src, name).not.toMatch(/\bissuer\b|\bsign\b|\bconfirm\b|client-emulator|clientEmulator/i);
+    }
+  });
+
   it("src/pult (П-1) импортирует только node:*, свои модули, src/dashboards и бренд — сборку стенда нет", () => {
     const pult = join(ROOT, "src/pult");
     expect(filesUnder(pult).length).toBeGreaterThan(0);

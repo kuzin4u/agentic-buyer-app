@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PANES, PULT, SWITCH } from "../../src/pult/phrases.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
+import { sseWrite } from "../../src/demo/server.js";
 
 async function firstSse(url: string, ms = 10_000): Promise<unknown> {
   const ac = new AbortController();
@@ -140,5 +141,94 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
         expect(v.en.trim(), k).not.toBe("");
       }
     }
+  });
+
+  it("П-1.3: без DEMO_FAULTS режима сбоев нет — stand.demo нет, строки «режим сбоев» на мониторе и пульте нет", async () => {
+    expect(demo.stand.faults).toBe(false);
+    expect(demo.stand.stand.demo).toBeUndefined();
+    // Показ людям — обычное удержание 900 с (ответ Платформы по #112, п. 1).
+    expect(demo.stand.stand.params.order_hold_sec).toBe(900);
+    for (const lang of ["ru", "en"] as const) {
+      for (const path of ["/", "/pult"]) {
+        const html = await (await fetch(`${demo.monitor.url}${path}?lang=${lang}`)).text();
+        // Словарь монитора уходит в JSON страницы целиком — проверяется разметка строки, а не текст словаря.
+        expect(html, path).not.toContain(`class="faults-mode"`);
+        expect(html, path).not.toContain(`<strong>${PULT["mode.faults"][lang]}</strong>`);
+      }
+    }
+    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };
+    expect(hello.faults).toBe(false);
+  });
+
+  it("П-1.3, ревью П-8.0 № 3: страницы витрин для человека и запросы браузера — не на шину; протокол /v1 — на шине", async () => {
+    const base = demo.stand.urls.merchants;
+    const before = demo.stand.merchantCalls().length;
+    for (const path of ["/shops?lang=ru", "/shops/SHOP-2210?lang=en", "/shops/NO-SUCH-SHOP", "/favicon.ico"]) await fetch(`${base}${path}`);
+    expect(demo.stand.merchantCalls().slice(before)).toEqual([]);
+    await fetch(`${base}/v1/shops`);
+    expect(demo.stand.merchantCalls().slice(before).map((c) => c.path)).toEqual(["/v1/shops"]);
+    // Подписанный ключом агента запрос вне /v1/ — на шине: обращение агента не по протоколу видно (ревью П-1.3 № 2).
+    // keyid агента — из журнала стенда (обращение агента при допуске и работе); подпись хук не проверяет.
+    const agentKid = demo.stand.stand.calls().map((c) => c.kid).find((k): k is string => k !== undefined && demo.stand.isAgentKid(k));
+    expect(agentKid).toBeDefined();
+    await fetch(`${base}/shops/SHOP-2210`, { headers: { "signature-input": `sig1=("@method");keyid="${agentKid}"` } });
+    const last = demo.stand.merchantCalls().at(-1)!;
+    expect(last).toMatchObject({ method: "GET", path: "/shops/SHOP-2210", kid: agentKid });
+  });
+
+  it("П-1.3, П5 п. 5: страница пульта ходит только к своему серверу — CSP connect-src 'self' (скрипты каталога — тест границы)", async () => {
+    const csp = (await fetch(`${demo.monitor.url}/pult`)).headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).not.toMatch(/connect-src[^;]*(\*|https?:)/);
+  });
+});
+
+describe("пульт: режим сбоев DEMO_FAULTS=1 (П-1.3)", { timeout: 60_000 }, () => {
+  let demo: Demo;
+
+  beforeAll(async () => {
+    demo = await startDemo({ faults: true });
+  }, 60_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("стенд — demo: { faults: true } (срок подтверждения 45 с); строка «режим сбоев: вкл.» на мониторе и пульте, ru и en", async () => {
+    expect(demo.stand.faults).toBe(true);
+    expect(demo.stand.stand.demo).toBeDefined();
+    // Именно режим сбоев, а не «только действия» (П-8.1): удержание заказа и срок запроса — короткие, 45 с, а не 900 с
+    // (ревью П-1.3 № 1). demo_order_hold_sec в параметрах есть в любом режиме — проверяется действующий order_hold_sec.
+    expect(demo.stand.stand.params.order_hold_sec).toBe(demo.stand.stand.params.demo_order_hold_sec);
+    expect(demo.stand.stand.params.order_hold_sec).toBe(45);
+    for (const lang of ["ru", "en"] as const) {
+      for (const path of ["/", "/pult"]) {
+        const html = await (await fetch(`${demo.monitor.url}${path}?lang=${lang}`)).text();
+        expect(html, `${path} ${lang}`).toContain(`<p class="faults-mode"`);
+        expect(html, `${path} ${lang}`).toContain(`<strong>${PULT["mode.faults"][lang]}</strong>`);
+      }
+    }
+    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };
+    expect(hello.faults).toBe(true);
+  });
+});
+
+describe("запись в ленты SSE после r.end() (П-1.3, повторное ревью К1.4б № 1)", () => {
+  it("sseWrite пишет только в открытый поток: после end и после destroy — ничего, false", () => {
+    const writes: string[] = [];
+    const res = { writableEnded: false, destroyed: false, write: (s: string) => (writes.push(s), true) };
+    expect(sseWrite(res as never, { a: 1 })).toBe(true);
+    expect(writes).toEqual([`data: {"a":1}\n\n`]);
+    const ended = { ...res, writableEnded: true, write: () => expect.unreachable("запись после end") };
+    expect(sseWrite(ended as never, { a: 2 })).toBe(false);
+    const destroyed = { ...res, destroyed: true, write: () => expect.unreachable("запись после destroy") };
+    expect(sseWrite(destroyed as never, { a: 3 })).toBe(false);
+  });
+
+  it("все ленты сервера пишут только через sseWrite: прямой res.write в server.ts — один, внутри sseWrite", () => {
+    const src = readFileSync("src/demo/server.ts", "utf8");
+    expect(src.match(/\bres\.write\(/g)).toHaveLength(1);
+    expect(src).toMatch(/export function sseWrite[^]*?if \(res\.writableEnded \|\| res\.destroyed\) return false;\s*res\.write\(/);
+    for (const route of ["/events", "/dash/interpret/events", "/dash/control/events", "/pult/events"]) expect(src).toContain(`case "${route}"`);
   });
 });
