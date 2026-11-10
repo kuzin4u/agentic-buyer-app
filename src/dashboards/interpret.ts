@@ -348,6 +348,7 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   notice: "confirmation",
   revoke: "revoke",
   reject: "cart",
+  unconfirmed: "confirmation",
   failed: "outcome",
   aborted: "service",
 };
@@ -366,6 +367,7 @@ const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "revoke.ask": "client",
   "reject.ask": "client",
   "reject.signed": "client",
+  "unconfirmed.ask": "client",
 };
 const STEP_SITUATION: Readonly<Record<string, string>> = {
   "intent.created": "С-01",
@@ -384,6 +386,10 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
   "revoke.attempt": "С-28",
   "revoke.refused": "С-28",
 };
+
+/** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
+ *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
+const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined"]);
 
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
@@ -412,7 +418,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
-    stage: (l.step === "failed" && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
+    stage: (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
     actor,
     emulated: env.emulated.includes(actor),
     kind,

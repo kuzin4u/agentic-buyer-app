@@ -130,6 +130,15 @@ const ru = {
   "step.cart.rejected": "Корзина {mandate_id} отклонена в банке (событие Платформы): агент остановился — {code} (состояние {state}); заказа и оплаты нет.",
   "step.reject.signed":
     "Корзина {mandate_id} подписана, а сюжет 6 ждал отказа: заказа нет, корзина остаётся действующей и неиспользованной. Поручение израсходовано — начните с сюжета 1, затем сюжет 6 и «Отклонить».",
+  "scenario.unconfirmed": "7. Клиент не подтвердил покупку",
+  "scenario.unconfirmed_note":
+    "Своё поручение, как в сюжете 4 (карточка выше), — подпишите его и корзину в банке. Покупка выше порога: банк попросит подтверждения. На странице УПК нажмите «Отклонить» (код — в панели) — агент остановится сразу по ответу Платформы. Можно не отвечать вовсе: о конце срока запроса агент узнает сам, но с задержкой в несколько минут (допуск часов агента). Оплаты нет.",
+  "card.intent_unconfirmed.title": "Карточка поручения сюжета 7 (видна до подписи)",
+  "step.run.unconfirmed": "— Сюжет 7: клиент не подтвердил покупку —",
+  "step.unconfirmed.ask":
+    "Не подтверждайте покупку {confirmation_id}: на странице УПК нажмите «Отклонить». Без ответа агент узнает о конце срока запроса сам — через несколько минут после срока (допуск часов агента).",
+  "step.upk.declined": "Покупка не подтверждена в банке: агент остановился — {code} (заказ {order_id}, состояние {state}); оплаты нет.",
+  "orders.outcome.not_confirmed": "не подтверждено в банке, покупка остановлена",
   "orders.title": "Заказы в витрине продавца",
   "orders.hint":
     "Номер, сумма и ответ витрины на оплату — слова продавца (эмулятор). Итог оплаты — отдельной колонкой и только по событию Платформы.",
@@ -316,6 +325,15 @@ const en: Record<MessageKey, string> = {
   "step.cart.rejected": "Cart {mandate_id} declined in the bank (Platform event): the agent stopped — {code} (state {state}); no order, no payment.",
   "step.reject.signed":
     "Cart {mandate_id} was signed, but scenario 6 expected a refusal: no order; the cart stays active and unused. The mandate is used up — start with scenario 1, then scenario 6 and “Decline”.",
+  "scenario.unconfirmed": "7. The client did not confirm the purchase",
+  "scenario.unconfirmed_note":
+    "Its own mandate, as in scenario 4 (card above) — sign it and the cart in the bank. The purchase is above the threshold: the bank will ask for confirmation. On the UPK page press “Decline” (the code is in the panel) — the agent stops at once on the Platform's answer. You may also not answer at all: the agent learns the request has expired by itself, but a few minutes late (the agent's clock tolerance). No payment.",
+  "card.intent_unconfirmed.title": "Scenario 7 mandate card (shown before signing)",
+  "step.run.unconfirmed": "— Scenario 7: the client did not confirm the purchase —",
+  "step.unconfirmed.ask":
+    "Do not confirm purchase {confirmation_id}: press “Decline” on the UPK page. Without an answer the agent learns the request has expired by itself — a few minutes after the deadline (the agent's clock tolerance).",
+  "step.upk.declined": "The purchase was not confirmed in the bank: the agent stopped — {code} (order {order_id}, state {state}); no payment.",
+  "orders.outcome.not_confirmed": "not confirmed in the bank, purchase stopped",
   "orders.title": "Orders in the merchant shop",
   "orders.hint":
     "Number, amount and the shop reply to payment are the merchant's words (emulator). The payment outcome is a separate column and only by the Platform event.",

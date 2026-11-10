@@ -68,8 +68,10 @@
   function addStep(l) {
     const text = fill(m["step." + l.step] || l.step, l.params);
     const li = document.createElement("li");
-    // Остановка покупки — с пометкой: сбой сюжета и отказ корзины в банке (сюжет 6 и сюжеты 2–4; ревью П-11.1а № 4).
-    li.className = l.step === "failed" || l.step === "cart.rejected" ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
+    // Остановка покупки — с пометкой: сбой сюжета, отказ корзины в банке (сюжет 6 и сюжеты 2–4; ревью П-11.1а № 4) и
+    // покупка не подтверждена (сюжет 7 и сюжет 4).
+    const stop = l.step === "failed" || l.step === "cart.rejected" || l.step === "upk.declined";
+    li.className = stop ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
     li.textContent = time(l.at) + "  " + text;
     consoleList.insertBefore(li, consoleList.firstChild);
     while (consoleList.childElementCount > MAX_ROWS) consoleList.removeChild(consoleList.lastChild);
@@ -109,7 +111,7 @@
       upkPanel.hidden = false;
     } else if (l.step === "upk.sms") {
       document.getElementById("upk-code").textContent = String(l.params && l.params.code);
-    } else if (l.step === "outcome" || l.step === "failed" || l.step === "aborted" || l.step === "upk.aborted") {
+    } else if (l.step === "outcome" || l.step === "failed" || l.step === "aborted" || l.step === "upk.aborted" || l.step === "upk.declined") {
       upkPanel.hidden = true;
     }
   }
@@ -146,6 +148,10 @@
     } else if (l.step === "failed") {
       // Остановка без события об итоге (например, итог не подтверждён) — не «отказ».
       o.outcome.textContent = m["orders.outcome.unconfirmed"] + " — " + String(p.code);
+      o.tr.className = "";
+    } else if (l.step === "upk.declined") {
+      // Покупку не подтвердили (сюжет 7): решение или срок запроса Платформы — не «отказ продавца» и не «оплачено».
+      o.outcome.textContent = m["orders.outcome.not_confirmed"] + " — " + String(p.code);
       o.tr.className = "";
     } else if (l.step === "upk.aborted") {
       // Запрос в банке открыт: итог — в приложении банка, не «не состоялась» (ревью К2.3 № 1).

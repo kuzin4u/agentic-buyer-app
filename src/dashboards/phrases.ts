@@ -49,6 +49,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.upk": p("Начат сюжет 4 «Подтверждение человеком через УПК»", "Scenario 4 “Human confirmation via UPK” started"),
   "run.revoke": p("Начат сюжет 5 «Отзыв поручения»", "Scenario 5 “Mandate revocation” started"),
   "run.reject": p("Начат сюжет 6 «Клиент отказался от корзины»", "Scenario 6 “The client refused the cart” started"),
+  "run.unconfirmed": p("Начат сюжет 7 «Клиент не подтвердил покупку»", "Scenario 7 “The client did not confirm the purchase” started"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
@@ -82,6 +83,8 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "revoke.refused": p("Покупка остановлена до витрин и оплаты: {code}", "Purchase stopped before shops and payment: {code}"),
   "reject.ask": p("Сюжет просит клиента отклонить корзину[ {mandate_id}] в банке", "The scenario asks the client to decline cart[ {mandate_id}] in the bank"),
   "cart.rejected": p("Корзина[ {mandate_id}] отклонена в банке — агент остановился: {code}", "Cart[ {mandate_id}] declined in the bank — the agent stopped: {code}"),
+  "unconfirmed.ask": p("Сюжет просит клиента не подтверждать покупку на странице УПК", "The scenario asks the client not to confirm the purchase on the confirmation page"),
+  "upk.declined": p("Покупка не подтверждена в банке — агент остановился: {code}", "The purchase was not confirmed in the bank — the agent stopped: {code}"),
   "reject.signed": p("Корзина[ {mandate_id}] подписана, а сюжет ждал отказа — покупка дальше не идёт", "Cart[ {mandate_id}] was signed, but the scenario expected a refusal — the purchase does not continue"),
   aborted: p("Сюжет прерван", "Scenario aborted"),
 };
@@ -119,6 +122,9 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   // передача решения человеку
   CONFIRMATION_REQUIRED: p("нужно подтверждение клиента", "client confirmation required"),
   CONFIRMATION_PENDING: p("клиент ещё не ответил", "the client has not answered yet"),
+  // Сюжет 7 (П-04) и сюжет 4: покупку не подтвердили (ревью П-11.1б № 2).
+  CONFIRMATION_REJECTED: p("клиент отклонил покупку в банке", "the client declined the purchase in the bank"),
+  CONFIRMATION_EXPIRED: p("срок подтверждения истёк", "the confirmation period expired"),
   // сигналы A5 и карточка продавца
   A5_PRICE_MISMATCH: p("цена в описании не совпадает с ценой витрины", "the price in the description differs from the shop price"),
   A5_DECISION_FORGED: p("в описании товара — подложенное «решение» для агента", "the item description contains a forged “decision” for the agent"),
