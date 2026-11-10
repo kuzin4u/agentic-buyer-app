@@ -2,7 +2,7 @@
 // ленты. Панели наполняют следующие кирпичи (П-1.2 и дальше). Данные выводятся только через createElement и
 // textContent (инвариант 4): разметка из строк не собирается. Выбор раскладки помнит браузер (localStorage) — только
 // удобство зрителя: без хранилища пульт работает так же.
-/* global document, window, Element, EventSource, CustomEvent, localStorage */
+/* global document, window, Element, EventSource, CustomEvent, localStorage, setInterval */
 "use strict";
 
 (function () {
@@ -148,6 +148,110 @@
     });
   }
 
+  // ---- доска «Ход по стадиям» (П-2.1, модель 1.23 v1.20) ----
+  const lang = cfg.lang;
+  const COLUMNS = ["mandate", "select", "cart", "confirmation", "pay", "result", "post", "done"];
+  const DONE_SHOWN = 12;
+  const procBox = document.getElementById("b-proc");
+  let board = null;
+  let boardAt = 0;
+
+  const el = (tag, text, cls) => {
+    const e = document.createElement(tag);
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    if (cls) e.className = cls;
+    return e;
+  };
+  const clock = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(lang === "ru" ? "ru-RU" : "en-GB");
+  };
+  // «В стадии N с» — по часам шины на момент пересчёта плюс время, прошедшее у экрана с прихода доски.
+  const secondsIn = (since) => {
+    const base = Date.parse(board.now) - Date.parse(since);
+    return Math.max(0, Math.round((base + (Date.now() - boardAt)) / 1000));
+  };
+  const stageText = (since) => label("card.in_stage") + " " + secondsIn(since) + " " + label("card.sec");
+  const WORST = { norm: "", conflict: " warn", error: " bad", fraud: " bad" };
+
+  function card(c) {
+    const b = el("button", undefined, "bcard" + (WORST[c.worst] || "") + (focus && focus.tx === c.id ? " cur" : ""));
+    b.type = "button";
+    b.dataset.card = c.id;
+    b.title = label("card.select_hint");
+    const h = el("div", undefined, "bc-h");
+    h.appendChild(el("b", c.id, "bc-id"));
+    b.appendChild(h);
+    if (c.kind === "mandate") b.appendChild(el("div", label("card.mandate"), "bc-k"));
+    if (c.linkConflict) b.appendChild(el("div", label("card.conflict"), "bc-w"));
+    else if (c.outcome) b.appendChild(el("div", label("outcome." + c.outcome) + (c.code ? " · " + c.code : ""), "bc-o"));
+    else if (c.kind === "mandate" && c.column === "done") b.appendChild(el("div", label("outcome.mandate_revoked"), "bc-o"));
+    else {
+      const t = el("div", stageText(c.since), "bc-t");
+      t.dataset.since = c.since;
+      b.appendChild(t);
+    }
+    if (c.unconfirmed) b.appendChild(el("div", label("card.unconfirmed"), "bc-w"));
+    if (c.last) b.appendChild(el("div", clock(c.last.at) + " " + (c.last.phrase[lang] || c.last.phrase.ru), "bc-e"));
+    return b;
+  }
+
+  // Доска перестраивается только по событию (новая доска, смена фокуса); карточка, на которой стоял фокус клавиатуры,
+  // получает его обратно (ревью П-2.1 № 4). Пустая доска — с подсказкой «запустите сюжет» (№ 14).
+  function renderBoard() {
+    if (!board) return;
+    const active = document.activeElement;
+    const keep = active && procBox.contains(active) && active.dataset ? active.dataset.card : undefined;
+    const wrap = document.createDocumentFragment();
+    if (board.cards.length === 0) wrap.appendChild(el("p", label("empty.proc"), "empty"));
+    wrap.appendChild(el("p", label("board.note"), "note"));
+    const jl = el("div", undefined, "bjumps");
+    jl.appendChild(el("span", label("board.jumps") + ": ", "muted"));
+    const recent = board.jumps.slice(-6).reverse();
+    if (recent.length === 0) jl.appendChild(el("span", label("board.no_jumps"), "muted"));
+    for (const j of recent) jl.appendChild(el("span", clock(j.at) + " " + j.id + ": " + label("col." + j.from) + " → " + label("col." + j.to), "bj"));
+    wrap.appendChild(jl);
+    const grid2 = el("div", undefined, "board");
+    for (const k of COLUMNS) {
+      let cs = board.cards.filter((c) => c.column === k);
+      const n = cs.length;
+      const col = el("section", undefined, "bcol" + (k === "done" ? " fin" : ""));
+      col.dataset.col = k;
+      col.appendChild(el("h3", label("col." + k) + " · " + n, "bcol-h"));
+      // «Завершены» — последние сначала, не больше DONE_SHOWN; остальное — числом.
+      if (k === "done") cs = cs.slice().reverse().slice(0, DONE_SHOWN);
+      for (const c of cs) col.appendChild(card(c));
+      if (n > cs.length) col.appendChild(el("p", label("board.more") + " " + (n - cs.length), "muted"));
+      grid2.appendChild(col);
+    }
+    wrap.appendChild(grid2);
+    while (procBox.firstChild) procBox.removeChild(procBox.firstChild);
+    procBox.appendChild(wrap);
+    if (keep !== undefined) {
+      for (const b of procBox.querySelectorAll("[data-card]")) {
+        if (b.dataset.card === keep) {
+          b.focus();
+          break;
+        }
+      }
+    }
+  }
+
+  // Щелчок по карточке — фокус на транзакцию (событие `pult:select`, П-1.4).
+  procBox.addEventListener("click", (ev) => {
+    const b = ev.target instanceof Element ? ev.target.closest("[data-card]") : null;
+    if (b) document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: b.dataset.card } }));
+  });
+  document.addEventListener("pult:focus", renderBoard);
+  // Счётчик «в стадии N с» — раз в секунду меняется только его текст: узлы карточек не пересоздаются, фокус и щелчок не
+  // теряются (ревью П-2.1 № 4).
+  setInterval(() => {
+    if (!board) return;
+    for (const t of procBox.querySelectorAll(".bc-t")) {
+      if (t.dataset.since) t.textContent = stageText(t.dataset.since);
+    }
+  }, 1000);
+
   load();
   render();
   renderFocus();
@@ -162,6 +266,11 @@
       return;
     }
     if (e.type === "hello" || e.type === "status") setStatus(e.status);
+    else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
+      board = e.board;
+      boardAt = Date.now();
+      renderBoard();
+    }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если
   // браузер закрыл ленту окончательно (ответ не SSE: 404, 421), переподключения не будет — отключён пульт, а не шина

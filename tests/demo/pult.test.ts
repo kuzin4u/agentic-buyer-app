@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PANES, PULT, SWITCH } from "../../src/pult/phrases.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { sseWrite } from "../../src/demo/server.js";
+import type { PultBoardState } from "../../src/pult/feed.js";
+import { driver } from "./drive.js";
 
 async function firstSse(url: string, ms = 10_000): Promise<unknown> {
   const ac = new AbortController();
@@ -194,6 +196,68 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
     expect(csp).toContain("connect-src 'self'");
     expect(csp).toContain("default-src 'self'");
     expect(csp).not.toMatch(/connect-src[^;]*(\*|https?:)/);
+  });
+});
+
+/** Первые n сообщений ленты SSE. */
+async function sseMessages(url: string, n: number, ms = 10_000): Promise<unknown[]> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  let text = "";
+  try {
+    const res = await fetch(url, { signal: ac.signal });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    while (text.split("\n\n").length <= n) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+    }
+    await reader.cancel();
+  } finally {
+    clearTimeout(timer);
+    ac.abort();
+  }
+  return text
+    .split("\n\n")
+    .filter((b) => b.startsWith("data: "))
+    .slice(0, n)
+    .map((b) => JSON.parse(b.slice(6)) as unknown);
+}
+
+describe("пульт: доска «Ход по стадиям» на живом стенде (П-2.1)", { timeout: 120_000 }, () => {
+  let demo: Demo;
+
+  beforeAll(async () => {
+    demo = await startDemo();
+    const d = driver(demo);
+    await d.run(1);
+    await d.run(2);
+    // Пересчёт доски — с паузой после записи (200 мс).
+    await new Promise((r) => setTimeout(r, 400));
+  }, 120_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("П-01 задания: после сюжета 2 покупка — в «Завершены» с итогом «оплачено» по событию Платформы; поручение сюжета 1 — карточкой поручения", async () => {
+    const [hello, first] = (await sseMessages(`${demo.monitor.url}/pult/events`, 2)) as [{ type: string }, { type: string; board: PultBoardState }];
+    expect(hello.type).toBe("hello");
+    expect(first.type).toBe("board");
+    const cards = first.board.cards;
+    const tx = cards.filter((c) => c.kind === "tx");
+    expect(tx).toHaveLength(1);
+    expect(tx[0]).toMatchObject({ column: "done", outcome: "paid" });
+    expect(tx[0]!.linkConflict).toBeUndefined();
+    expect(tx[0]!.unconfirmed).toBeUndefined();
+    // Поручение сюжета 2 показывает его транзакция; поручение сюжета 1 (покупки по нему нет) — карточка поручения.
+    expect(cards.filter((c) => c.kind === "mandate")).toEqual([expect.objectContaining({ column: "mandate" })]);
+    expect(cards.some((c) => c.kind === "mandate" && c.id === tx[0]!.intentId)).toBe(false);
+    // Переход в «Завершены» — по событию: лента пульта считала доску по ходу сюжета, в журнале переходов есть приход в
+    // done, и время в стадии — время этого перехода.
+    const toDone = first.board.jumps.find((j) => j.id === tx[0]!.id && j.to === "done");
+    expect(toDone).toBeDefined();
+    expect(tx[0]!.since).toBe(toDone!.at);
   });
 });
 

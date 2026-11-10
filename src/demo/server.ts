@@ -16,6 +16,7 @@ import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../d
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
 import { pultPage } from "./dash-pult.js";
+import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -227,6 +228,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   let feed: InterpretFeed | undefined;
   /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
   let control: (ControlFeed & { recompute(): void }) | undefined;
+  /** Лента пульта поверх ленты «Интерпретации» (П-2.1): модель транзакций и доска. */
+  let pult: PultFeed | undefined;
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
     res.writeHead(status, {
@@ -351,8 +354,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
         case "/pult/pult.css":
           return send(res, 200, "text/css; charset=utf-8", pultCss);
         case "/pult/events": {
-          // П-1.1: пока — состояние ленты; транзакции — П-2. Запись — только в открытый поток (sseWrite).
+          // Состояние шины и доска «Ход по стадиям» (П-2.1). Запись — только в открытый поток (sseWrite).
           const f = feed;
+          const p = pult!;
           res.writeHead(200, {
             "content-type": "text/event-stream; charset=utf-8",
             "cache-control": "no-store",
@@ -360,9 +364,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             connection: "keep-alive",
           });
           sseWrite(res, { type: "hello", status: f.status(), faults: o.faults === true });
-          const off = f.subscribe((e: FeedEvent) => {
-            if (e.type === "status") sseWrite(res, e);
-          });
+          sseWrite(res, { type: "board", board: p.board() });
+          const off = p.subscribe((e: PultFeedEvent) => void sseWrite(res, e));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -441,6 +444,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       ...(o.dashboards.training && { training: o.dashboards.training }),
     });
     control = createControlFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
+    pult = createPultFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
   }
   return {
     url,
@@ -451,6 +455,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       // время дописать конец потоков SSE после r.end(). Лента закрывается первой и не ждёт этот сервер: её адаптер рвёт
       // чтение /events сам (reader.cancel, К1.4г) — иначе на Node 20 и 22 закрытие ждало бы само себя.
       control?.close();
+      pult?.close();
       await feed?.close().catch(() => undefined);
       await new Promise<void>((ok) => {
         for (const r of sse) r.end();

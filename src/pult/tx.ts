@@ -32,6 +32,12 @@ export interface PultTx {
   /** Конфликт звеньев: в транзакцию попали две корзины или два поручения-намерения — например, витрина повторила номер
    *  заказа другой покупки. Звенья не сливаются молча: итог не присваивается, решает человек (ревью П-1.2 № 1, Р-1444). */
   readonly linkConflict?: { readonly carts: readonly string[]; readonly intents: readonly string[] };
+  /** Операции с событием Платформы, связанные с корзиной только через номер заказа витрины (нет записи агента с op_ref и
+   *  поручением корзины): «связь не подтверждена», итога по ним нет (Р-1458). */
+  readonly unconfirmedOps?: readonly string[];
+  /** Запросы подтверждения с итоговым событием (`confirmation.rejected`), где нет поручения корзины: «связь не
+   *  подтверждена», итога нет (Р-1460; поручение к событию через шину — П-8.1). */
+  readonly unconfirmedConfirmations?: readonly string[];
   readonly orderIds: readonly string[];
   readonly opRefs: readonly string[];
   readonly confirmationIds: readonly string[];
@@ -184,11 +190,40 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
     const cart = conflict ? undefined : cartList[0];
     const first = acc.items[0]!;
     const last = acc.items[acc.items.length - 1]!;
+    // Операции, связанные с корзиной самим агентом: запись, где есть и op_ref, и поручение этой корзины (шаги итога
+    // `outcome`, `limit.declined`, `failed`; событие с поручением). Связь только через номер заказа витрины — не
+    // подтверждена: итога по такой операции нет (повторное ревью П-1.2 № 1, инвариант 6; Р-1458).
+    // Источник связки — шаг сюжета, журнал агента или событие Платформы; обращение «по сети» (чужое) связку не
+    // подтверждает (ревью П-2.1 № 5).
+    const confirmedOps = new Set<string>();
+    if (cart !== undefined)
+      for (const r of acc.items) {
+        if (r.stream === "monitor" && r.source !== "pao_event") continue;
+        const p = id(r.ids?.op_ref);
+        if (p !== undefined && id(r.ids?.mandate_id) === cart) confirmedOps.add(p);
+      }
+    const unconfirmed = new Set<string>();
+    const unconfirmedConf = new Set<string>();
     let outcome: TxOutcome | undefined;
     let worst: Kind = conflict ? "conflict" : "norm";
     for (const r of acc.items) {
       worst = worse(worst, r.kind);
       if (conflict || r.source !== "pao_event") continue;
+      if (r.ref.startsWith("operation.")) {
+        const p = id(r.ids?.op_ref);
+        if (p === undefined || !confirmedOps.has(p)) {
+          if (p !== undefined) unconfirmed.add(p);
+          continue;
+        }
+      }
+      // Подтверждение — итог только с поручением этой корзины в самом событии. По ПАО 1.4.0 событие несёт только
+      // `confirmation_id`, шина добавляет номер заказа из записи подтверждения — связь только номером заказа: «связь не
+      // подтверждена», итога нет (ревью П-2.1 № 1, Р-1460). Поручение корзины к событию через шину — П-8.1.
+      if (r.ref.startsWith("confirmation.") && OUTCOME_EVENT[r.ref] !== undefined && (cart === undefined || id(r.ids?.mandate_id) !== cart)) {
+        const c = id(r.ids?.confirmation_id);
+        if (c !== undefined) unconfirmedConf.add(c);
+        continue;
+      }
       const k = OUTCOME_EVENT[r.ref] ?? (r.ref === "mandate.revoked" && cart !== undefined && r.ids?.mandate_id === cart ? "revoked" : undefined);
       // Первый итог остаётся итогом; «проведено» (settled) — уточнение «оплачено», а не новый исход. Итог после отзыва и
       // повтор операции — правила движка условий (STATUS «Открыто», П-3.2).
@@ -204,6 +239,8 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
       ...(intentId !== undefined && { intentId }),
       ...(cart !== undefined && { cartMandateId: cart }),
       ...(conflict && { linkConflict: { carts: cartList, intents: intentList } }),
+      ...(unconfirmed.size > 0 && { unconfirmedOps: [...unconfirmed].sort() }),
+      ...(unconfirmedConf.size > 0 && { unconfirmedConfirmations: [...unconfirmedConf].sort() }),
       orderIds: pick("o:"),
       opRefs: pick("p:"),
       confirmationIds: pick("c:"),
