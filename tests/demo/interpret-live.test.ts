@@ -5,6 +5,7 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
 import { control, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
 import { matches } from "../../src/dashboards/passports.js";
+import { buildTxModel } from "../../src/pult/tx.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
@@ -166,5 +167,55 @@ describe("интерпретатор на пяти сюжетах приёмки
     const k = key(2);
     expect(k.find((r) => r.who?.code === "REQUIRED")).toMatchObject({ training: true, kind: "error" });
     expect(k.filter((r) => r.kind === "norm").every((r) => r.training === undefined)).toBe(true);
+  });
+
+  it("П-1.2: модель транзакций пульта на пяти сюжетах — звенья связаны по идентификаторам, итог — по событию Платформы", () => {
+    const one = (no: ScenarioNo) => buildTxModel(runs.get(no)!);
+    // Сюжет 1 — только поручение, подписанное человеком (событие mandate.signed); покупки нет.
+    const m1 = one(1);
+    expect(m1.txs).toEqual([]);
+    expect(m1.mandates).toEqual([expect.objectContaining({ status: "active", txIds: [] })]);
+    // Сюжеты 2–4 — по одной транзакции: корзина ↔ заказ ↔ операция, поручение-намерение — по intent_id.
+    for (const no of [2, 3, 4] as const) {
+      const m = one(no);
+      expect(m.txs, `сюжет ${no}`).toHaveLength(1);
+      const t = m.txs[0]!;
+      expect(t.cartMandateId, `сюжет ${no}`).toBeDefined();
+      expect(t.intentId, `сюжет ${no}`).toBe(m.mandates[0]!.id);
+      expect(m.mandates[0]!.txIds).toEqual([t.id]);
+      expect(t.orderIds, `сюжет ${no}`).toHaveLength(1);
+      expect(t.opRefs, `сюжет ${no}`).toHaveLength(1);
+      // Событие Платформы об операции — в этой транзакции. В сюжетах 2 и 4 операцию прочитало ядро — у события есть номер
+      // заказа (связка «операция → заказ» на шине, Р-1442); в сюжете 3 ядро операцию отказа не отдаёт (расхождение № 1) —
+      // с заказом и корзиной событие связывает шаг limit.declined.
+      const ev = runs.get(no)!.find((r) => r.source === "pao_event" && r.ref.startsWith("operation."));
+      expect(ev && t.seqs.includes(ev.seq), `сюжет ${no}`).toBe(true);
+      if (no !== 3) expect(ev!.ids?.order_id, `сюжет ${no}`).toBe(t.orderIds[0]);
+      // Шаг итога несёт поручение корзины — связка «операция → корзина» без номера от витрины (Р-1444).
+      const fin = runs.get(no)!.find((r) => r.ref === (no === 3 ? "limit.declined" : "outcome"));
+      expect(fin?.ids?.mandate_id, `сюжет ${no}`).toBe(t.cartMandateId);
+      expect(t.linkConflict, `сюжет ${no}`).toBeUndefined();
+    }
+    expect(one(2).txs[0]!.outcome?.kind).toBe("paid");
+    expect(one(3).txs[0]!.outcome).toMatchObject({ kind: "declined", code: "LIMIT_EXCEEDED" });
+    const t4 = one(4).txs[0]!;
+    expect(t4.confirmationIds.length).toBeGreaterThan(0);
+    expect(t4.outcome?.kind).toBe("paid");
+    // Сюжет 5 — поручение отозвано клиентом в банке; покупки нет.
+    const m5 = one(5);
+    expect(m5.txs).toEqual([]);
+    expect(m5.mandates).toEqual([expect.objectContaining({ status: "revoked" })]);
+    // Все записи с заказом, операцией или подтверждением — в одной и той же транзакции прогона (ревью П-1.2 № 5); в сюжетах
+    // 1 и 5 таких записей нет.
+    for (const no of [1, 2, 3, 4, 5] as const) {
+      const m = one(no);
+      const linked = runs.get(no)!.filter((r) => r.ids?.order_id || r.ids?.op_ref || r.ids?.confirmation_id);
+      if (no === 1 || no === 5) {
+        expect(linked, `сюжет ${no}`).toEqual([]);
+        continue;
+      }
+      const own = new Set(m.txs[0]!.seqs);
+      for (const r of linked) expect(own.has(r.seq), `сюжет ${no}, ${r.ref}`).toBe(true);
+    }
   });
 });

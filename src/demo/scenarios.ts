@@ -40,15 +40,18 @@ const OPS_KEPT = 50;
 /** Валюта рыночного порога подтверждения Платформы: параметр confirm_above_kop — в копейках рубля (ISO 4217). */
 const THRESHOLD_CURRENCY = "RUB";
 
-/** Что монитору нужно об операции: сумма и причина отказа, как их вернула Платформа ядру. */
+/** Что монитору нужно об операции: сумма, причина отказа и номер заказа, как их вернула Платформа ядру. Номер заказа —
+ *  связка «операция → заказ» для модели транзакций пульта (П-1.2, Р-1442): идентификатор, не реквизит (инвариант 1). */
 export interface OperationInfo {
   readonly amount?: Money;
   readonly declineReason?: string;
+  readonly orderRef?: string;
 }
 
 const infoOf = (op: Operation): OperationInfo => ({
   ...(op.amount && { amount: op.amount }),
   ...(op.declineReason && { declineReason: op.declineReason }),
+  ...(op.orderRef && { orderRef: op.orderRef }),
 });
 const CLOSE_WAIT_MS = 3000;
 
@@ -263,7 +266,7 @@ export class DemoScenarios {
     // Операция отказа известна ядру (GET после operation.declined) — её сумма нужна строке события в мониторе.
     const op = this.#purchase?.operation;
     if (op) this.#remember(op);
-    else this.#rememberDecline();
+    const opRef = op ? op.opRef : this.#rememberDecline();
     // Прервано человеком — только если у покупки нет своей причины остановки: отказ Платформы или ядра не подменяется
     // словом «прервано» (ревью К2.2а № 1).
     if (this.#signal.aborted && !reason) {
@@ -280,7 +283,16 @@ export class DemoScenarios {
     }
     const code = reason ?? (e as { code?: unknown } | null)?.code;
     const state = this.#purchase?.state;
-    this.#step("failed", { code: typeof code === "string" ? code : "UNKNOWN", ...(state !== undefined && { state }), ...order });
+    // op_ref и mandate_id корзины — связки «операция → заказ → корзина» для модели транзакций пульта (П-1.2, Р-1444), если
+    // покупка дошла до корзины и операции.
+    const cartId = this.#purchase?.cartMandate?.id;
+    this.#step("failed", {
+      code: typeof code === "string" ? code : "UNKNOWN",
+      ...(state !== undefined && { state }),
+      ...order,
+      ...(opRef && { op_ref: opRef }),
+      ...(cartId !== undefined && { mandate_id: cartId }),
+    });
   }
 
   /** Сюжет 4 (Р-1255 п. 2): своё поручение до 5 000 ₽ (карточка у кнопки 4), подпись человеком; затем покупка с суммой
@@ -437,7 +449,16 @@ export class DemoScenarios {
       // уведомление банку говорит CLIENT; иначе общий «failed» с кодом (ревью К2.2б № 2, повторное — Н4).
       const opRef = this.#purchase?.reason === "DECLINED_LIMIT_EXCEEDED" ? this.#rememberDecline() : undefined;
       const source = opRef ? await this.#d.limitSource(opRef) : undefined;
-      if (source === "CLIENT") this.#step("limit.declined", { code: this.#purchase!.reason!, ...(this.#orderId && { order_id: this.#orderId }) });
+      // op_ref — из журнала ядра (operation.status DECLINED): ядро операцию отказа не отдаёт (расхождение № 1), а событие
+      // operation.declined несёт только op_ref; шаг связывает операцию с заказом для модели транзакций пульта (П-1.2).
+      const cartId = this.#purchase?.cartMandate?.id;
+      if (source === "CLIENT")
+        this.#step("limit.declined", {
+          code: this.#purchase!.reason!,
+          ...(this.#orderId && { order_id: this.#orderId }),
+          ...(opRef && { op_ref: opRef }),
+          ...(cartId !== undefined && { mandate_id: cartId }),
+        });
       else this.#fail(e);
     } finally {
       if (set) {
@@ -544,7 +565,9 @@ export class DemoScenarios {
     // С этого запроса поручение использовано (разовое): следующая покупка — через новый сюжет 1.
     this.#intentActive = false;
     const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
-    this.#step("cart.created", { mandate_id: cart.id, ...(cart.cart ? { total: cart.cart.total } : {}) });
+    // Связка «корзина → поручение-намерение» (П-1.2, Р-1442): транзакция пульта собирается по идентификаторам.
+    const intentId = p.intentMandate?.id;
+    this.#step("cart.created", { mandate_id: cart.id, ...(intentId !== undefined && { intent_id: intentId }), ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
     const signed = await p.awaitCart(this.#signal);
     this.#step("cart.signed", { mandate_id: signed.id, status: signed.status });
@@ -553,7 +576,8 @@ export class DemoScenarios {
     // Заказ в витрине продавца (К2.3, п. 5 задачи): номер и сумма — ответ витрины агенту (слова продавца), товар — выбор.
     // Номер — в поле сюжета для шагов отказа; объект ошибки ядра не трогаем (ревью К2.3 № 3).
     this.#orderId = order.orderId;
-    this.#step("order.placed", { order_id: order.orderId, merchant_id: pick.merchantId, total: order.total, title: pick.product.title, sku: pick.sku, qty });
+    // mandate_id — поручение корзины этого заказа: связка «заказ → корзина» (П-1.2, Р-1442).
+    this.#step("order.placed", { order_id: order.orderId, mandate_id: cart.id, merchant_id: pick.merchantId, total: order.total, title: pick.product.title, sku: pick.sku, qty });
     this.#step("payment.started", { order_id: order.orderId });
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
@@ -570,9 +594,11 @@ export class DemoScenarios {
     }
     this.#shopReplies(order.orderId);
     this.#remember(op);
+    // mandate_id корзины — связка «операция → корзина» без номера заказа от витрины (П-1.2, блокер ревью № 1, Р-1444).
     this.#step("outcome", {
       op_ref: op.opRef,
       order_id: order.orderId,
+      mandate_id: cart.id,
       status: op.status,
       ...(op.amount ? { amount: op.amount } : {}),
       ...(op.declineReason ? { code: op.declineReason } : {}),

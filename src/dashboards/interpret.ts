@@ -4,6 +4,7 @@
 // код агента и Платформы не импортируется (Р-1246 п. 3). Фразы — данные для `textContent` (инвариант 4).
 // Таблицы читаются только по собственным ключам (`own`): имя из записи — данные, не ключ прототипа (ревью К1.3 Б1).
 import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney, WireMonitorEvent } from "./wire.js";
+import { WIRE_ID_KEYS } from "./wire.js";
 import { CODE_WORDS, PHRASES, type Phrase } from "./phrases.js";
 
 export const STAGES = ["mandate", "search", "cart", "payment", "confirmation", "outcome", "revoke", "service"] as const;
@@ -64,7 +65,13 @@ export interface Interpretation {
    *  стенда (эмулятор банка — действия клиента), `network_*` — без подписи агента, `pao_event` — событие Платформы.
    *  Участник (`actor`) ставится по маршруту; кто на самом деле прислал запрос клиента — только отсюда (ревью К2.1 № 1). */
   readonly source?: WireMonitorEvent["source"];
+  /** Идентификаторы записи (П-1.2): по ним пульт собирает транзакцию. Нет идентификаторов — поля нет. */
+  readonly ids?: TxIds;
 }
+
+/** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаг `cart.created`). */
+export const TX_ID_KEYS = [...WIRE_ID_KEYS, "intent_id"] as const;
+export type TxIds = Partial<Record<(typeof TX_ID_KEYS)[number], string>>;
 
 export interface InterpretEnv {
   readonly snapshot: DiagSnapshot;
@@ -482,8 +489,30 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
 
 /** Запись линии → интерпретация. Не бросает на записи, прошедшей `parseWireItem`: незнакомая — нейтральная фраза с её именем. */
 export function interpret(item: WireItem, env: InterpretEnv): Interpretation {
-  const r = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  const base = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  const ids = idsOf(item);
+  const r = Object.keys(ids).length > 0 ? { ...base, ids } : base;
   return isTraining(r, merchantOf(item), env) ? { ...r, training: true } : r;
+}
+
+/** Идентификаторы записи — для модели транзакций пульта (П-1.2, Р-1442): транзакция собирается по ним, а не по времени
+ *  (Р-1396 п. 2). Обращение и событие — ids линии; шаг сюжета — параметры-идентификаторы (`intent_id` — поручение-намерение
+ *  у шага `cart.created`); журнал агента — поручение, витрина и операция (`operation.status`). Только идентификаторы. */
+function idsOf(item: WireItem): TxIds {
+  if (item.stream === "monitor") return { ...item.event.ids };
+  const out: Record<string, string> = {};
+  if (item.stream === "scenario") {
+    for (const k of TX_ID_KEYS) {
+      const v = item.line.params[k];
+      if (typeof v === "string" && v !== "") out[k] = v;
+    }
+    return out;
+  }
+  const l = item.line;
+  if (l.mandate) out.mandate_id = l.mandate;
+  if (l.merchant) out.merchant_id = l.merchant;
+  if (l.kind === "operation.status" && l.ref) out.op_ref = l.ref;
+  return out;
 }
 
 /** Продавец записи: идентификатор из обращения или события, из журнала агента, из шага сюжета. */

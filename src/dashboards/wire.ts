@@ -144,7 +144,7 @@ function parseConsole(l: unknown): WireConsoleLine | undefined {
  *  не переносится. Ссылка страницы УПК (`upk_url`) экранам не нужна — шага достаточно. */
 export const WIRE_SCENARIO_PARAMS = [
   "amount", "candidates", "code", "codes", "confirmation_id", "contour", "delivery_cost", "delivery_days", "delivery_method",
-  "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "sku", "state", "status",
+  "intent_id", "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "sku", "state", "status",
   "subject", "threshold", "title", "total", "unavailable",
 ] as const;
 

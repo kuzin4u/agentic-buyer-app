@@ -220,6 +220,36 @@ describe("инвариант 1: в ленте только поля из пер�
     });
   });
 
+  it("П-1.2: событие операции — заказ из операции, прочитанной ядром, как order_id (связка «операция → заказ», Р-1442)", async () => {
+    let listener: ((i: FeedItem) => void) | undefined;
+    const src: BusSources = {
+      calls: () => [],
+      merchantCalls: () => [],
+      journal: () => [],
+      listenFeed: (l) => ((listener = l), () => undefined),
+      isAgentKid: () => false,
+      confirmation: async () => undefined,
+      operation: async (opRef) => (opRef === "op_7" ? { amount: { amount: 34000, currency: "RUB" }, orderRef: "ord_7" } : undefined),
+      now: () => new Date("2026-11-05T10:00:00Z"),
+    };
+    const bus = new MonitorBus(src);
+    const got: BusItem[] = [];
+    bus.subscribe((i) => got.push(i));
+    bus.start(10_000);
+    const ev = (opRef: string) => ({
+      kind: "event" as const,
+      event: { eventId: `e_${opRef}`, type: "operation.authorized" as const, at: "2026-11-05T10:00:01Z", mandateId: null, opRef, confirmationId: null, declineReason: null },
+    });
+    listener!(ev("op_7"));
+    listener!(ev("op_8"));
+    await new Promise((r) => setTimeout(r, 10));
+    bus.stop();
+    const events = got.flatMap((i) => (i.stream === "monitor" ? [i.event] : []));
+    expect(events.find((e) => e.ids.op_ref === "op_7")?.ids).toEqual({ op_ref: "op_7", order_id: "ord_7" });
+    // Операции ядро не знает — заказа нет, событие только с op_ref.
+    expect(events.find((e) => e.ids.op_ref === "op_8")?.ids).toEqual({ op_ref: "op_8" });
+  });
+
   it("скрипт страницы не строит разметку из строк", () => {
     const js = readFileSync("src/demo/public/monitor.js", "utf8");
     expect(js).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);

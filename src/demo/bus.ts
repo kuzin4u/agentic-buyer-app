@@ -252,7 +252,7 @@ export interface BusSources {
   /** Запись подтверждения стенда только для чтения — источник суммы. */
   confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
   /** Сумма (у ядра), причина отказа (ответ ADP) и чей предел (уведомление банку) по операции; нет — событие без них. */
-  operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string } | undefined>;
+  operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string; orderRef?: string } | undefined>;
   now(): Date;
 }
 
@@ -425,6 +425,9 @@ export class MonitorBus {
         if (info?.amount) amount = moneyView({ minor: info.amount.amount, currency: info.amount.currency });
         if (info?.declineReason && rest.code === undefined) rest = { ...rest, ...safeCode(info.declineReason) };
         if (info?.limitSource && CODE.test(info.limitSource)) rest = { ...rest, codeDetail: info.limitSource };
+        // Номер заказа операции — как order_ref у confirmation.*: связка «операция → заказ» для модели транзакций пульта
+        // (П-1.2, Р-1442). Только идентификатор; поля реквизита в операции ядра нет (инвариант 1).
+        if (info?.orderRef) ids = { ...ids, order_id: info.orderRef };
       } catch {
         amount = undefined;
       }

@@ -49,7 +49,12 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
         const d = stand.adpDecision(opRef);
         const declineReason = d?.decision === "DECLINE" ? d.reason : info?.declineReason;
         const limitSource = declineReason === "LIMIT_EXCEEDED" ? await stand.limitSource(opRef) : undefined;
-        return { ...(info?.amount && { amount: info.amount }), ...(declineReason && { declineReason }), ...(limitSource && { limitSource }) };
+        return {
+          ...(info?.amount && { amount: info.amount }),
+          ...(declineReason && { declineReason }),
+          ...(limitSource && { limitSource }),
+          ...(info?.orderRef && { orderRef: info.orderRef }),
+        };
       },
       now: () => stand.stand.now(),
     });
