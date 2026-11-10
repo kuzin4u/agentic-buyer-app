@@ -4,7 +4,7 @@ import { MonitorBus } from "./bus.js";
 import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
-import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK } from "./scenarios.js";
+import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK, MORE_SCENARIOS } from "./scenarios.js";
 import { startMonitorServer, type MonitorServer } from "./server.js";
 import { TRAINING_MERCHANTS } from "./shops.js";
 import { startDemoStand, type DemoStand } from "./stand.js";
@@ -75,6 +75,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       scenarios: sc,
       intentCard: INTENT_CARD,
       intentCardUpk: INTENT_CARD_UPK,
+      moreScenarios: MORE_SCENARIOS,
       // Одноразовая ссылка входа клиента банка стенда: банк его уже опознал (эмулятор), подпись — на экране банка.
       bankLogin: () => `${stand.urls.bankApp}${stand.stand.bankApp.session(DEMO_PRINCIPAL)}`,
       // Реестры диагностики импортирует сборка контура; экраны DEMO-2 видят только снимок (Р-1246 п. 3, Р-1273 п. 3).

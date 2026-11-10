@@ -105,6 +105,14 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
     expect(PASSPORTS[4]!.forbid.some((f) => f.id === "no-sign")).toBe(true);
   });
 
+  it("сюжет 6 (П-03): одно решение клиента в банке — отказ, тем же маршрутом, что подпись; корзина не подписана, заказа и реквизита нет", () => {
+    const p6 = PASSPORTS.find((p) => p.name === "reject")!;
+    expect(p6.no).toBe(6);
+    expect(p6.expect.find((e) => e.id === "client-signs")).toBeUndefined();
+    expect(p6.expect.find((e) => e.id === "client-decides")).toMatchObject({ times: 1, match: { stream: "monitor", actor: "client", source: ["stand"] } });
+    expect(p6.forbid.map((f) => f.id)).toEqual(expect.arrayContaining(["no-cart-signed", "no-order", "no-credential", "no-paid", "no-outcome"]));
+  });
+
   it("сопоставление: заданные признаки совпадают все; «кто ошибся» — код, деталь, вердикт, все стороны", () => {
     const env: InterpretEnv = { snapshot: buildDiagSnapshot(), emulated: LOCAL_STAND_EMULATED };
     const declined = interpret(

@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,12 +48,14 @@ export function driver(demo: Demo) {
     }
   }
 
-  async function purchase(name: "purchase" | "limit" | "upk", from: number): Promise<void> {
+  /** Покупка до решения клиента по корзине в банке: подпись или (сюжет 6) отказ — решение «отклонить» тем же маршрутом. */
+  async function purchase(name: "purchase" | "limit" | "upk" | "reject", from: number): Promise<void> {
     if (name !== "upk") ok(await post(name), name);
     await until(from, "cart.card");
     ok(await post("cart/accept"), "cart/accept");
     const cw = await until(from, "cart.awaiting_signature");
-    if ((await demo.stand.stand.issuer.sign(String(cw.params.mandate_id))).statusCode !== 200) throw new Error("подпись корзины");
+    const decision = name === "reject" ? { decision: "REJECT" as const } : {};
+    if ((await demo.stand.stand.issuer.sign(String(cw.params.mandate_id), decision)).statusCode !== 200) throw new Error("решение по корзине");
   }
 
   /** Записи шины с seq > from, разобранные форматом линии; ждёт, пока шина затихнет (фоновые проходы стенда). Считается
@@ -94,6 +96,13 @@ export function driver(demo: Demo) {
       });
       if (answer.status !== 200) throw new Error(`страница УПК: ${answer.status}`);
       await until(n, "outcome");
+    } else if (no === 6) {
+      await intent();
+      await purchase("reject", n);
+      await until(n, "cart.rejected");
+      // Событие Платформы об отказе приходит лентой ПАО и может отстать от шага сюжета (как mandate.signed в сюжете 1).
+      const cw = await until(n, "cart.awaiting_signature");
+      await untilEvent(n, "mandate.rejected", String(cw.params.mandate_id));
     } else {
       const id = await intent();
       ok(await post("revoke"), "revoke");

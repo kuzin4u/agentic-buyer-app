@@ -8,9 +8,10 @@
 import { MERCHANT_FIXTURES } from "agentic-ps-platform/fixtures";
 import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
 import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
-import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import type { Mandate, MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import { ISO4217_MINOR_UNITS } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
+import type { MoreScenario } from "./server.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -22,8 +23,9 @@ export interface ScenarioStep {
 export type StepSink = (s: ScenarioStep) => void;
 
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
- *  «подтверждение человеком через УПК» (своё поручение). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke";
+ *  «подтверждение человеком через УПК» (своё поручение); revoke — сюжет 5. Сюжеты 6–10 — правильные тесты задания на
+ *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject";
 
 /** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
 export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
@@ -32,7 +34,14 @@ export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
   limit: "run.limit",
   upk: "run.upk",
   revoke: "run.revoke",
+  reject: "run.reject",
 };
+
+/** Сюжеты, которым нужно действующее поручение сюжета 1. */
+const NEEDS_INTENT: ReadonlySet<ScenarioName> = new Set(["purchase", "limit", "revoke", "reject"]);
+
+/** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением. */
+export const MORE_SCENARIOS: readonly MoreScenario[] = [{ name: "reject" }];
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
@@ -54,6 +63,8 @@ const infoOf = (op: Operation): OperationInfo => ({
   ...(op.orderRef && { orderRef: op.orderRef }),
 });
 const CLOSE_WAIT_MS = 3000;
+/** Сколько сюжет ждёт события «корзина отклонена», если ядро остановилось раньше него (сюжет 6). */
+const REJECT_WAIT_MS = 3000;
 
 /** Клиент банка стенда, от имени которого агент действует. Идентификатор клиента, не реквизит. */
 export const DEMO_PRINCIPAL = "pr_demo";
@@ -194,7 +205,7 @@ export class DemoScenarios {
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
     if (this.#running) return { ok: false, code: "BUSY" };
-    if ((name === "purchase" || name === "limit" || name === "revoke") && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
+    if (NEEDS_INTENT.has(name) && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();
     this.#runAc = run;
@@ -214,7 +225,9 @@ export class DemoScenarios {
             ? this.#upk()
             : name === "revoke"
               ? this.#revoke()
-              : this.#buy();
+              : name === "reject"
+                ? this.#buy({ expectReject: true })
+                : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -401,6 +414,38 @@ export class DemoScenarios {
     });
   }
 
+  /** Событие Платформы mandate.rejected по мандату — из ленты ПАО агента (сюжет 6): клиент отклонил подпись в банке.
+   *  wait(ms) — дождаться события, если ядро остановилось раньше него (прочитало отказ своим GET до ленты; ревью П-11.1а
+   *  № 2): лента будится с периодом опроса агента, как в #waitRevoked; нет события за срок — false. */
+  #watchRejected(mandateId: string): { wait(ms: number): Promise<boolean>; off(): void } {
+    const events = this.#d.agent.events;
+    let seen = false;
+    let wake: (() => void) | null = null;
+    const off = events.listen((item) => {
+      if (item.kind === "event" && item.event.type === "mandate.rejected" && item.event.mandateId === mandateId) {
+        seen = true;
+        wake?.();
+      }
+    });
+    const wait = (ms: number): Promise<boolean> =>
+      seen
+        ? Promise.resolve(true)
+        : new Promise((ok) => {
+            const poll = setInterval(() => void events.signal().catch(() => undefined), this.#d.agent.params.event_poll_interval_ms);
+            poll.unref();
+            const timer = setTimeout(() => done(false), ms);
+            timer.unref();
+            function done(v: boolean): void {
+              clearInterval(poll);
+              clearTimeout(timer);
+              wake = null;
+              ok(v);
+            }
+            wake = () => done(true);
+          });
+    return { wait, off };
+  }
+
   async #intent(card: IntentCard = INTENT_CARD): Promise<void> {
     const core = this.#d.agent;
     const shops = core.shops({ baseUrl: this.#d.urls.merchants });
@@ -504,6 +549,8 @@ export class DemoScenarios {
       qtyFor?: (price: Money) => number | { code: string };
       /** Сюжет 4: показывать запрос подтверждения (ссылка УПК, эмулятор SMS). */
       confirmation?: boolean;
+      /** Сюжет 6 (П-03): человек отклоняет корзину в банке; подписанная корзина дальше заказа не идёт. */
+      expectReject?: boolean;
     } = {},
   ): Promise<void> {
     const p = this.#purchase!;
@@ -569,8 +616,30 @@ export class DemoScenarios {
     const intentId = p.intentMandate?.id;
     this.#step("cart.created", { mandate_id: cart.id, ...(intentId !== undefined && { intent_id: intentId }), ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
-    const signed = await p.awaitCart(this.#signal);
+    if (o.expectReject) this.#step("reject.ask", { mandate_id: cart.id });
+    // Отказ подписи корзины клиентом (сюжет 6, П-03) — событие Платформы mandate.rejected по этой корзине: ядро по нему
+    // перечитывает корзину и останавливается само (MANDATE_NOT_ACTIVE). Решения здесь нет — сюжет только называет причину.
+    // Ядро может прочитать отказ своим GET раньше, чем событие дойдёт по ленте (ревью П-11.1а № 2): тогда сюжет ждёт
+    // событие не дольше REJECT_WAIT_MS; без события — обычный шаг failed с кодом ядра.
+    const rejection = this.#watchRejected(cart.id);
+    let signed: Mandate;
+    try {
+      signed = await p.awaitCart(this.#signal);
+    } catch (e) {
+      if (p.reason === "MANDATE_NOT_ACTIVE" && !this.#signal.aborted && (await rejection.wait(REJECT_WAIT_MS))) {
+        this.#step("cart.rejected", { mandate_id: cart.id, code: p.reason, state: p.state });
+        return;
+      }
+      throw e;
+    } finally {
+      rejection.off();
+    }
     this.#step("cart.signed", { mandate_id: signed.id, status: signed.status });
+    if (o.expectReject) {
+      // Сюжет 6 ждал отказа, а человек подписал: заказ не делается — сюжет оплату не показывает (паспорт 6 запрещает).
+      this.#step("reject.signed", { mandate_id: signed.id });
+      return;
+    }
     this.#signal.throwIfAborted();
     const order = await p.placeOrder(this.#key("order"));
     // Заказ в витрине продавца (К2.3, п. 5 задачи): номер и сумма — ответ витрины агенту (слова продавца), товар — выбор.

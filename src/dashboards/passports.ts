@@ -2,7 +2,8 @@
 // операции, агента и его ключа, ожидаемая квалификация интерпретатора. Паспорт — данные: что должно быть в ленте
 // интерпретаций сюжета («ожидается») и чего быть не должно («запрещено»). Сверку сюжета целиком делает контролёр (К2.2);
 // здесь — только сопоставление одной интерпретации с одним признаком. Паспорта переиспользуются в П-11 пульта — пять из
-// 25 тестов приёмки (Р-1344). Код агента и Платформы не импортируется (Р-1246 п. 3): факты — только из интерпретаций.
+// 25 тестов приёмки (Р-1344); паспорта 6–10 — правильные тесты задания П-03, П-04, П-06, П-07, П-09 (П-11.1, Р-1457).
+// Код агента и Платформы не импортируется (Р-1246 п. 3): факты — только из интерпретаций.
 import type { Interpretation, Kind, Role, Verdict } from "./interpret.js";
 import type { DiagSource, WireLang, WireMonitorEvent } from "./wire.js";
 
@@ -16,6 +17,8 @@ export const SCENARIOS = [
   { no: 3, name: "limit" },
   { no: 4, name: "upk" },
   { no: 5, name: "revoke" },
+  // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
+  { no: 6, name: "reject" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -292,6 +295,32 @@ const RAW: readonly Passport[] = [
       ...COMMON_FORBID,
       ...NO_PAID,
       { id: "no-sign", what: t("Новых подписей нет: отзывается поручение сюжета 1", "No new signatures: the mandate of scenario 1 is revoked"), match: { stream: "monitor", ref: SIGN } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-03 задания (П-11.1а, Р-1459 В8): отказ подписи корзины в банке; отказ на карточке — ветка сюжета 2.
+    no: 6,
+    name: "reject",
+    title: t("6. Клиент отказался от корзины", "6. The client refused the cart"),
+    outcome: { kind: "stopped", text: t("Клиент отклонил корзину в банке; агент остановился сам — без заказа и оплаты", "The client declined the cart in the bank; the agent stopped itself — no order, no payment") },
+    statuses: { mandate: t("корзина отклонена клиентом, поручение использовано", "cart declined by the client, mandate used"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      step("ask", "reject.ask", t("Сюжет просит клиента отклонить корзину в банке", "The scenario asks the client to decline the cart in the bank")),
+      // Отказ подписи — тот же маршрут решения клиента в банке, что и подпись: по записи монитора «отклонить» от «подписать»
+      // не отличить; что решение — отказ, показывают событие «корзина отклонена», шаг остановки и запрет «корзина подписана»
+      // (ревью П-11.1а № 5).
+      { id: "client-decides", what: t("Решение по корзине — одно, принимает клиент в банке, не агент", "One decision on the cart, made by the client in the bank, not the agent"), match: { ...BY_BANK, ref: SIGN }, times: 1 },
+      event("rejected-event", "mandate.rejected", t("Платформа: клиент отклонил корзину", "Platform: the client declined the cart")),
+      step("rejected", "cart.rejected", t("Агент остановился сам: корзина не подписана", "The agent stopped itself: the cart is not signed"), { code: "MANDATE_NOT_ACTIVE" }),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-cart-signed", what: t("Корзину никто не подписал", "Nobody signed the cart"), match: { stream: "scenario", ref: "cart.signed" } },
       { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
     ],
