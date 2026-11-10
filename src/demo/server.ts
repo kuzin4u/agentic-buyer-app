@@ -221,6 +221,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const dashCss = o.dashboards ? PUBLIC("dash/dash.css") : "";
   const controlJs = o.dashboards ? PUBLIC("dash/control.js") : "";
   const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
+  const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
   const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
@@ -345,6 +346,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true }));
         case "/pult/pult.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultJs);
+        case "/pult/focus.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultFocusJs);
         case "/pult/pult.css":
           return send(res, 200, "text/css; charset=utf-8", pultCss);
         case "/pult/events": {

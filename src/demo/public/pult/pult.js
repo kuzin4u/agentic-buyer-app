@@ -2,7 +2,7 @@
 // ленты. Панели наполняют следующие кирпичи (П-1.2 и дальше). Данные выводятся только через createElement и
 // textContent (инвариант 4): разметка из строк не собирается. Выбор раскладки помнит браузер (localStorage) — только
 // удобство зрителя: без хранилища пульт работает так же.
-/* global document, Element, EventSource, localStorage */
+/* global document, window, Element, EventSource, CustomEvent, localStorage */
 "use strict";
 
 (function () {
@@ -92,8 +92,65 @@
     statusBox.className = "conn conn-" + st;
   }
 
+  // ---- фокус «система → транзакция» (П-1.4): состояние — focus.js, строка крошек — здесь, панели — по событию ----
+  // Скрипт фокуса не загрузился — строка фокуса скрыта, остальной пульт работает (ревью П-1.4 № 5).
+  const F = window.PultFocus;
+  const focusBar = document.getElementById("focusbar");
+  const crumbsBox = document.getElementById("crumbs");
+  const focusUp = document.getElementById("focus-up");
+  let focus = F ? F.initial() : null;
+
+  function renderFocus() {
+    if (!F) {
+      focusBar.hidden = true;
+      return;
+    }
+    while (crumbsBox.firstChild) crumbsBox.removeChild(crumbsBox.firstChild);
+    for (const c of F.crumbs(focus, L)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "crumb" + (c.current ? " cur" : "");
+      b.dataset.crumb = c.level;
+      if (c.current) b.setAttribute("aria-current", "true");
+      // Длинный номер обрезается стилем (многоточие), полный — в подсказке (ревью П-1.4 № 8).
+      b.textContent = c.label;
+      b.title = c.label;
+      crumbsBox.appendChild(b);
+    }
+    focusUp.hidden = focus.level === "system";
+    // Связанные панели: каждая получает фокус событием и сама решает, что показать (П-2 и дальше).
+    grid.dataset.focus = focus.level;
+    if (focus.tx) grid.dataset.focusTx = focus.tx;
+    else delete grid.dataset.focusTx;
+    document.dispatchEvent(new CustomEvent("pult:focus", { detail: { level: focus.level, tx: focus.tx } }));
+  }
+
+  function setFocus(next) {
+    if (next === focus) return;
+    focus = next;
+    renderFocus();
+  }
+
+  // Esc в поле ввода, при наборе через IME и уже обработанный — не фокус пульта (ревью П-1.4 № 1).
+  const typing = (t) => t instanceof Element && (t.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !== null);
+
+  if (F) {
+    // Панели ставят фокус на транзакцию событием `pult:select` с номером транзакции (П-2: карточка доски).
+    document.addEventListener("pult:select", (ev) => setFocus(F.focusTx(focus, ev.detail && ev.detail.tx)));
+    crumbsBox.addEventListener("click", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("[data-crumb]") : null;
+      if (b && b.dataset.crumb === "system") setFocus(F.up(focus));
+    });
+    focusUp.addEventListener("click", () => setFocus(F.up(focus)));
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape" || ev.defaultPrevented || ev.isComposing || typing(ev.target)) return;
+      setFocus(F.up(focus));
+    });
+  }
+
   load();
   render();
+  renderFocus();
   setStatus("connecting");
 
   const es = new EventSource("/pult/events");

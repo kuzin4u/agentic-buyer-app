@@ -67,6 +67,15 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
       expect(html).toContain(`data-layout="tabs"`);
       expect(html).toContain(`href="/pult?lang=${lang === "ru" ? "en" : "ru"}"`);
       expect(html).toContain(`role="status"`);
+      // Фокус (П-1.4): строка крошек и кнопка «↑ выше»; скрипт фокуса подключён до скрипта пульта.
+      expect(html).toContain(`<nav class="focusbar" id="focusbar" aria-label="${PULT["focus.label"][lang]}">`);
+      expect(html).toContain(`id="crumbs"`);
+      expect(html).toContain(`id="focus-up" hidden>${PULT["focus.up"][lang]}</button>`);
+      const focusTag = html.match(/<script\b[^>]*\ssrc="\/pult\/focus\.js"[^>]*>/);
+      const pultTag = html.match(/<script\b[^>]*\ssrc="\/pult\/pult\.js"[^>]*>/);
+      expect(focusTag).not.toBeNull();
+      expect(pultTag).not.toBeNull();
+      expect(focusTag!.index!).toBeLessThan(pultTag!.index!);
       // Без inline-скриптов и стилей: <script> — только файл (src) или JSON словаря (ревью П-1.1 № 11, П-1.1а).
       expect(html).toMatch(/<script\b[^>]*\ssrc="\/pult\/pult\.js"/);
       expect(inlineCode(html)).toEqual([]);
@@ -105,6 +114,10 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
     const src = await js.text();
     expect(src).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
     expect(src).toContain("textContent");
+    const focus = await fetch(`${demo.monitor.url}/pult/focus.js`);
+    expect(focus.status).toBe(200);
+    expect(focus.headers.get("content-type")).toContain("text/javascript");
+    expect(await focus.text()).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
     const css = await fetch(`${demo.monitor.url}/pult/pult.css`);
     expect(css.status).toBe(200);
     expect(css.headers.get("content-type")).toContain("text/css");
