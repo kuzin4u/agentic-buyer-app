@@ -1,10 +1,11 @@
 // Страница экрана «Контроль» DEMO-2 (К2.3б): разметка без данных — прогоны строит скрипт `public/dash/control.js` через
 // textContent (инвариант 4). Язык ru/en и бренд из конфигурации (правило совместимости 3, инвариант 7). Простой вид рядом
-// с пультом (Р-1332 в. 2); переключатель «Пульт · Экран · Монитор» — П-1.
+// с пультом (Р-1332 в. 2); переключатель «Пульт · Экран · Монитор» — П-1.1.
 import type { Brand } from "../brand.js";
 import { CONTROL } from "../dashboards/phrases.js";
 import type { WireLang } from "../dashboards/wire.js";
 import { escapeHtml, jsonForScript } from "./html.js";
+import { switcherHtml } from "./switcher.js";
 
 export function controlPage(lang: WireLang, brand: Brand, hasLogo: boolean): string {
   const s = (k: keyof typeof CONTROL) => escapeHtml(CONTROL[k][lang]);
@@ -24,7 +25,7 @@ export function controlPage(lang: WireLang, brand: Brand, hasLogo: boolean): str
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)}</div>
   <h1>${s("title")}</h1>
-  <nav><a href="/?lang=${lang}">${s("monitor")}</a> <a href="/dash/interpret?lang=${lang}">${s("interpret")}</a> <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/control?lang=${other}">${other}</a></span></nav>
+  <nav>${switcherHtml("control", lang)} <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/dash/control?lang=${other}">${other}</a></span></nav>
 </header>
 <main>
   <p class="subtitle">${s("subtitle")}</p>

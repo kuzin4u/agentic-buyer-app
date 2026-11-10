@@ -1,0 +1,61 @@
+/* Пульт DEMO-2 (П-1.1, модель пульта 1.23): сетка 2×2, вкладки, разворот панели. Цвета бренда — переменные из
+   /brand.css (инвариант 7); цвет не единственный носитель смысла — у состояния есть значок и текст (З7). */
+:root {
+  --ink: #15233a;
+  --muted: #4a5a70;
+  --line: #cdd6df;
+  --bg: #e9eef2;
+  --surface: #ffffff;
+  --alert: #b5322a;
+  --ok: #2e7d4f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); font-variant-numeric: tabular-nums; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; background: var(--brand-primary); color: var(--brand-on-primary); }
+header h1 { margin: 0; font-size: 18px; min-width: 0; overflow-wrap: anywhere; }
+/* Шапка переносится; переключатель языка не сжимается (как З11), переключатель вида переносится по словам — на 360 px
+   строка «Пульт · Экран: Интерпретация, Контроль · Монитор» шире шапки (ревью П-1.1 № 1). */
+header nav { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }
+header .lang-switch { flex-shrink: 0; white-space: nowrap; }
+header .view-switch { min-width: 0; overflow-wrap: anywhere; }
+header a { color: var(--brand-on-primary); }
+.logo { height: 28px; }
+.brand-name { font-weight: 600; }
+.bar { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.bar .status { margin: 0; }
+.layout button, .tabbar button, .pane .icon { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 2px 9px; font: inherit; color: inherit; cursor: pointer; }
+.layout button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: 2px; }
+main { padding: 10px 16px 24px; }
+.subtitle, .status, .empty, .hint { color: var(--muted); }
+.subtitle { margin: 0 0 8px; }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(300px, 44vh) minmax(300px, 44vh); gap: 12px; }
+.grid.max { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+.grid.max .pane:not(.is-max) { display: none; }
+.grid.max .pane.is-max { min-height: 78vh; }
+.grid.tabs { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+.grid.tabs .pane { display: none; }
+.grid.tabs .pane.is-tab { display: flex; min-height: 74vh; }
+.tabbar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tabbar[hidden] { display: none; }
+.tabbar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+
+.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.pane > .ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.pane > .ph h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.pane > .ph .hint { font-size: 12px; }
+.pane > .ph .icon { margin-left: auto; font-size: 12px; color: var(--muted); }
+.pane > .pb { overflow: auto; flex: 1 1 auto; min-height: 0; padding: 0 12px; }
+
+.conn-icon { font-weight: 700; }
+.conn-ok .conn-icon { color: var(--ok); }
+.conn-wait .conn-icon { color: var(--muted); }
+.conn-lost { color: var(--alert); }
+
+/* Ширина телефона: панели одна под другой, без горизонтальной прокрутки страницы. */
+@media (max-width: 960px) {
+  .grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+  .grid .pane { min-height: 50vh; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

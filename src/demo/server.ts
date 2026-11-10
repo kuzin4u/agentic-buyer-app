@@ -9,13 +9,14 @@ import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
-import { CONTROL, SCREEN } from "../dashboards/phrases.js";
 import { localStandSource } from "../dashboards/source.js";
 import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
 import type { MonitorBus } from "./bus.js";
 import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
+import { pultPage } from "./dash-pult.js";
+import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
@@ -111,7 +112,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)} ${emu}</div>
   <h1>${e("page.title")}</h1>
-  <nav class="lang">${o.dashboards ? `<a href="/dash/interpret?lang=${lang}">${escapeHtml(SCREEN.title[lang])}</a> · <a href="/dash/control?lang=${lang}">${escapeHtml(CONTROL.title[lang])}</a> · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
+  <nav class="lang">${o.dashboards ? `${switcherHtml("monitor", lang)} · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
 <ul class="links">
@@ -205,6 +206,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const dashJs = o.dashboards ? PUBLIC("dash/interpret.js") : "";
   const dashCss = o.dashboards ? PUBLIC("dash/dash.css") : "";
   const controlJs = o.dashboards ? PUBLIC("dash/control.js") : "";
+  const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
+  const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
   /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
@@ -317,6 +320,33 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           });
           res.write(`data: ${JSON.stringify({ type: "runs", epoch: c.epoch(), runs: c.runs() })}\n\n`);
           const off = c.subscribe((e: ControlFeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
+        case "/pult":
+          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null));
+        case "/pult/pult.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultJs);
+        case "/pult/pult.css":
+          return send(res, 200, "text/css; charset=utf-8", pultCss);
+        case "/pult/events": {
+          // П-1.1: пока — состояние ленты; транзакции — П-1.2. Запись — только в открытый поток: событие в окне между
+          // r.end() и закрытием сокета не пишется (иначе ERR_STREAM_WRITE_AFTER_END, ревью К1.4б № 1).
+          const f = feed;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          res.write(`data: ${JSON.stringify({ type: "hello", status: f.status() })}\n\n`);
+          const off = f.subscribe((e: FeedEvent) => {
+            if (e.type === "status" && !res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`);
+          });
           sse.add(res);
           req.on("close", () => {
             off();

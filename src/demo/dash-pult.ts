@@ -1,0 +1,61 @@
+// Страница пульта DEMO-2 (П-1.1, модель пульта 1.23): каркас — четыре панели в сетке 2×2 или вкладками, разворот
+// панели, переключатель «Пульт · Экран · Монитор». Разметка без данных шины — панели наполняет скрипт
+// `public/pult/pult.js` через createElement и textContent (инвариант 4, П2 п. 2). Язык ru/en, бренд из конфигурации
+// (правило совместимости 3, инвариант 7).
+import type { Brand } from "../brand.js";
+import type { WireLang } from "../dashboards/wire.js";
+import { PANES, PULT, type Pane } from "../pult/phrases.js";
+import { escapeHtml, jsonForScript } from "./html.js";
+import { switcherHtml } from "./switcher.js";
+
+function paneHtml(pane: Pane, lang: WireLang): string {
+  // Ключи панели — шаблонные типы `pane.${Pane}`: новая панель без подписей не соберётся (повторное ревью П-1.1 № 4).
+  const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
+  const title = s(`pane.${pane}` as const);
+  const hint = s(`pane.${pane}.hint` as const);
+  return `<section class="pane" id="p-${pane}" data-pane="${pane}" aria-labelledby="h-${pane}">
+    <div class="ph"><h2 id="h-${pane}">${title}</h2><span class="hint">${hint}</span><button type="button" class="icon" data-max="${pane}" aria-describedby="h-${pane}">${s("pane.maximize")}</button></div>
+    <div class="pb" id="b-${pane}"><p class="empty">${s(`empty.${pane}` as const)}</p></div>
+  </section>`;
+}
+
+export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean): string {
+  const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
+  const other: WireLang = lang === "ru" ? "en" : "ru";
+  const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
+  const tabs = PANES.map(
+    // Вкладки — кнопки-переключатели с aria-pressed, а не роли tab/tabpanel без стрелок (ревью П-1.1 № 3).
+    (p) => `<button type="button" data-tab="${p}" aria-controls="p-${p}" aria-pressed="false">${s(`pane.${p}` as const)}</button>`,
+  ).join("");
+  return `<!doctype html>
+<html lang="${lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${s("title")} — ${escapeHtml(brand.name)}</title>
+<link rel="stylesheet" href="/brand.css">
+<link rel="stylesheet" href="/pult/pult.css">
+</head>
+<body>
+<header>
+  ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
+  <div class="brand-name">${escapeHtml(brand.name)}</div>
+  <h1>${s("title")}</h1>
+  <nav>${switcherHtml("pult", lang)} <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/pult?lang=${other}">${other}</a></span></nav>
+</header>
+<div class="bar">
+  <p class="status"><span id="conn" class="conn conn-wait" role="status"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span></p>
+  <span class="layout">${s("layout.label")}:<button type="button" data-layout="grid" aria-pressed="true">${s("layout.grid")}</button> <button type="button" data-layout="tabs" aria-pressed="false">${s("layout.tabs")}</button></span>
+</div>
+<main>
+  <p class="subtitle">${s("subtitle")}</p>
+  <div class="tabbar" id="tabbar" role="group" aria-label="${s("layout.tabs")}" hidden>${tabs}</div>
+  <div class="grid" id="grid">
+  ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}
+  </div>
+</main>
+<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES })}</script>
+<script src="/pult/pult.js"></script>
+</body>
+</html>`;
+}
