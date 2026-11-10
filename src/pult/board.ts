@@ -31,6 +31,8 @@ export interface BoardCard {
   readonly column: BoardColumn;
   readonly intentId?: string;
   readonly outcome?: TxOutcomeKind;
+  /** seq события итога — порядок «Завершены»: последние итоги сначала (повторное ревью П-2.1 № 4). */
+  readonly outcomeSeq?: number;
   readonly code?: string;
   readonly worst: Kind;
   /** Конфликт звеньев — итога нет, решает человек (модель транзакций, Р-1444). */
@@ -78,7 +80,7 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       kind: "tx",
       column: txColumn(t),
       ...(t.intentId !== undefined && { intentId: t.intentId }),
-      ...(t.outcome && { outcome: t.outcome.kind }),
+      ...(t.outcome && { outcome: t.outcome.kind, outcomeSeq: t.outcome.seq }),
       ...(t.outcome?.code !== undefined && { code: t.outcome.code }),
       worst: t.worst,
       ...(t.linkConflict && { linkConflict: true as const }),

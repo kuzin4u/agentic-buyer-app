@@ -70,7 +70,7 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
       expect(html).toContain(`href="/pult?lang=${lang === "ru" ? "en" : "ru"}"`);
       expect(html).toContain(`role="status"`);
       // Фокус (П-1.4): строка крошек и кнопка «↑ выше»; скрипт фокуса подключён до скрипта пульта.
-      expect(html).toContain(`<nav class="focusbar" id="focusbar" aria-label="${PULT["focus.label"][lang]}">`);
+      expect(html).toContain(`<nav class="focusbar" id="focusbar" tabindex="-1" aria-label="${PULT["focus.label"][lang]}">`);
       expect(html).toContain(`id="crumbs"`);
       expect(html).toContain(`id="focus-up" hidden>${PULT["focus.up"][lang]}</button>`);
       const focusTag = html.match(/<script\b[^>]*\ssrc="\/pult\/focus\.js"[^>]*>/);
