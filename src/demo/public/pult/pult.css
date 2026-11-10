@@ -38,7 +38,9 @@ main { padding: 10px 16px 24px; }
 .focusbar .crumb, .focusbar #focus-up { border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; background: var(--surface); font: inherit; color: inherit; cursor: pointer; }
 .focusbar .crumb.cur { background: var(--ink); color: var(--surface); border-color: var(--ink); }
 /* Длинный номер транзакции — многоточием, полный — в title (ревью П-1.4 № 8). */
-.focusbar .crumb { max-width: 28em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focusbar .crumb { display: inline-block; vertical-align: middle; max-width: 28em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Текущая крошка — span, не кнопка (П-2.1а): без указателя «щёлкнуть»; многоточие — через inline-block (ревью П-2.1а № 3). */
+.focusbar .crumb.cur { cursor: default; }
 .focusbar .hint { font-size: 12px; }
 .grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(300px, 44vh) minmax(300px, 44vh); gap: 12px; }
 .grid.max { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }

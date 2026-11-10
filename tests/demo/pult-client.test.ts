@@ -1,0 +1,195 @@
+// П-2.1а (Р-1462; ревью П-1.1 № 12, П-1.4 № 3, 4, 6, 7, повторное ревью П-2.1 № 3, 4): скрипт пульта `public/pult/pult.js`
+// на подменённом DOM (`tests/support/fake-dom.ts`) — разметка страницы настоящая (`pultPage`). Проверяется поведение:
+// раскладка и её хранение, состояние ленты, фокус (крошки, Esc, `pult:select` → `pult:focus`, клавиатурный фокус),
+// доска (колонки, порядок «Завершены», счётчики без перестройки, выбор карточки нажатием).
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { pultPage } from "../../src/demo/dash-pult.js";
+import { loadBrand } from "../../src/demo/server.js";
+import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
+import { PULT } from "../../src/pult/phrases.js";
+import { FakeEvent, pageEnv, type FakeElement, type PageEnv } from "../support/fake-dom.js";
+
+const FOCUS_JS = readFileSync("src/demo/public/pult/focus.js", "utf8");
+const PULT_JS = readFileSync("src/demo/public/pult/pult.js", "utf8");
+const { brand } = loadBrand("config/brand.demo.json");
+
+function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean } = {}): PageEnv {
+  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false), o);
+  if (!o.noFocus) env.run(FOCUS_JS);
+  env.run(PULT_JS);
+  return env;
+}
+const $ = (env: PageEnv, id: string) => env.document.getElementById(id)!;
+const ru = (k: keyof typeof PULT) => PULT[k].ru;
+
+const NOW = "2026-11-10T12:00:10.000Z";
+function card(id: string, column: PultCard["column"], o: Partial<PultCard> = {}): PultCard {
+  return { id, kind: "tx", column, worst: "norm", order: 1, since: "2026-11-10T12:00:00.000Z", ...o };
+}
+const boardMsg = (cards: PultCard[], jumps: PultBoardState["jumps"] = []) => ({ type: "board", board: { now: NOW, cards, jumps } });
+
+describe("скрипт пульта на подменённом DOM (П-2.1а)", () => {
+  it("раскладка: сетка → вкладки → вкладка «Контроль» → сетка → разворот «Хода»; выбор сохраняется", () => {
+    const env = start();
+    const grid = $(env, "grid");
+    expect(grid.classList.contains("tabs")).toBe(false);
+    expect($(env, "tabbar").hidden).toBe(true);
+    env.document.querySelector("[data-layout='tabs']")!.click();
+    expect(grid.classList.contains("tabs")).toBe(true);
+    expect($(env, "tabbar").hidden).toBe(false);
+    expect($(env, "p-proc").classList.contains("is-tab")).toBe(true);
+    env.document.querySelector("[data-tab='ctl']")!.click();
+    expect($(env, "p-ctl").classList.contains("is-tab")).toBe(true);
+    expect($(env, "p-proc").classList.contains("is-tab")).toBe(false);
+    expect(env.document.querySelector("[data-tab='ctl']")!.getAttribute("aria-pressed")).toBe("true");
+    expect(JSON.parse(env.storage.get("pult.layout.v1")!)).toMatchObject({ layout: "tabs", tab: "ctl" });
+    env.document.querySelector("[data-layout='grid']")!.click();
+    const max = env.document.querySelector("[data-max='proc']")!;
+    max.click();
+    expect(grid.classList.contains("max")).toBe(true);
+    expect($(env, "p-proc").classList.contains("is-max")).toBe(true);
+    expect(max.textContent).toBe(ru("pane.restore"));
+    max.click();
+    expect(grid.classList.contains("max")).toBe(false);
+    expect(max.textContent).toBe(ru("pane.maximize"));
+  });
+
+  it("сохранённая раскладка восстанавливается; повреждённое значение и недоступное хранилище — раскладка по умолчанию, пульт работает", () => {
+    const saved = start({ stored: { "pult.layout.v1": JSON.stringify({ layout: "tabs", tab: "int", max: null }) } });
+    expect($(saved, "grid").classList.contains("tabs")).toBe(true);
+    expect($(saved, "p-int").classList.contains("is-tab")).toBe(true);
+    for (const bad of ["{не json", JSON.stringify({ layout: "<script>", tab: "x", max: "y" }), "null"]) {
+      const env = start({ stored: { "pult.layout.v1": bad } });
+      expect($(env, "grid").classList.contains("tabs"), bad).toBe(false);
+      expect($(env, "grid").classList.contains("max"), bad).toBe(false);
+    }
+    const noStore = start({ storage: "throws" });
+    noStore.document.querySelector("[data-layout='tabs']")!.click();
+    expect($(noStore, "grid").classList.contains("tabs")).toBe(true);
+  });
+
+  it("состояние ленты: hello → «шина подключена»; незнакомое — «подключение»; закрытая лента — «пульт отключён»", () => {
+    const env = start();
+    const es = env.sources[0]!;
+    expect(es.url).toBe("/pult/events");
+    es.send({ type: "hello", status: "open" });
+    expect($(env, "status").textContent).toBe(ru("status.open"));
+    expect($(env, "status-icon").textContent).toBe("●");
+    es.send({ type: "status", status: "что-то новое" });
+    expect($(env, "status").textContent).toBe(ru("status.connecting"));
+    es.readyState = 2;
+    es.onerror!();
+    expect($(env, "status").textContent).toBe(ru("status.pult_closed"));
+  });
+
+  it("фокус: выбор карточки → pult:focus с номером, data-focus-tx, крошка «Транзакция» — текст с aria-current=location; Esc — система, фокус клавиатуры на строке фокуса", () => {
+    const env = start();
+    const events: unknown[] = [];
+    env.document.addEventListener("pult:focus", (e) => events.push(e.detail));
+    env.sources[0]!.send(boardMsg([card("C1", "pay")]));
+    const c = env.document.querySelector("[data-card='C1']")!;
+    c.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true }));
+    expect(events.at(-1)).toEqual({ level: "tx", tx: "C1" });
+    expect($(env, "grid").dataset.focus).toBe("tx");
+    expect($(env, "grid").dataset.focusTx).toBe("C1");
+    expect($(env, "focus-up").hidden).toBe(false);
+    const cur = $(env, "crumbs").querySelector(".cur")!;
+    expect(cur.tagName).toBe("SPAN");
+    expect(cur.getAttribute("aria-current")).toBe("location");
+    expect(cur.textContent).toBe(`${ru("focus.tx")} C1`);
+    // Повторный выбор той же карточки (click после pointerdown, по новому узлу после перестройки) — без нового события.
+    const before = events.length;
+    env.document.querySelector("[data-card='C1']")!.click();
+    expect(events.length).toBe(before);
+    // Esc в поле ввода и при наборе через IME — не фокус пульта.
+    const input = env.document.createElement("input");
+    env.document.body.appendChild(input);
+    input.dispatchEvent(new FakeEvent("keydown", { bubbles: true, key: "Escape" }));
+    env.document.dispatchEvent(new FakeEvent("keydown", { key: "Escape", isComposing: true }));
+    expect($(env, "grid").dataset.focus).toBe("tx");
+    // Esc — система; клавиатурный фокус — на строке фокуса, а не на body.
+    env.document.dispatchEvent(new FakeEvent("keydown", { key: "Escape" }));
+    expect($(env, "grid").dataset.focus).toBe("system");
+    expect($(env, "grid").dataset.focusTx).toBeUndefined();
+    expect($(env, "focus-up").hidden).toBe(true);
+    expect(env.document.activeElement).toBe($(env, "focusbar"));
+    expect(events.at(-1)).toEqual({ level: "system", tx: null });
+  });
+
+  it("«↑ выше» и крошка «Система» — уровень выше и фокус клавиатуры на строке фокуса; начальное состояние — в data-focus", () => {
+    const env = start();
+    expect($(env, "grid").dataset.focus).toBe("system");
+    env.sources[0]!.send(boardMsg([card("C2", "cart")]));
+    env.document.querySelector("[data-card='C2']")!.click();
+    $(env, "focus-up").focus();
+    $(env, "focus-up").click();
+    expect($(env, "grid").dataset.focus).toBe("system");
+    expect(env.document.activeElement).toBe($(env, "focusbar"));
+    env.document.querySelector("[data-card='C2']")!.click();
+    const sys = $(env, "crumbs").querySelector("[data-crumb='system']")!;
+    expect(sys.tagName).toBe("BUTTON");
+    sys.focus();
+    sys.click();
+    expect($(env, "grid").dataset.focus).toBe("system");
+    expect(env.document.activeElement).toBe($(env, "focusbar"));
+  });
+
+  it("доска: восемь колонок, карточки по колонкам, подсказка на пустой доске, «Завершены» — по времени итога, последние сначала", () => {
+    const env = start();
+    env.sources[0]!.send(boardMsg([]));
+    expect($(env, "b-proc").querySelector(".empty")!.textContent).toBe(ru("empty.proc"));
+    env.sources[0]!.send(
+      boardMsg([
+        // Порядок итогов обратен порядку начала: A началась раньше, но её итог позже — по началу было бы B, A.
+        card("A", "done", { outcome: "paid", outcomeSeq: 90, order: 1 }),
+        card("B", "done", { outcome: "declined", outcomeSeq: 50, order: 2 }),
+        card("C", "pay", { order: 3 }),
+        card("M", "mandate", { kind: "mandate", order: 4 }),
+      ]),
+    );
+    const cols = env.document.querySelectorAll(".bcol");
+    expect(cols.map((c) => c.dataset.col)).toEqual(["mandate", "select", "cart", "confirmation", "pay", "result", "post", "done"]);
+    const done = env.document.querySelector(".bcol[data-col='done']")!;
+    // Итог A позже итога B — A первой, хотя по началу транзакций (и по старому «последние по началу») было бы B, A.
+    expect(done.querySelectorAll("[data-card]").map((c) => c.dataset.card)).toEqual(["A", "B"]);
+    expect(done.querySelector("[data-card='A']")!.querySelector(".bc-o")!.textContent).toBe(ru("outcome.paid"));
+    expect(env.document.querySelector(".bcol[data-col='pay']")!.querySelector("[data-card='C']")).not.toBeNull();
+    expect(env.document.querySelector("[data-card='M']")!.querySelector(".bc-k")!.textContent).toBe(ru("card.mandate"));
+    expect($(env, "b-proc").querySelector(".empty")).toBeNull();
+  });
+
+  it("счётчик «в стадии» раз в секунду — только текст, узлы карточек прежние; перестройка доски возвращает фокус клавиатуры на карточку", () => {
+    const env = start();
+    env.sources[0]!.send(boardMsg([card("T", "pay")]));
+    const node = env.document.querySelector("[data-card='T']") as FakeElement;
+    const counter = node.querySelector(".bc-t")!;
+    expect(counter.textContent).toMatch(new RegExp(`^${ru("card.in_stage")} \\d+ ${ru("card.sec")}$`));
+    for (const f of env.intervals) f();
+    expect(env.document.querySelector("[data-card='T']")).toBe(node);
+    // Новая доска с той же карточкой — узел новый, фокус клавиатуры остался на этой карточке.
+    node.focus();
+    env.sources[0]!.send(boardMsg([card("T", "result")]));
+    const again = env.document.querySelector("[data-card='T']")!;
+    expect(again).not.toBe(node);
+    expect(env.document.activeElement).toBe(again);
+  });
+
+  it("скрипт фокуса не загрузился — строка фокуса скрыта, доска и раскладка работают", () => {
+    const env = start({ noFocus: true });
+    expect($(env, "focusbar").hidden).toBe(true);
+    env.sources[0]!.send(boardMsg([card("Z", "cart")]));
+    expect(env.document.querySelector("[data-card='Z']")).not.toBeNull();
+    env.document.querySelector("[data-layout='tabs']")!.click();
+    expect($(env, "grid").classList.contains("tabs")).toBe(true);
+  });
+
+  it("данные карточки — только текстом: номер и фраза с разметкой не становятся элементами", () => {
+    const env = start({ lang: "en" });
+    env.sources[0]!.send(boardMsg([card("<img src=x>", "pay", { last: { at: NOW, phrase: { ru: "<b>ру</b>", en: "<b>en</b>" } } })]));
+    const c = env.document.querySelector("[data-card]")!;
+    expect(c.querySelector(".bc-id")!.textContent).toBe("<img src=x>");
+    expect(c.querySelector(".bc-e")!.textContent).toContain("<b>en</b>");
+    expect(c.querySelectorAll("img, b").filter((x) => x !== c.querySelector(".bc-id"))).toEqual([]);
+  });
+});

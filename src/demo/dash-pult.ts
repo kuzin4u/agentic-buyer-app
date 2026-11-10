@@ -51,7 +51,7 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
 </div>
 <main>
   <p class="subtitle">${s("subtitle")}</p>
-  <nav class="focusbar" id="focusbar" aria-label="${s("focus.label")}"><span class="fl-l">${s("focus.label")}:</span> <span id="crumbs"></span> <button type="button" id="focus-up" hidden>${s("focus.up")}</button> <span class="hint">${s("focus.hint")}</span></nav>
+  <nav class="focusbar" id="focusbar" tabindex="-1" aria-label="${s("focus.label")}"><span class="fl-l">${s("focus.label")}:</span> <span id="crumbs"></span> <button type="button" id="focus-up" hidden>${s("focus.up")}</button> <span class="hint">${s("focus.hint")}</span></nav>
   <div class="tabbar" id="tabbar" role="group" aria-label="${s("layout.tabs")}" hidden>${tabs}</div>
   <div class="grid" id="grid">
   ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}

@@ -52,8 +52,11 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
     const stepOnly = [...base, step("outcome", { op_ref: "P2", order_id: "O2", mandate_id: "C2" }, { stage: "outcome" })];
     expect(view(stepOnly).cards[0]).toMatchObject({ column: "result" });
     expect(view(stepOnly).cards[0]!.outcome).toBeUndefined();
-    const paid = [...stepOnly, event("operation.authorized", { op_ref: "P2", order_id: "O2" }, { stage: "outcome" })];
-    expect(view(paid).cards[0]).toMatchObject({ column: "done", outcome: "paid" });
+    const authorized = event("operation.authorized", { op_ref: "P2", order_id: "O2" }, { stage: "outcome" });
+    const paid = [...stepOnly, authorized];
+    // seq итога — порядок «Завершены» (повторное ревью П-2.1 № 4): seq события итога, а не начала транзакции.
+    expect(view(paid).cards[0]).toMatchObject({ column: "done", outcome: "paid", outcomeSeq: authorized.seq });
+    expect(view(paid).cards[0]!.outcomeSeq).not.toBe(view(paid).cards[0]!.order);
     // Последняя ключевая запись — фраза ru/en; служебная не показывается.
     const withDetail = [...paid, rec("monitor", "GET /pao/v1/operations/{op_ref}", { op_ref: "P2" }, { level: "detail", source: "agent_platform" })];
     expect(view(withDetail).cards[0]!.last?.phrase).toEqual({ ru: "ру operation.authorized", en: "en operation.authorized" });
@@ -199,5 +202,26 @@ describe("лента пульта (П-2.1)", () => {
     expect(f.feed.list()).toHaveLength(2);
     expect(p.board().cards).toEqual([expect.objectContaining({ id: "CW", column: "done", outcome: "paid" })]);
     p.close();
+  });
+
+  it("предел своего окна пульта (повторное ревью П-2.1 № 2): старые записи уходят, порядок по seq сохраняется, повтор seq не добавляется", async () => {
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date(), debounceMs: 0, limit: 3 });
+    const a = step("cart.created", { mandate_id: "C1", intent_id: "I1" }, { stage: "cart" });
+    const b = step("cart.created", { mandate_id: "C2", intent_id: "I2" }, { stage: "cart" });
+    const c = step("cart.created", { mandate_id: "C3", intent_id: "I3" }, { stage: "cart" });
+    const d = step("cart.created", { mandate_id: "C4", intent_id: "I4" }, { stage: "cart" });
+    // Пришли не по порядку: d, b, a, c. В окне — три старших по seq (b, c, d): a вытеснена.
+    f.push(d, b, a, c);
+    await tick();
+    expect(p.board().cards.map((x) => x.id)).toEqual(["C2", "C3", "C4"]);
+    p.close();
+    // Повтор seq места не занимает: при limit 3 и a, b, b, c — все три (без защиты дубль b вытеснил бы a).
+    const g = fakeFeed();
+    const q = createPultFeed(g.feed, { now: () => new Date(), debounceMs: 0, limit: 3 });
+    g.push(a, b, b, c);
+    await tick();
+    expect(q.board().cards.map((x) => x.id)).toEqual(["C1", "C2", "C3"]);
+    q.close();
   });
 });

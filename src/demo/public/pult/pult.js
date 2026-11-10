@@ -107,18 +107,21 @@
     }
     while (crumbsBox.firstChild) crumbsBox.removeChild(crumbsBox.firstChild);
     for (const c of F.crumbs(focus, L)) {
-      const b = document.createElement("button");
-      b.type = "button";
+      // Текущая крошка — текст с aria-current="location", переход — только кнопкой выше (ревью П-1.4 № 4).
+      const b = document.createElement(c.current ? "span" : "button");
+      if (!c.current) b.type = "button";
       b.className = "crumb" + (c.current ? " cur" : "");
       b.dataset.crumb = c.level;
-      if (c.current) b.setAttribute("aria-current", "true");
+      if (c.current) b.setAttribute("aria-current", "location");
       // Длинный номер обрезается стилем (многоточие), полный — в подсказке (ревью П-1.4 № 8).
       b.textContent = c.label;
       b.title = c.label;
       crumbsBox.appendChild(b);
     }
     focusUp.hidden = focus.level === "system";
-    // Связанные панели: каждая получает фокус событием и сама решает, что показать (П-2 и дальше).
+    // Связанные панели: каждая получает фокус событием `pult:focus` и сама решает, что показать (П-2 и дальше).
+    // Контракт для панели, подключённой позже первого события (ревью П-1.4 № 6): текущее состояние — атрибуты `#grid`
+    // `data-focus` (system | tx) и `data-focus-tx` (номер транзакции).
     grid.dataset.focus = focus.level;
     if (focus.tx) grid.dataset.focusTx = focus.tx;
     else delete grid.dataset.focusTx;
@@ -134,17 +137,25 @@
   // Esc в поле ввода, при наборе через IME и уже обработанный — не фокус пульта (ревью П-1.4 № 1).
   const typing = (t) => t instanceof Element && (t.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !== null);
 
+  // Уровень выше по действию человека: кнопка или крошка, на которой стоял фокус клавиатуры, исчезает — фокус клавиатуры
+  // переходит на строку фокуса, а не теряется на body (ревью П-1.4 № 3).
+  function goUp() {
+    const before = focus;
+    setFocus(F.up(focus));
+    if (focus !== before) focusBar.focus();
+  }
+
   if (F) {
     // Панели ставят фокус на транзакцию событием `pult:select` с номером транзакции (П-2: карточка доски).
     document.addEventListener("pult:select", (ev) => setFocus(F.focusTx(focus, ev.detail && ev.detail.tx)));
     crumbsBox.addEventListener("click", (ev) => {
       const b = ev.target instanceof Element ? ev.target.closest("[data-crumb]") : null;
-      if (b && b.dataset.crumb === "system") setFocus(F.up(focus));
+      if (b && b.dataset.crumb === "system" && b.tagName === "BUTTON") goUp();
     });
-    focusUp.addEventListener("click", () => setFocus(F.up(focus)));
+    focusUp.addEventListener("click", goUp);
     document.addEventListener("keydown", (ev) => {
       if (ev.key !== "Escape" || ev.defaultPrevented || ev.isComposing || typing(ev.target)) return;
-      setFocus(F.up(focus));
+      goUp();
     });
   }
 
@@ -218,8 +229,10 @@
       const col = el("section", undefined, "bcol" + (k === "done" ? " fin" : ""));
       col.dataset.col = k;
       col.appendChild(el("h3", label("col." + k) + " · " + n, "bcol-h"));
-      // «Завершены» — последние сначала, не больше DONE_SHOWN; остальное — числом.
-      if (k === "done") cs = cs.slice().reverse().slice(0, DONE_SHOWN);
+      // «Завершены» — по времени итога, последние сначала (повторное ревью П-2.1 № 4); не больше DONE_SHOWN, остальное —
+      // числом. У поручения без покупки итога нет — по первой записи.
+      const doneKey = (c) => (typeof c.outcomeSeq === "number" ? c.outcomeSeq : c.order);
+      if (k === "done") cs = cs.slice().sort((a, b) => doneKey(b) - doneKey(a)).slice(0, DONE_SHOWN);
       for (const c of cs) col.appendChild(card(c));
       if (n > cs.length) col.appendChild(el("p", label("board.more") + " " + (n - cs.length), "muted"));
       grid2.appendChild(col);
@@ -237,11 +250,15 @@
     }
   }
 
-  // Щелчок по карточке — фокус на транзакцию (событие `pult:select`, П-1.4).
-  procBox.addEventListener("click", (ev) => {
+  // Выбор карточки — фокус на транзакцию (событие `pult:select`, П-1.4). Мышь — по нажатию (`pointerdown`): доска могла
+  // перестроиться до отпускания, и `click` ушёл бы общему предку (повторное ревью П-2.1 № 3); клавиатура — по `click`
+  // (Enter, пробел). Повторный выбор той же карточки — то же состояние фокуса, без лишней перерисовки (П-1.4 № 2).
+  const select = (ev) => {
     const b = ev.target instanceof Element ? ev.target.closest("[data-card]") : null;
     if (b) document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: b.dataset.card } }));
-  });
+  };
+  procBox.addEventListener("pointerdown", select);
+  procBox.addEventListener("click", select);
   document.addEventListener("pult:focus", renderBoard);
   // Счётчик «в стадии N с» — раз в секунду меняется только его текст: узлы карточек не пересоздаются, фокус и щелчок не
   // теряются (ревью П-2.1 № 4).
