@@ -28,6 +28,16 @@ describe("подменённый DOM (tests/support/fake-dom.ts)", () => {
     expect(d.querySelector("input")!.closest("[data-card]")).toBe(a);
   });
 
+  it("select.value — только из списка option (вне списка — пусто, как в браузере); без выбора — первый option (ревью П-2.3 № 10)", () => {
+    const d = fromHtml(`<!doctype html><html><body><select id="s"><option value="">все</option><option value="M1">M1</option></select></body></html>`);
+    const s = d.getElementById("s")!;
+    expect(s.value).toBe("");
+    s.value = "M1";
+    expect(s.value).toBe("M1");
+    s.value = "НЕТ-ТАКОГО";
+    expect(s.value).toBe("");
+  });
+
   it("событие со снятого узла до document не всплывает; с узла в документе — всплывает", () => {
     const d = doc();
     let atDoc = 0;

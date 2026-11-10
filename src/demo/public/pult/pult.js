@@ -234,7 +234,7 @@
     wrap.appendChild(jl);
     const grid2 = el("div", undefined, "board");
     for (const k of COLUMNS) {
-      let cs = board.cards.filter((c) => c.column === k);
+      let cs = board.cards.filter((c) => c.column === k && pass(c));
       const n = cs.length;
       const col = el("section", undefined, "bcol" + (k === "done" ? " fin" : ""));
       col.dataset.col = k;
@@ -277,7 +277,8 @@
 
   function renderGraph() {
     if (!board) return;
-    const rows = board.graph && Array.isArray(board.graph.rows) ? board.graph.rows : [];
+    const byId = new Map(board.cards.map((c) => [c.id, c]));
+    const rows = (board.graph && Array.isArray(board.graph.rows) ? board.graph.rows : []).filter((r) => pass(byId.get(r.id)));
     const active = document.activeElement;
     const keep = active && procBox.contains(active) && active.dataset ? active.dataset.card : undefined;
     const wrap = document.createDocumentFragment();
@@ -368,9 +369,81 @@
     if (st) st.textContent = clock(new Date(start).toISOString());
   }
 
+  // ---- разрезы (П-2.3, модель 1.23 `buildFilters`): стадия, продавец, тип, поручения без покупки ----
+  // Один фильтр на доску и «График»; строка «Графика» проверяется по карточке с тем же номером. Разрез — удобство
+  // зрителя: данные не меняются, число скрытых показано.
+  const cutStage = document.getElementById("cut-stage");
+  const cutMerchant = document.getElementById("cut-merchant");
+  const cutMandates = document.getElementById("cut-mandates");
+  const cutHidden = document.getElementById("cut-hidden");
+  const cut = { stage: "", merchant: "", kinds: { norm: true, conflict: true, error: true, fraud: true }, mandates: true };
+
+  function pass(c) {
+    if (!c) return true;
+    if (cut.stage && c.column !== cut.stage) return false;
+    if (cut.merchant && c.merchantId !== cut.merchant) return false;
+    if (cut.kinds[c.worst] === false) return false;
+    if (!cut.mandates && c.kind === "mandate") return false;
+    return true;
+  }
+
+  /** Список продавцов — по карточкам доски; обновляется на месте, выбранный остаётся (даже если ушёл с доски). */
+  function syncMerchants() {
+    if (!cutMerchant || !board) return;
+    const ids = Array.from(new Set(board.cards.map((c) => c.merchantId).filter((m) => typeof m === "string"))).sort();
+    if (cut.merchant && ids.indexOf(cut.merchant) < 0) ids.push(cut.merchant);
+    const have = Array.prototype.slice.call(cutMerchant.querySelectorAll("option")).map((o) => o.getAttribute("value"));
+    for (const id of ids) {
+      if (have.indexOf(id) >= 0) continue;
+      const o = document.createElement("option");
+      o.setAttribute("value", id);
+      o.textContent = id;
+      cutMerchant.appendChild(o);
+    }
+  }
+
   function renderProc() {
+    const all = board ? board.cards : [];
+    const shown = all.filter(pass);
+    if (cutHidden) cutHidden.textContent = all.length > shown.length ? label("cut.hidden") + ": " + (all.length - shown.length) : "";
     if (state.mode === "graph") renderGraph();
     else renderBoard();
+  }
+
+  // Нет хотя бы одного поля разрезов — разрезы не подключаются, пульт работает без них (ревью П-2.3 № 5).
+  const cutReset = document.getElementById("cut-reset");
+  if (cutStage && cutMerchant && cutMandates && cutReset) {
+    cutStage.addEventListener("change", () => {
+      cut.stage = cutStage.value;
+      renderProc();
+    });
+    cutMerchant.addEventListener("change", () => {
+      cut.merchant = cutMerchant.value;
+      renderProc();
+    });
+    cutMandates.addEventListener("change", () => {
+      cut.mandates = cutMandates.checked;
+      renderProc();
+    });
+    for (const b of document.querySelectorAll("[data-cut-kind]")) {
+      b.addEventListener("click", () => {
+        const k = b.dataset.cutKind;
+        cut.kinds[k] = !cut.kinds[k];
+        b.setAttribute("aria-pressed", String(cut.kinds[k]));
+        renderProc();
+      });
+    }
+    cutReset.addEventListener("click", () => {
+      cut.stage = "";
+      cut.merchant = "";
+      cut.mandates = true;
+      for (const k of Object.keys(cut.kinds)) cut.kinds[k] = true;
+      cutStage.value = "";
+      cutMerchant.value = "";
+      cutMandates.checked = true;
+      for (const b of document.querySelectorAll("[data-cut-kind]")) b.setAttribute("aria-pressed", "true");
+      renderProc();
+    });
   }
 
   document.addEventListener("pult:focus", renderProc);
@@ -404,6 +477,7 @@
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
       board = e.board;
       boardAt = Date.now();
+      syncMerchants();
       renderProc();
     }
   };

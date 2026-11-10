@@ -4,6 +4,7 @@
 // (правило совместимости 3, инвариант 7).
 import type { Brand } from "../brand.js";
 import type { WireLang } from "../dashboards/wire.js";
+import { BOARD_COLUMNS } from "../pult/board.js";
 import { PANES, PULT, type Pane } from "../pult/phrases.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { switcherHtml } from "./switcher.js";
@@ -18,8 +19,19 @@ function paneHtml(pane: Pane, lang: WireLang): string {
     pane === "proc"
       ? `<span class="pmodes" role="group" aria-label="${s("mode.label")}"><button type="button" data-mode="board" aria-pressed="true">${s("mode.board")}</button> <button type="button" data-mode="graph" aria-pressed="false">${s("mode.graph")}</button></span>`
       : "";
+  // Разрезы панели «Ход» (П-2.3, модель 1.23 `buildFilters`): стадия, продавец, тип записи, поручения без покупки.
+  // Клиент на стенде один (эмулятор банка, П2) — разреза по клиенту нет.
+  const cols = BOARD_COLUMNS.map((c) => `<option value="${c}">${s(`col.${c}` as const)}</option>`).join("");
+  const kinds = (["norm", "conflict", "error", "fraud"] as const)
+    .map((k) => `<button type="button" data-cut-kind="${k}" aria-pressed="true">${s(`kind.${k}` as const)}</button>`)
+    .join(" ");
+  const cuts =
+    pane === "proc"
+      ? `<div class="cuts" id="cuts" role="group" aria-label="${s("cut.label")}"><label>${s("cut.stage")} <select id="cut-stage"><option value="">${s("cut.all")}</option>${cols}</select></label> <label>${s("cut.merchant")} <select id="cut-merchant"><option value="">${s("cut.all")}</option></select></label> <span class="cut-kinds">${s("cut.kind")}: ${kinds}</span> <label><input type="checkbox" id="cut-mandates" checked> ${s("cut.mandates")}</label> <button type="button" id="cut-reset">${s("cut.reset")}</button> <span class="muted" id="cut-hidden"></span></div>`
+      : "";
   return `<section class="pane" id="p-${pane}" data-pane="${pane}" aria-labelledby="h-${pane}">
     <div class="ph"><h2 id="h-${pane}">${title}</h2><span class="hint">${hint}</span>${modes}<button type="button" class="icon" data-max="${pane}" aria-describedby="h-${pane}">${s("pane.maximize")}</button></div>
+    ${cuts}
     <div class="pb" id="b-${pane}"><p class="empty">${s(`empty.${pane}` as const)}</p></div>
   </section>`;
 }

@@ -244,6 +244,69 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect(Number.parseFloat(env2.document.querySelector(".seg")!.style.width!)).toBe(0);
   });
 
+  it("П-2.3 разрезы: стадия, продавец (список из карточек), тип, поручения без покупки — на доске и «Графике»; число скрытых; сброс", () => {
+    const env = start();
+    const cards = [
+      card("A", "pay", { merchantId: "MER-1", order: 1 }),
+      card("B", "cart", { merchantId: "MER-2", worst: "error", order: 2 }),
+      card("M", "mandate", { kind: "mandate", order: 3 }),
+    ];
+    const graph = { rows: cards.map((c) => ({ id: c.id, kind: c.kind, order: c.order, marks: [], segs: [{ col: c.column, from: "2026-11-10T12:00:05.000Z" }] })) };
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph } });
+    const ids = () => env.document.querySelectorAll("[data-card]").map((c) => c.dataset.card).sort();
+    const change = (id: string, v: string | boolean) => {
+      const f = $(env, id);
+      if (typeof v === "boolean") f.checked = v;
+      else f.value = v;
+      f.dispatchEvent(new FakeEvent("change", { bubbles: true }));
+    };
+    expect(ids()).toEqual(["A", "B", "M"]);
+    // Продавцы — из карточек.
+    expect($(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"))).toEqual(["", "MER-1", "MER-2"]);
+    change("cut-merchant", "MER-2");
+    expect(ids()).toEqual(["B"]);
+    expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
+    change("cut-merchant", "");
+    change("cut-stage", "pay");
+    expect(ids()).toEqual(["A"]);
+    change("cut-stage", "");
+    // Тип «ошибка» выключен — B скрыта.
+    env.document.querySelector("[data-cut-kind='error']")!.click();
+    expect(env.document.querySelector("[data-cut-kind='error']")!.getAttribute("aria-pressed")).toBe("false");
+    expect(ids()).toEqual(["A", "M"]);
+    change("cut-mandates", false);
+    expect(ids()).toEqual(["A"]);
+    // На «Графике» — тот же разрез.
+    env.document.querySelector("[data-mode='graph']")!.click();
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card)).toEqual(["A"]);
+    // Сброс — всё видно, поля в исходном положении.
+    $(env, "cut-reset").click();
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card).sort()).toEqual(["A", "B", "M"]);
+    expect($(env, "cut-mandates").checked).toBe(true);
+    expect($(env, "cut-stage").value).toBe("");
+    expect($(env, "cut-hidden").textContent).toBe("");
+  });
+
+  it("ревью П-2.3 № 1: список продавцов обновляется на месте — без дублей, новый добавляется, выбранный остаётся после ухода с доски", () => {
+    const env = start();
+    const opts = () => $(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"));
+    const send = (cards: PultCard[]) => env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph: { rows: [] } } });
+    send([card("A", "pay", { merchantId: "MER-1" }), card("B", "cart", { merchantId: "MER-2" })]);
+    expect(opts()).toEqual(["", "MER-1", "MER-2"]);
+    const sel = $(env, "cut-merchant");
+    sel.value = "MER-2";
+    sel.dispatchEvent(new FakeEvent("change", { bubbles: true }));
+    const node = sel.querySelectorAll("option")[2];
+    // Второй пакет: MER-2 ушла с доски, пришёл MER-3, MER-1 — снова. Дублей нет, узлы прежних option не пересоздаются.
+    send([card("A", "pay", { merchantId: "MER-1" }), card("C", "cart", { merchantId: "MER-3" })]);
+    expect(opts()).toEqual(["", "MER-1", "MER-2", "MER-3"]);
+    expect(sel.querySelectorAll("option")[2]).toBe(node);
+    expect(sel.value).toBe("MER-2");
+    // Выбран продавец, которого на доске нет, — карточек не видно, скрыто — обе.
+    expect(env.document.querySelectorAll("[data-card]")).toEqual([]);
+    expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
+  });
+
   it("данные карточки — только текстом: номер и фраза с разметкой не становятся элементами", () => {
     const env = start({ lang: "en" });
     env.sources[0]!.send(boardMsg([card("<img src=x>", "pay", { last: { at: NOW, phrase: { ru: "<b>ру</b>", en: "<b>en</b>" } } })]));

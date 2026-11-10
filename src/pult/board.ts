@@ -30,6 +30,8 @@ export interface BoardCard {
   readonly kind: "tx" | "mandate";
   readonly column: BoardColumn;
   readonly intentId?: string;
+  /** Продавец покупки — для разреза «продавец» (П-2.3). */
+  readonly merchantId?: string;
   readonly outcome?: TxOutcomeKind;
   /** seq события итога — порядок «Завершены»: последние итоги сначала (повторное ревью П-2.1 № 4). */
   readonly outcomeSeq?: number;
@@ -80,6 +82,7 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       kind: "tx",
       column: txColumn(t),
       ...(t.intentId !== undefined && { intentId: t.intentId }),
+      ...(t.merchantId !== undefined && { merchantId: t.merchantId }),
       ...(t.outcome && { outcome: t.outcome.kind, outcomeSeq: t.outcome.seq }),
       ...(t.outcome?.code !== undefined && { code: t.outcome.code }),
       worst: t.worst,
