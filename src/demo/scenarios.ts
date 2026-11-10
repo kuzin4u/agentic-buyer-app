@@ -12,6 +12,7 @@ import type { Mandate, MandateDraft, Money, Operation } from "agentic-buyer-ref/
 import { ISO4217_MINOR_UNITS } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
 import type { MoreScenario } from "./server.js";
+import { MASSA_MADRE } from "./shops.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -25,8 +26,8 @@ export type StepSink = (s: ScenarioStep) => void;
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
  *  «подтверждение человеком через УПК» (своё поручение); revoke — сюжет 5. Сюжеты 6–10 — правильные тесты задания на
  *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03); unconfirmed — 7 «клиент не
- *  подтвердил покупку» (П-04). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed";
+ *  подтвердил покупку» (П-04); scope — 8 «продавец вне поручения» (П-06). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed" | "scope";
 
 /** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
 export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
@@ -37,6 +38,7 @@ export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
   revoke: "run.revoke",
   reject: "run.reject",
   unconfirmed: "run.unconfirmed",
+  scope: "run.scope",
 };
 
 /** Сюжеты, которым нужно действующее поручение сюжета 1. */
@@ -76,6 +78,10 @@ export interface IntentCard {
   readonly limit: Money;
   readonly validDays: number;
   readonly merchants: number;
+  /** Продавцы поручения (merchant_id); нет — все продавцы стенда. */
+  readonly scope?: readonly string[];
+  /** Подписи продавцов поручения для карточки — имя витрины и merchant_id (данные стенда). */
+  readonly scopeLabels?: readonly string[];
 }
 
 /** Условия поручения сюжета 1 (Р-1235: «хлеб на выходные, до 1 000 ₽, один раз»): разовое, на всех продавцов стенда. */
@@ -89,9 +95,23 @@ export const INTENT_CARD: IntentCard = {
 /** Поручение сюжета 4 (Р-1255 п. 2): своё, до 5 000 ₽ — выше порога подтверждения банка; карточка — у кнопки 4. */
 export const INTENT_CARD_UPK: IntentCard = { ...INTENT_CARD, limit: { amount: 500000, currency: "RUB" } };
 
+/** Поручение сюжета 8 (П-06): только один продавец — «Масса Мадре» (merchant_id — из набора витрин стенда, не литералом).
+ *  Демо-правило выбора (самый дешёвый хлеб в контуре без A5) выбирает товар другого продавца — вне поручения. */
+const SCOPE_SHOPS = [MASSA_MADRE];
+export const INTENT_CARD_SCOPE: IntentCard = {
+  ...INTENT_CARD,
+  merchants: SCOPE_SHOPS.length,
+  scope: SCOPE_SHOPS.map((s) => s.merchant_id),
+  scopeLabels: SCOPE_SHOPS.map((s) => `${s.name} (${s.merchant_id})`),
+};
+
 /** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением (видна до кнопки).
  *  Сюжет 7 — то же поручение, что у сюжета 4: выше порога подтверждения банка. */
-export const MORE_SCENARIOS: readonly MoreScenario[] = [{ name: "reject" }, { name: "unconfirmed", card: INTENT_CARD_UPK }];
+export const MORE_SCENARIOS: readonly MoreScenario[] = [
+  { name: "reject" },
+  { name: "unconfirmed", card: INTENT_CARD_UPK },
+  { name: "scope", card: INTENT_CARD_SCOPE },
+];
 
 export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDraft {
   return {
@@ -100,7 +120,7 @@ export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDr
     subject: card.subject,
     amountLimit: card.limit,
     validTo: new Date(now.getTime() + card.validDays * 86_400_000).toISOString(),
-    merchantScope: MERCHANT_FIXTURES.map((f) => f.merchant_id),
+    merchantScope: card.scope ? [...card.scope] : MERCHANT_FIXTURES.map((f) => f.merchant_id),
     principalRef: DEMO_PRINCIPAL,
     confirmationMode: "IMMEDIATE",
     keyTermsShown: true,
@@ -230,7 +250,9 @@ export class DemoScenarios {
               ? this.#revoke()
               : name === "reject"
                 ? this.#buy({ expectReject: true })
-                : this.#buy();
+                : name === "scope"
+                  ? this.#outOfScope()
+                  : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -331,6 +353,16 @@ export class DemoScenarios {
       confirmation: true,
       expectDecline,
     });
+  }
+
+  /** Сюжет 8 (П-06, Р-1459 В5): своё поручение на одного продавца, подпись человеком; выбор демо-правилом — товар другого
+   *  продавца. Ядро само отказывает до запроса корзины (политика: продавец вне области поручения — MANDATE_OUT_OF_SCOPE);
+   *  Платформа до отказа не доходит. Приложение продавца с поручением не сравнивает (инвариант 2) — только называет причину
+   *  остановки ядра. Защита Платформы (MANDATE_SCOPE) — драйвер нарушителя П-11.3. */
+  async #outOfScope(): Promise<void> {
+    await this.#intent(INTENT_CARD_SCOPE);
+    if (!this.#intentActive) return;
+    await this.#buy({ expectScope: true });
   }
 
   /** Сюжет 5 (Р-1255 п. 3): на действующем поручении человек сам отзывает его на экране мандатов банка — кнопки
@@ -567,6 +599,8 @@ export class DemoScenarios {
       expectReject?: boolean;
       /** Сюжет 7 (П-04): человек не подтверждает покупку — «Отклонить» на странице УПК или конец срока запроса. */
       expectDecline?: boolean;
+      /** Сюжет 8 (П-06): ядро отказывает в корзине у продавца вне поручения; принятая корзина дальше подписи не идёт. */
+      expectScope?: boolean;
     } = {},
   ): Promise<void> {
     const p = this.#purchase!;
@@ -627,9 +661,28 @@ export class DemoScenarios {
     this.#signal.throwIfAborted();
     // С этого запроса поручение использовано (разовое): следующая покупка — через новый сюжет 1.
     this.#intentActive = false;
-    const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
-    // Связка «корзина → поручение-намерение» (П-1.2, Р-1442): транзакция пульта собирается по идентификаторам.
+    // Связка «корзина → поручение-намерение» (П-1.2, Р-1442): транзакция пульта собирается по идентификаторам; и у отказа
+    // сюжета 8 — остановка привязана к поручению (ревью П-11.1в № 8).
     const intentId = p.intentMandate?.id;
+    let cart: Mandate;
+    try {
+      cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
+    } catch (e) {
+      // Продавец выбора вне области поручения (сюжет 8, П-06): ядро остановилось до обращений — своя политика, запись
+      // agent.refused в журнале агента. Только в сюжете 8: тот же код ядро даёт, если Платформа не подтвердила поручение
+      // при сверке (ревью П-11.1в № 1), — в других сюжетах это обычный шаг failed. Сюжет только называет причину ядра.
+      if (o.expectScope && p.reason === "MANDATE_OUT_OF_SCOPE" && !this.#ac.signal.aborted) {
+        this.#step("scope.refused", { merchant_id: pick.merchantId, code: p.reason, state: p.state, ...(intentId !== undefined && { intent_id: intentId }) });
+        return;
+      }
+      throw e;
+    }
+    if (o.expectScope) {
+      // Выбор оказался в области поручения (зависит от витрин стенда; ревью П-11.1в № 3): проверять нечего — сюжет
+      // останавливается до подписи корзины, чтобы на мониторе не дойти до оплаты в сюжете «вне поручения».
+      this.#step("scope.not_refused", { merchant_id: pick.merchantId, mandate_id: cart.id });
+      return;
+    }
     this.#step("cart.created", { mandate_id: cart.id, ...(intentId !== undefined && { intent_id: intentId }), ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
     if (o.expectReject) this.#step("reject.ask", { mandate_id: cart.id });

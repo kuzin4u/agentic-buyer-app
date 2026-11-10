@@ -20,6 +20,7 @@ export const SCENARIOS = [
   // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
   { no: 6, name: "reject" },
   { no: 7, name: "unconfirmed" },
+  { no: 8, name: "scope" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -354,6 +355,43 @@ const RAW: readonly Passport[] = [
       ...NO_PAID,
       { id: "no-approved", what: t("Подтверждения покупки не было", "The purchase was not confirmed"), match: { stream: "monitor", ref: "confirmation.approved" } },
       { id: "no-split", what: t("Попытки разбить покупку под порог нет", "No attempt to split the purchase below the threshold"), match: { code: "SPLIT_WINDOW" } },
+    ],
+  },
+  {
+    // П-06 задания (П-11.1в, Р-1459 В5): защищает агент — ядро проверяет продавца раньше Платформы. В таблице
+    // тестирования: «исход сходится, защитил агент; защита Платформы MANDATE_SCOPE — в П-11.3».
+    no: 8,
+    name: "scope",
+    title: t("8. Продавец вне поручения — агент отказался сам", "8. Merchant outside the mandate — the agent refused on its own"),
+    outcome: { kind: "stopped", text: t("Агент сам отказался от корзины у продавца вне поручения — до Платформы, заказа и оплаты", "The agent itself refused a cart from a merchant outside the mandate — before the Platform, order and payment") },
+    statuses: { mandate: t("поручение подписано, корзины нет", "mandate signed, no cart"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("created", "intent.created", t("Агент просит поручение (С-01)", "The agent asks for a mandate (С-01)"), { situation: "С-01" }),
+      clientSigns("mandate"),
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      {
+        id: "agent-refused",
+        what: t("Журнал агента: агент сам отказался — продавец вне поручения", "Agent journal: the agent refused itself — merchant outside the mandate"),
+        match: { stream: "console", ref: "agent.refused", code: "MANDATE_OUT_OF_SCOPE" },
+      },
+      step("refused", "scope.refused", t("Покупка остановлена агентом до запроса корзины", "Purchase stopped by the agent before the cart request"), { code: "MANDATE_OUT_OF_SCOPE" }),
+      // Защитил агент, а не сверка у Платформы (ревью П-11.1в № 2): сверка поручения — одна, до поиска. Тот же код ядро даёт,
+      // если Платформа не подтвердила поручение сверкой на шаге корзины, — тогда сверок было бы две. Порядок «после согласия
+      // к Платформе не обращался» проверяет тест (tests/demo/more-scenarios.test.ts).
+      {
+        id: "one-verify",
+        what: t("Сверка поручения у Платформы — одна, до поиска: отказ дал агент, а не Платформа", "One mandate check at the Platform, before the search: the agent refused, not the Platform"),
+        match: { stream: "monitor", ref: "GET /pao/v1/mandates/{mandate_id}/verify" },
+        times: 1,
+      },
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-cart", what: t("Корзины нет", "No cart"), match: { stream: "scenario", ref: "cart.created" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
     ],
   },
 ];

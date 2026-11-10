@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -98,6 +98,19 @@ export function driver(demo: Demo) {
       });
       if (answer.status !== 200) throw new Error(`страница УПК: ${answer.status}`);
       await until(n, no === 4 ? "outcome" : "upk.declined");
+    } else if (no === 8) {
+      // Своё поручение на одного продавца; человек соглашается с карточкой — корзины агент не запрашивает.
+      await intent("scope");
+      await until(n, "cart.card");
+      ok(await post("cart/accept"), "cart/accept");
+      // Отказ ядра — scope.refused; иначе сюжет сам останавливается шагом — понятная причина вместо таймаута (ревью П-11.1в № 3).
+      const end = Date.now() + 60_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["scope.refused", "scope.not_refused", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 8");
+        await pause(50);
+      }
+      if (last.step !== "scope.refused") throw new Error(`сюжет 8: ${last.step} ${JSON.stringify(last.params)} — выбор демо-правила у продавца поручения или сбой`);
     } else if (no === 6) {
       await intent();
       await purchase("reject", n);

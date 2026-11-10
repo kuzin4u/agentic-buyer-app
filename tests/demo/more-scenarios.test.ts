@@ -10,8 +10,8 @@ import { parseDiagSnapshot, parseWireItem } from "../../src/dashboards/wire.js";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
-import { MORE_SCENARIOS } from "../../src/demo/scenarios.js";
-import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { INTENT_CARD_SCOPE, MORE_SCENARIOS } from "../../src/demo/scenarios.js";
+import { MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
 import { driver } from "./drive.js";
 
@@ -176,6 +176,57 @@ describe("сюжеты 6–10 для тестов пульта (П-11.1)", { tim
       expect(runs.map((s) => s.passport.name)).toEqual(["unconfirmed"]);
       for (const s of runs) expectAccepted(s);
     });
+  });
+});
+
+describe("сюжет 8 «Продавец вне поручения» (П-06)", { timeout: 120_000 }, () => {
+  let demo: Demo;
+  let env: InterpretEnv;
+  beforeAll(async () => {
+    demo = await startDemo();
+    const raw = await (await fetch(`${demo.monitor.url}/api/diag`)).json();
+    env = { snapshot: parseDiagSnapshot(raw)!.snapshot, emulated: LOCAL_STAND_EMULATED, training: TRAINING_MERCHANTS };
+  }, 30_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("карточка поручения сюжета 8 — продавцы поручения по имени и merchant_id, ru и en (Т3а; ревью П-11.1в № 4)", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      const html = await (await fetch(`${demo.monitor.url}/?lang=${lang}`)).text();
+      const card = html.slice(html.indexOf('id="intent-card-scope"'));
+      expect(card).toContain(MESSAGES[lang]["card.scope"]);
+      expect(card).toContain(MASSA_MADRE.merchant_id);
+      expect(card.indexOf(MASSA_MADRE.merchant_id)).toBeLessThan(card.indexOf("</dl>"));
+    }
+  });
+
+  it("поручение на одного продавца, выбор — товар другого → агент сам отказался до корзины (MANDATE_OUT_OF_SCOPE); к Платформе с корзиной не обращался; паспорт принят", async () => {
+    const callsFrom = demo.stand.stand.calls().length;
+    const merchantsFrom = demo.stand.merchantCalls().length;
+    const journalFrom = demo.stand.journal.entries.length;
+    const items = (await driver(demo).run(8)).map((i) => interpret(i, env));
+    const steps = demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
+    const refused = steps.find((s) => s.step === "scope.refused")!;
+    expect(refused.params).toMatchObject({ code: "MANDATE_OUT_OF_SCOPE", state: "STOPPED" });
+    // Выбор — у продавца вне поручения: поручение только на «Масса Мадре»; остановка привязана к поручению (№ 8).
+    expect(INTENT_CARD_SCOPE.scope).toEqual([MASSA_MADRE.merchant_id]);
+    expect(refused.params.merchant_id).not.toBe(MASSA_MADRE.merchant_id);
+    expect(refused.params.intent_id).toBe(steps.find((s) => s.step === "intent.created")!.params.mandate_id);
+    // Защитил агент: между согласием с карточкой и отказом агент к Платформе не обращался (ревью П-11.1в № 2).
+    const agreed = steps.find((s) => s.step === "cart.agreed")!;
+    const between = demo.bus.history().flatMap((i) => (i.stream === "monitor" && i.event.seq > agreed.seq && i.event.seq < refused.seq ? [i.event] : []));
+    expect(between.filter((e) => e.source === "agent_platform" || e.source === "agent_platform_open").map((e) => e.what)).toEqual([]);
+    // Код защиты — запись ядра agent.refused, а не ответ Платформы.
+    expect(demo.stand.journal.entries.slice(journalFrom).some((e) => e.kind === "agent.refused" && e.reason === "MANDATE_OUT_OF_SCOPE")).toBe(true);
+    const calls = demo.stand.stand.calls().slice(callsFrom);
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates")).toHaveLength(1); // только поручение
+    expect(calls.some((c) => c.path === "/pao/v1/credentials" || c.code === "MANDATE_SCOPE")).toBe(false);
+    expect(demo.stand.merchantCalls().slice(merchantsFrom).some((c) => c.method === "POST" && /\/orders$/.test(c.path))).toBe(false);
+    expect(items.find((r) => r.ref === "scope.refused")?.stage).toBe("outcome");
+    const runs = segments(items);
+    expect(runs.map((s) => s.passport.name)).toEqual(["scope"]);
+    for (const s of runs) expectAccepted(s);
   });
 });
 
