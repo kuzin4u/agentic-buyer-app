@@ -50,6 +50,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.revoke": p("Начат сюжет 5 «Отзыв поручения»", "Scenario 5 “Mandate revocation” started"),
   "run.reject": p("Начат сюжет 6 «Клиент отказался от корзины»", "Scenario 6 “The client refused the cart” started"),
   "run.unconfirmed": p("Начат сюжет 7 «Клиент не подтвердил покупку»", "Scenario 7 “The client did not confirm the purchase” started"),
+  "run.scope": p("Начат сюжет 8 «Продавец вне поручения»", "Scenario 8 “Merchant outside the mandate” started"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
@@ -85,6 +86,8 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "cart.rejected": p("Корзина[ {mandate_id}] отклонена в банке — агент остановился: {code}", "Cart[ {mandate_id}] declined in the bank — the agent stopped: {code}"),
   "unconfirmed.ask": p("Сюжет просит клиента не подтверждать покупку на странице УПК", "The scenario asks the client not to confirm the purchase on the confirmation page"),
   "upk.declined": p("Покупка не подтверждена в банке — агент остановился: {code}", "The purchase was not confirmed in the bank — the agent stopped: {code}"),
+  "scope.refused": p("Агент сам отказался от корзины у продавца[ {merchant_id}]: {code}", "The agent refused a cart from merchant[ {merchant_id}] on its own: {code}"),
+  "scope.not_refused": p("Выбор оказался у продавца поручения[ {merchant_id}] — сюжет 8 остановлен до подписи корзины", "The choice fell at a mandate merchant[ {merchant_id}] — scenario 8 stopped before the cart signature"),
   "reject.signed": p("Корзина[ {mandate_id}] подписана, а сюжет ждал отказа — покупка дальше не идёт", "Cart[ {mandate_id}] was signed, but the scenario expected a refusal — the purchase does not continue"),
   aborted: p("Сюжет прерван", "Scenario aborted"),
 };
@@ -125,6 +128,8 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   // Сюжет 7 (П-04) и сюжет 4: покупку не подтвердили (ревью П-11.1б № 2).
   CONFIRMATION_REJECTED: p("клиент отклонил покупку в банке", "the client declined the purchase in the bank"),
   CONFIRMATION_EXPIRED: p("срок подтверждения истёк", "the confirmation period expired"),
+  // Сюжет 8 (П-06): продавец вне области поручения — политика ядра.
+  MANDATE_OUT_OF_SCOPE: p("вне пределов поручения", "outside the mandate"),
   // сигналы A5 и карточка продавца
   A5_PRICE_MISMATCH: p("цена в описании не совпадает с ценой витрины", "the price in the description differs from the shop price"),
   A5_DECISION_FORGED: p("в описании товара — подложенное «решение» для агента", "the item description contains a forged “decision” for the agent"),

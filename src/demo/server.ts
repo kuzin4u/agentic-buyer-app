@@ -99,7 +99,13 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
     <dd>${e("card.subject")}: ${escapeHtml(card.subject)}</dd>
     <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: card.limit.amount, currency: card.limit.currency }, lang))}</dd>
     <dd>${e("card.valid_days")}: ${card.validDays}</dd>
-    <dd>${e("card.merchants")}: ${card.merchants}</dd>
+    ${
+      // Область продавцов — ключевое условие поручения (Т3а): у поручения не на всех продавцов — кто именно (данные витрин
+      // стенда, экранируются; ревью П-11.1в № 4).
+      card.scopeLabels
+        ? `<dd>${e("card.scope")}: ${escapeHtml(card.scopeLabels.join(", "))}</dd>`
+        : `<dd>${e("card.merchants")}: ${card.merchants}</dd>`
+    }
     <dd>${e("card.single_use")}</dd>
   </dl>`;
 }

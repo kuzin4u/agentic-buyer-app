@@ -73,6 +73,7 @@ const ru = {
   "card.limit": "Предел",
   "card.valid_days": "Срок, дней",
   "card.merchants": "Продавцов стенда",
+  "card.scope": "Продавцы поручения",
   "card.single_use": "Разовое: одна покупка",
   "card.cart.title": "Карточка корзины — ваше решение до запроса корзины",
   "card.line.item": "Товар: {title} ({sku})",
@@ -139,6 +140,14 @@ const ru = {
     "Не подтверждайте покупку {confirmation_id}: на странице УПК нажмите «Отклонить». Без ответа агент узнает о конце срока запроса сам — через несколько минут после срока (допуск часов агента).",
   "step.upk.declined": "Покупка не подтверждена в банке: агент остановился — {code} (заказ {order_id}, состояние {state}); оплаты нет.",
   "orders.outcome.not_confirmed": "не подтверждено в банке, покупка остановлена",
+  "scenario.scope": "8. Продавец вне поручения — агент отказался сам",
+  "scenario.scope_note":
+    "Своё поручение только на продавцов из карточки выше — подпишите его в банке. Демо-правило выбора берёт самый дешёвый хлеб стенда; если он у продавца вне поручения, после вашего согласия с карточкой корзины агент сам откажется её запрашивать — до Платформы запрос не дойдёт. Если выбор окажется в поручении, сюжет остановится до подписи корзины. Отказ Платформы на такой запрос — сюжет подставного агента.",
+  "step.scope.not_refused":
+    "Выбор демо-правила оказался у продавца поручения ({merchant_id}): агент корзину принял, сюжет 8 проверять нечего — остановлен до подписи корзины; не подписывайте её.",
+  "card.intent_scope.title": "Карточка поручения сюжета 8 (видна до подписи)",
+  "step.run.scope": "— Сюжет 8: продавец вне поручения —",
+  "step.scope.refused": "Агент отказался запрашивать корзину у продавца {merchant_id}: {code} (состояние {state}) — продавец вне поручения; к Платформе с корзиной агент не обращался.",
   "orders.title": "Заказы в витрине продавца",
   "orders.hint":
     "Номер, сумма и ответ витрины на оплату — слова продавца (эмулятор). Итог оплаты — отдельной колонкой и только по событию Платформы.",
@@ -269,6 +278,7 @@ const en: Record<MessageKey, string> = {
   "card.limit": "Limit",
   "card.valid_days": "Valid, days",
   "card.merchants": "Stand merchants",
+  "card.scope": "Mandate merchants",
   "card.single_use": "Single use: one purchase",
   "card.cart.title": "Cart card — your decision before the cart is requested",
   "card.line.item": "Item: {title} ({sku})",
@@ -334,6 +344,14 @@ const en: Record<MessageKey, string> = {
     "Do not confirm purchase {confirmation_id}: press “Decline” on the UPK page. Without an answer the agent learns the request has expired by itself — a few minutes after the deadline (the agent's clock tolerance).",
   "step.upk.declined": "The purchase was not confirmed in the bank: the agent stopped — {code} (order {order_id}, state {state}); no payment.",
   "orders.outcome.not_confirmed": "not confirmed in the bank, purchase stopped",
+  "scenario.scope": "8. Merchant outside the mandate — the agent refused on its own",
+  "scenario.scope_note":
+    "Its own mandate only for the merchants on the card above — sign it in the bank. The demo choice rule takes the cheapest bread on the stand; if it is at a merchant outside the mandate, after you agree to the cart card the agent refuses to request the cart on its own — the request does not reach the Platform. If the choice falls inside the mandate, the scenario stops before the cart is signed. A Platform refusal of such a request is the rogue-agent scenario.",
+  "step.scope.not_refused":
+    "The demo choice fell at a mandate merchant ({merchant_id}): the agent accepted the cart, scenario 8 has nothing to check — stopped before the cart signature; do not sign it.",
+  "card.intent_scope.title": "Scenario 8 mandate card (shown before signing)",
+  "step.run.scope": "— Scenario 8: merchant outside the mandate —",
+  "step.scope.refused": "The agent refused to request a cart from merchant {merchant_id}: {code} (state {state}) — the merchant is outside the mandate; the agent did not contact the Platform with the cart.",
   "orders.title": "Orders in the merchant shop",
   "orders.hint":
     "Number, amount and the shop reply to payment are the merchant's words (emulator). The payment outcome is a separate column and only by the Platform event.",

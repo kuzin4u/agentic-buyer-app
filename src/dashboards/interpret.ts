@@ -349,6 +349,7 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   revoke: "revoke",
   reject: "cart",
   unconfirmed: "confirmation",
+  scope: "cart",
   failed: "outcome",
   aborted: "service",
 };
@@ -389,7 +390,7 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
 
 /** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
  *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
-const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined"]);
+const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused"]);
 
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
