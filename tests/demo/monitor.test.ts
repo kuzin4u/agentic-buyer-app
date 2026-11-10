@@ -308,9 +308,17 @@ describe("монитор на живом стенде", () => {
     expect(ruHtml.split(badge).length - 1).toBe(7);
     for (const [url, key] of [
       ["/bank-login", "link.bank"],
-      [`${demo.stand.urls.merchants}/v1/shops`, "link.merchants"],
+      [`${demo.stand.urls.merchants}/shops?lang=ru`, "link.merchants"],
     ] as const) {
       expect(ruHtml).toContain(`<a href="${url}" target="_blank" rel="noopener">${MESSAGES.ru[key]}</a> ${badge}`);
+    }
+    // З12 (Платформа v0.47.0, передача #10): «Витрины продавцов» — страница для человека на языке монитора, не JSON агента.
+    expect(ruHtml).not.toContain(`${demo.stand.urls.merchants}/v1/shops"`);
+    for (const lang of ["ru", "en"] as const) {
+      const shops = await fetch(`${demo.stand.urls.merchants}/shops?lang=${lang}`);
+      expect(shops.status, lang).toBe(200);
+      expect(shops.headers.get("content-type"), lang).toContain("text/html");
+      expect(await shops.text(), lang).toContain(`<html lang="${lang}"`);
     }
     // З6: страница УПК в шапке — неактивна, с пояснением; ссылка на неё — только в панели сюжета 4.
     expect(ruHtml).not.toContain(`<a href="${demo.stand.urls.upk}"`);
@@ -322,6 +330,8 @@ describe("монитор на живом стенде", () => {
     expect(enHtml).toContain(MESSAGES.en["monitor.title"]);
     expect(enHtml).not.toContain(MESSAGES.ru["monitor.title"]);
     expect(enHtml.split(`<span class="badge emu">${MESSAGES.en["badge.emulator"]}</span>`).length - 1).toBe(7);
+    // Страница витрин — на языке монитора (ревью П-8.0 № 2).
+    expect(enHtml).toContain(`<a href="${demo.stand.urls.merchants}/shops?lang=en" target="_blank" rel="noopener">${MESSAGES.en["link.merchants"]}</a>`);
     expect(ruHtml).toContain('<table id="orders">');
     expect(ruHtml).toContain(MESSAGES.ru["orders.hint"]);
   });

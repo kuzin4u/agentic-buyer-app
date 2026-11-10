@@ -88,6 +88,8 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
   </dl>`;
 }
 
+/** Страница монитора. «Витрины продавцов» — страница для человека на языке монитора (`/shops?lang=…`, Платформа v0.47.0,
+ *  З12, передача #10), а не JSON агента `/v1/shops`. */
 function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolean): string {
   const e = (k: Parameters<typeof t>[1]) => escapeHtml(t(lang, k));
   const emu = `<span class="badge emu">${e("badge.emulator")}</span>`;
@@ -119,7 +121,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
   <li><span class="link-off" aria-describedby="upk-note">${e("link.upk")}</span> ${emu} <span class="hint" id="upk-note">${e("link.upk_note")}</span></li>
-  ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
+  ${link(`${o.urls.merchants}/shops?lang=${lang}`, e("link.merchants"), emu)}
 </ul>
 ${
   o.scenarios

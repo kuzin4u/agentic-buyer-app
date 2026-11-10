@@ -20,7 +20,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
     "agentic-buyer-ref": "git+https://github.com/kuzin4u/agentic-buyer-ref.git#4a4ee7c",
-    "agentic-ps-platform": "git+https://github.com/kuzin4u/agentic-ps-platform.git#v0.43.0",
+    "agentic-ps-platform": "git+https://github.com/kuzin4u/agentic-ps-platform.git#v0.47.0",
     "eslint": "^10.12.0",
     "tsx": "^4.23.15",
     "typescript": "^5.5.0",
