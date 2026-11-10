@@ -19,6 +19,7 @@ export const SCENARIOS = [
   { no: 5, name: "revoke" },
   // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
   { no: 6, name: "reject" },
+  { no: 7, name: "unconfirmed" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -323,6 +324,36 @@ const RAW: readonly Passport[] = [
       { id: "no-cart-signed", what: t("Корзину никто не подписал", "Nobody signed the cart"), match: { stream: "scenario", ref: "cart.signed" } },
       { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-04 задания (П-11.1б, Р-1459 В6): «Отклонить» на странице УПК или конец срока запроса — оба исхода принимаются.
+    // Платформа сообщает их разными событиями (confirmation.rejected / confirmation.expired) — признак «одно из двух» по
+    // событию не задаётся, поэтому исход — по шагу остановки с кодом ядра, а «подтверждено» и «оплачено» запрещены.
+    no: 7,
+    name: "unconfirmed",
+    title: t("7. Клиент не подтвердил покупку", "7. The client did not confirm the purchase"),
+    outcome: { kind: "stopped", text: t("Клиент не подтвердил покупку выше порога; агент остановился сам — оплаты нет", "The client did not confirm the purchase above the threshold; the agent stopped itself — no payment") },
+    statuses: { mandate: t("корзина подписана, покупка не подтверждена", "cart signed, purchase not confirmed"), operation: t("операция не авторизована", "operation not authorized"), ...ACTIVE },
+    expect: [
+      step("qty", "upk.qty", t("Сумма выше порога подтверждения", "The amount is above the confirmation threshold")),
+      clientSigns("both"),
+      { id: "one-order", what: t("Один заказ на всю сумму — покупка не дробится", "One order for the whole amount — the purchase is not split"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" }, times: 1 },
+      event("required", "confirmation.required", t("Платформа: нужно подтверждение человека", "Platform: human confirmation required"), { kind: "norm" }),
+      step("upk-required", "upk.required", t("Банк просит клиента подтвердить на странице УПК", "The bank asks the client to confirm on the UPK page")),
+      step("ask", "unconfirmed.ask", t("Сюжет просит клиента не подтверждать", "The scenario asks the client not to confirm")),
+      step(
+        "declined",
+        "upk.declined",
+        t("Агент остановился сам: покупка не подтверждена — отклонена или срок истёк", "The agent stopped itself: the purchase was not confirmed — declined or expired"),
+        { code: ["CONFIRMATION_REJECTED", "CONFIRMATION_EXPIRED"] },
+      ),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-approved", what: t("Подтверждения покупки не было", "The purchase was not confirmed"), match: { stream: "monitor", ref: "confirmation.approved" } },
+      { id: "no-split", what: t("Попытки разбить покупку под порог нет", "No attempt to split the purchase below the threshold"), match: { code: "SPLIT_WINDOW" } },
     ],
   },
 ];

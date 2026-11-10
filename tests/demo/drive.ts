@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,8 +49,9 @@ export function driver(demo: Demo) {
   }
 
   /** Покупка до решения клиента по корзине в банке: подпись или (сюжет 6) отказ — решение «отклонить» тем же маршрутом. */
-  async function purchase(name: "purchase" | "limit" | "upk" | "reject", from: number): Promise<void> {
-    if (name !== "upk") ok(await post(name), name);
+  async function purchase(name: "purchase" | "limit" | "upk" | "reject" | "unconfirmed", from: number): Promise<void> {
+    // Сюжеты 4 и 7 начинаются своим поручением — кнопка уже нажата в intent().
+    if (name !== "upk" && name !== "unconfirmed") ok(await post(name), name);
     await until(from, "cart.card");
     ok(await post("cart/accept"), "cart/accept");
     const cw = await until(from, "cart.awaiting_signature");
@@ -84,18 +85,19 @@ export function driver(demo: Demo) {
       await purchase(no === 2 ? "purchase" : "limit", n);
       await until(n, no === 2 ? "outcome" : "limit.declined");
       if (no === 3) await until(n, "bank.limit_reset");
-    } else if (no === 4) {
-      await intent("upk");
-      await purchase("upk", n);
+    } else if (no === 4 || no === 7) {
+      // 4 — человек подтверждает на странице УПК; 7 — отклоняет (тем же кодом из «SMS банка»).
+      await intent(no === 4 ? "upk" : "unconfirmed");
+      await purchase(no === 4 ? "upk" : "unconfirmed", n);
       const req = await until(n, "upk.required");
       const sms = await until(n, "upk.sms");
       const answer = await fetch(String(req.params.upk_url), {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ decision: "APPROVE", instrument: "CARD", code: String(sms.params.code) }).toString(),
+        body: new URLSearchParams({ decision: no === 4 ? "APPROVE" : "REJECT", instrument: "CARD", code: String(sms.params.code) }).toString(),
       });
       if (answer.status !== 200) throw new Error(`страница УПК: ${answer.status}`);
-      await until(n, "outcome");
+      await until(n, no === 4 ? "outcome" : "upk.declined");
     } else if (no === 6) {
       await intent();
       await purchase("reject", n);

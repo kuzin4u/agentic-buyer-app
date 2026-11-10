@@ -24,8 +24,9 @@ export type StepSink = (s: ScenarioStep) => void;
 
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
  *  «подтверждение человеком через УПК» (своё поручение); revoke — сюжет 5. Сюжеты 6–10 — правильные тесты задания на
- *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject";
+ *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03); unconfirmed — 7 «клиент не
+ *  подтвердил покупку» (П-04). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed";
 
 /** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
 export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
@@ -35,13 +36,11 @@ export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
   upk: "run.upk",
   revoke: "run.revoke",
   reject: "run.reject",
+  unconfirmed: "run.unconfirmed",
 };
 
 /** Сюжеты, которым нужно действующее поручение сюжета 1. */
 const NEEDS_INTENT: ReadonlySet<ScenarioName> = new Set(["purchase", "limit", "revoke", "reject"]);
-
-/** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением. */
-export const MORE_SCENARIOS: readonly MoreScenario[] = [{ name: "reject" }];
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
@@ -89,6 +88,10 @@ export const INTENT_CARD: IntentCard = {
 
 /** Поручение сюжета 4 (Р-1255 п. 2): своё, до 5 000 ₽ — выше порога подтверждения банка; карточка — у кнопки 4. */
 export const INTENT_CARD_UPK: IntentCard = { ...INTENT_CARD, limit: { amount: 500000, currency: "RUB" } };
+
+/** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением (видна до кнопки).
+ *  Сюжет 7 — то же поручение, что у сюжета 4: выше порога подтверждения банка. */
+export const MORE_SCENARIOS: readonly MoreScenario[] = [{ name: "reject" }, { name: "unconfirmed", card: INTENT_CARD_UPK }];
 
 export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDraft {
   return {
@@ -221,8 +224,8 @@ export class DemoScenarios {
         ? this.#intent()
         : name === "limit"
           ? this.#overLimit()
-          : name === "upk"
-            ? this.#upk()
+          : name === "upk" || name === "unconfirmed"
+            ? this.#upk(name === "unconfirmed")
             : name === "revoke"
               ? this.#revoke()
               : name === "reject"
@@ -311,7 +314,7 @@ export class DemoScenarios {
   /** Сюжет 4 (Р-1255 п. 2): своё поручение до 5 000 ₽ (карточка у кнопки 4), подпись человеком; затем покупка с суммой
    *  выше порога подтверждения банка. ADP отвечает CONFIRMATION_REQUIRED — ядро ждёт решения человека (инвариант 3):
    *  на мониторе — ссылка на страницу УПК и панель «эмулятор SMS банка» с кодом; код вводит человек на странице УПК. */
-  async #upk(): Promise<void> {
+  async #upk(expectDecline = false): Promise<void> {
     await this.#intent(INTENT_CARD_UPK);
     if (!this.#intentActive) return;
     // Рыночный порог подтверждения Платформы стенда (confirm_above_kop — в копейках рубля); количество — чтобы сумма была
@@ -326,6 +329,7 @@ export class DemoScenarios {
         return qty;
       },
       confirmation: true,
+      expectDecline,
     });
   }
 
@@ -401,17 +405,27 @@ export class DemoScenarios {
   /** Запрос подтверждения по корзине этой покупки — из ленты ПАО агента: ссылка на страницу УПК стенда и код из банка
    *  (эмулятор SMS). Ссылка страницы от ядра приходит только для https: (Р69 п. 5); у локального стенда — http:, поэтому
    *  ссылку строит сборка демо по confirmation_id. Решения здесь нет: подтверждает человек на странице. */
-  #watchConfirmation(cartId: string): () => void {
+  #watchConfirmation(cartId: string, askDecline = false): { off(): void; approved(): boolean } {
     const seen = new Set<string>();
-    return this.#d.agent.events.listen(async (item) => {
-      if (item.kind !== "event" || item.event.type !== "confirmation.required") return;
+    let approved = false;
+    const off = this.#d.agent.events.listen(async (item) => {
+      if (item.kind !== "event") return;
+      // Клиент подтвердил запрос этой покупки — событие Платформы (запрос уже показан этим сюжетом).
+      if (item.event.type === "confirmation.approved" && item.event.confirmationId !== null && seen.has(item.event.confirmationId)) {
+        approved = true;
+        return;
+      }
+      if (item.event.type !== "confirmation.required") return;
       const id = item.event.confirmationId;
       if (!id || seen.has(id) || (item.event.mandateId !== null && item.event.mandateId !== cartId)) return;
       seen.add(id);
       this.#step("upk.required", { confirmation_id: id, upk_url: `${this.#d.urls.upk}/c/${encodeURIComponent(id)}` });
+      // Сюжет 7: просьба не подтверждать — решает человек на странице УПК; сюжет за него ничего не нажимает (инвариант 3).
+      if (askDecline) this.#step("unconfirmed.ask", { confirmation_id: id });
       const code = await this.#d.stand.issuer.upkCode(id).catch(() => undefined);
       if (code) this.#step("upk.sms", { code });
     });
+    return { off, approved: () => approved };
   }
 
   /** Событие Платформы mandate.rejected по мандату — из ленты ПАО агента (сюжет 6): клиент отклонил подпись в банке.
@@ -551,6 +565,8 @@ export class DemoScenarios {
       confirmation?: boolean;
       /** Сюжет 6 (П-03): человек отклоняет корзину в банке; подписанная корзина дальше заказа не идёт. */
       expectReject?: boolean;
+      /** Сюжет 7 (П-04): человек не подтверждает покупку — «Отклонить» на странице УПК или конец срока запроса. */
+      expectDecline?: boolean;
     } = {},
   ): Promise<void> {
     const p = this.#purchase!;
@@ -651,15 +667,24 @@ export class DemoScenarios {
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
     this.#payJournalFrom = this.#d.journal.entries.length;
-    const offConfirm = o.confirmation ? this.#watchConfirmation(cart.id) : undefined;
+    const confirm = o.confirmation ? this.#watchConfirmation(cart.id, o.expectDecline === true) : undefined;
     let op: Operation;
     try {
       op = await p.authorize(this.#key("pay"), this.#signal);
     } catch (e) {
       this.#shopReplies(order.orderId);
+      // Покупку не подтвердили (сюжет 7, П-04; и сюжет 4, если человек отклонил): ядро остановилось по решению или сроку
+      // запроса Платформы — CONFIRMATION_REJECTED или CONFIRMATION_EXPIRED. Сюжет только называет причину ядра. Если клиент
+      // подтвердил (confirmation.approved), а срок ссылки истёк до передачи продавцу, ядро тоже даёт CONFIRMATION_EXPIRED —
+      // это не «не подтверждено», а обычный шаг остановки (ревью П-11.1б № 1). После close() шагов нет (№ 6).
+      const reason = p.reason;
+      if ((reason === "CONFIRMATION_REJECTED" || reason === "CONFIRMATION_EXPIRED") && !confirm?.approved() && !this.#ac.signal.aborted) {
+        this.#step("upk.declined", { code: reason, order_id: order.orderId, mandate_id: cart.id, state: p.state });
+        return;
+      }
       throw e;
     } finally {
-      offConfirm?.();
+      confirm?.off();
     }
     this.#shopReplies(order.orderId);
     this.#remember(op);
