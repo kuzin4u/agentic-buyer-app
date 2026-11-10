@@ -43,8 +43,11 @@ describe("модель транзакций пульта (П-1.2)", () => {
       step("cart.created", { mandate_id: "C1", intent_id: "I1" }, { stage: "cart" }),
       event("mandate.signed", { mandate_id: "C1" }, { stage: "cart" }),
       step("order.placed", { order_id: "O1", mandate_id: "C1", merchant_id: "MER-1" }),
-      event("confirmation.requested", { confirmation_id: "Q1", order_id: "O1" }, { stage: "confirmation" }),
+      // Форма ПАО 1.4.0: событие подтверждения несёт confirmation_id, шина добавляет номер заказа из записи П6.
+      event("confirmation.required", { confirmation_id: "Q1", order_id: "O1" }, { stage: "confirmation" }),
       event("operation.authorized", { op_ref: "P1", order_id: "O1" }, { stage: "outcome" }),
+      // Шаг агента связывает операцию с корзиной (Р-1458): без него итога нет.
+      step("outcome", { op_ref: "P1", order_id: "O1", mandate_id: "C1" }, { stage: "outcome" }),
     ]);
     expect(m.txs).toHaveLength(1);
     const t = m.txs[0]!;
@@ -72,7 +75,7 @@ describe("модель транзакций пульта (П-1.2)", () => {
       step("cart.created", { mandate_id: "C3", intent_id: "I3" }),
       step("order.placed", { order_id: "O3", mandate_id: "C3" }),
       event("operation.declined", { op_ref: "P3" }, { kind: "conflict", who: who("LIMIT_EXCEEDED"), stage: "outcome" }),
-      step("limit.declined", { order_id: "O3", op_ref: "P3" }, { stage: "outcome" }),
+      step("limit.declined", { order_id: "O3", op_ref: "P3", mandate_id: "C3" }, { stage: "outcome" }),
     ]);
     expect(m.txs).toHaveLength(1);
     expect(m.txs[0]).toMatchObject({ id: "C3", orderIds: ["O3"], opRefs: ["P3"], worst: "conflict" });
@@ -87,11 +90,106 @@ describe("модель транзакций пульта (П-1.2)", () => {
       step("order.placed", { order_id: "OA", mandate_id: "CA" }),
       event("operation.declined", { op_ref: "PB", order_id: "OB" }),
       event("operation.authorized", { op_ref: "PA", order_id: "OA" }),
+      step("failed", { op_ref: "PB", order_id: "OB", mandate_id: "CB" }, { stage: "outcome" }),
+      step("outcome", { op_ref: "PA", order_id: "OA", mandate_id: "CA" }, { stage: "outcome" }),
     ]);
     expect(m.txs.map((t) => [t.id, t.intentId, t.orderIds, t.opRefs, t.outcome?.kind])).toEqual([
       ["CA", "IA", ["OA"], ["PA"], "paid"],
       ["CB", "IB", ["OB"], ["PB"], "declined"],
     ]);
+  });
+
+  it("Р-1458: операция связана с корзиной только номером заказа витрины — «связь не подтверждена», итога нет; шаг агента подтверждает связь", () => {
+    const only = buildTxModel([
+      step("cart.created", { mandate_id: "CU", intent_id: "IU" }),
+      step("order.placed", { order_id: "OU", mandate_id: "CU" }),
+      event("operation.authorized", { op_ref: "PX", order_id: "OU" }),
+    ]);
+    expect(only.txs[0]!.outcome).toBeUndefined();
+    expect(only.txs[0]!.unconfirmedOps).toEqual(["PX"]);
+    const linked = buildTxModel([
+      step("cart.created", { mandate_id: "CU", intent_id: "IU" }),
+      step("order.placed", { order_id: "OU", mandate_id: "CU" }),
+      event("operation.authorized", { op_ref: "PX", order_id: "OU" }),
+      step("outcome", { op_ref: "PX", order_id: "OU", mandate_id: "CU" }),
+    ]);
+    expect(linked.txs[0]!.outcome?.kind).toBe("paid");
+    expect(linked.txs[0]!.unconfirmedOps).toBeUndefined();
+  });
+
+  it("ревью П-2.1 № 1–2: confirmation.rejected в форме ПАО (confirmation_id и номер заказа от шины) — «связь не подтверждена», итога нет; с поручением корзины — «отклонено»", () => {
+    const base = [
+      step("cart.created", { mandate_id: "CQ", intent_id: "IQ" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OQ", mandate_id: "CQ" }),
+      event("confirmation.required", { confirmation_id: "QQ", order_id: "OQ" }, { stage: "confirmation" }),
+    ];
+    const formOfPao = buildTxModel([...base, event("confirmation.rejected", { confirmation_id: "QQ", order_id: "OQ" }, { stage: "confirmation" })]);
+    expect(formOfPao.txs).toHaveLength(1);
+    expect(formOfPao.txs[0]!.confirmationIds).toEqual(["QQ"]);
+    expect(formOfPao.txs[0]!.outcome).toBeUndefined();
+    expect(formOfPao.txs[0]!.unconfirmedConfirmations).toEqual(["QQ"]);
+    // Событие, где шина дала поручение корзины (П-8.1), — итог «отклонено».
+    const withCart = buildTxModel([...base, event("confirmation.rejected", { confirmation_id: "QQ", order_id: "OQ", mandate_id: "CQ" }, { stage: "confirmation" })]);
+    expect(withCart.txs[0]!.outcome?.kind).toBe("rejected");
+    expect(withCart.txs[0]!.unconfirmedConfirmations).toBeUndefined();
+    // confirmation.required — не итог и не «связь не подтверждена».
+    expect(buildTxModel(base).txs[0]!.unconfirmedConfirmations).toBeUndefined();
+  });
+
+  it("ревью П-2.1 № 5: обращение «по сети» с op_ref и поручением корзины связь не подтверждает — итога нет", () => {
+    const m = buildTxModel([
+      step("cart.created", { mandate_id: "CN", intent_id: "IN" }),
+      step("order.placed", { order_id: "ON", mandate_id: "CN" }),
+      rec("monitor", "POST /v1/shops/{shop_id}/orders/{order_id}/payment", { op_ref: "PN", mandate_id: "CN", order_id: "ON" }, { source: "network_merchant" }),
+      event("operation.authorized", { op_ref: "PN", order_id: "ON" }),
+    ]);
+    expect(m.txs[0]!.outcome).toBeUndefined();
+    expect(m.txs[0]!.unconfirmedOps).toEqual(["PN"]);
+  });
+
+  it("повторное ревью П-1.2 № 1: чужая операция с повторённым номером заказа (шагов второй покупки в выборке нет) — итог корзине не ставится", () => {
+    const m = buildTxModel([
+      step("cart.created", { mandate_id: "CA", intent_id: "IA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CA" }),
+      event("operation.authorized", { op_ref: "PB", order_id: "O1" }),
+    ]);
+    expect(m.txs).toHaveLength(1);
+    expect(m.txs[0]!.outcome).toBeUndefined();
+    expect(m.txs[0]!.unconfirmedOps).toEqual(["PB"]);
+  });
+
+  it("повторное ревью П-1.2 № 2: повтор номера до события второй покупки при отказе первой; вторая без cart.created; шаг итога без mandate_id — конфликт или нет итога", () => {
+    // Повтор номера заказа до события второй покупки, первая — отказ: конфликт звеньев, итога нет.
+    const early = buildTxModel([
+      step("cart.created", { mandate_id: "CA", intent_id: "IA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CB" }),
+      event("operation.declined", { op_ref: "PA", order_id: "O1" }),
+      step("failed", { op_ref: "PA", order_id: "O1", mandate_id: "CA" }),
+      event("operation.authorized", { op_ref: "PB", order_id: "O1" }),
+    ]);
+    expect(early.txs).toHaveLength(1);
+    expect(early.txs[0]!.linkConflict?.carts).toEqual(["CA", "CB"]);
+    expect(early.txs[0]!.outcome).toBeUndefined();
+    // Вторая покупка без cart.created: её корзина известна по order.placed — конфликт.
+    const noCart = buildTxModel([
+      step("cart.created", { mandate_id: "CA", intent_id: "IA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CB" }),
+      event("operation.authorized", { op_ref: "PB", order_id: "O1" }),
+      step("outcome", { op_ref: "PB", order_id: "O1", mandate_id: "CB" }),
+    ]);
+    expect(noCart.txs[0]!.linkConflict).toBeDefined();
+    expect(noCart.txs[0]!.outcome).toBeUndefined();
+    // Шаг итога без mandate_id связь не подтверждает: итога нет.
+    const bare = buildTxModel([
+      step("cart.created", { mandate_id: "CA", intent_id: "IA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CA" }),
+      event("operation.authorized", { op_ref: "PA", order_id: "O1" }),
+      step("outcome", { op_ref: "PA", order_id: "O1" }),
+    ]);
+    expect(bare.txs[0]!.outcome).toBeUndefined();
+    expect(bare.txs[0]!.unconfirmedOps).toEqual(["PA"]);
   });
 
   it("поручение: создано → ждёт подписи → действует → отозвано по событиям Платформы; записи без звеньев — вне транзакций", () => {
@@ -167,6 +265,7 @@ describe("модель транзакций пульта (П-1.2)", () => {
     const settled = buildTxModel([
       step("order.placed", { order_id: "O6", mandate_id: "C6" }),
       event("operation.authorized", { op_ref: "P6", order_id: "O6" }),
+      step("outcome", { op_ref: "P6", order_id: "O6", mandate_id: "C6" }),
       event("operation.settled", { op_ref: "P6" }),
       event("operation.declined", { op_ref: "P6" }),
     ]);
