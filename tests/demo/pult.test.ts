@@ -28,6 +28,14 @@ async function firstSse(url: string, ms = 10_000): Promise<unknown> {
   return JSON.parse(text.split("\n\n")[0]!.replace(/^data: /, ""));
 }
 
+/** Inline-код страницы: открывающий <script> без `src` и не JSON словаря, тег <style>, атрибут style. Имена тегов и
+ *  атрибутов в HTML — без учёта регистра: `<SCRIPT>` и `STYLE=` тоже ловятся (CodeQL js/bad-tag-filter на 08fa035, П-1.1а). */
+function inlineCode(html: string): string[] {
+  const scripts = (html.match(/<script\b[^>]*>/gi) ?? []).filter((t) => !/\ssrc\s*=|\stype\s*=\s*"application\/json"/i.test(t));
+  const styles = html.match(/<style\b[^>]*>|\sstyle\s*=/gi) ?? [];
+  return [...scripts, ...styles];
+}
+
 describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
   let demo: Demo;
 
@@ -58,9 +66,9 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
       expect(html).toContain(`data-layout="tabs"`);
       expect(html).toContain(`href="/pult?lang=${lang === "ru" ? "en" : "ru"}"`);
       expect(html).toContain(`role="status"`);
-      // Без inline-скриптов и стилей: <script> — только файл (src) или JSON словаря (ревью П-1.1 № 11).
-      for (const tag of html.match(/<script\b[^>]*>/g) ?? []) expect(tag).toMatch(/\bsrc="|type="application\/json"/);
-      expect(html).not.toMatch(/<style|style="/);
+      // Без inline-скриптов и стилей: <script> — только файл (src) или JSON словаря (ревью П-1.1 № 11, П-1.1а).
+      expect(html).toMatch(/<script\b[^>]*\ssrc="\/pult\/pult\.js"/);
+      expect(inlineCode(html)).toEqual([]);
       expect(res.headers.get("content-security-policy")).not.toContain("unsafe-inline");
     }
   });
@@ -105,6 +113,24 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
     const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { type: string; status: string };
     expect(hello.type).toBe("hello");
     expect(["connecting", "open"]).toContain(hello.status);
+  });
+
+  it("проверка inline-кода ловит поломки в любом регистре и пропускает файл и JSON словаря (П-1.1а)", () => {
+    const ok = `<script id="i18n" type="application/json">{}</script><script src="/pult/pult.js"></script>`;
+    expect(inlineCode(ok)).toEqual([]);
+    for (const bad of [
+      `<script>alert(1)</script>`,
+      `<SCRIPT>alert(1)</SCRIPT>`,
+      `<Script type="module">x()</Script>`,
+      `<script >x()</script >`,
+      `<script type="text/javascript">x()</script>`,
+      `<style>p{}</style>`,
+      `<STYLE>p{}</STYLE>`,
+      `<p style="color:red">`,
+      `<p STYLE="color:red">`,
+    ]) {
+      expect(inlineCode(ok + bad), bad).not.toEqual([]);
+    }
   });
 
   it("словарь пульта: у каждой подписи есть ru и en, непустые", () => {
