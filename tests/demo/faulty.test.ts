@@ -199,7 +199,8 @@ describe("драйвер нарушителя «ПР» — при режиме �
         await c.shop("GET", "/v1/shops").catch(() => undefined);
       },
     }, { fetch: fake((u) => (u.pathname === "/v1/shops" ? json(409, { code: "X_GUARD" }) : undefined)) });
-    expect(seen).toMatchObject({ step: "fault.unplayed", params: { code: "PREP_FAILED", status: 409 } });
+    // Причина подготовки не теряется (ревью П-11.3а-3, мелочь № 5).
+    expect(seen).toMatchObject({ step: "fault.unplayed", params: { code: "PREP_FAILED,X_GUARD", status: 409 } });
     // Подготовка 2xx, затем нарушение с объявленной парой — «защита сработала»; «запрос отправлен» — один, у нарушения.
     const real = await once("Н-07", {
       expect: [{ code: "X_GUARD", status: 409 }],
@@ -211,16 +212,142 @@ describe("драйвер нарушителя «ПР» — при режиме �
     }, { fetch: fake((u) => (u.pathname === "/v1/shops/guarded" ? json(409, { code: "X_GUARD" }) : undefined)) });
     expect(real.at(-1)).toMatchObject({ step: "fault.refused", params: { code: "X_GUARD", status: 409 } });
     expect(real.filter((x) => x.step === "fault.sent")).toHaveLength(1);
-    // Нарушение прошло (2xx), а объявленный код пришёл на подготовку — не «защита сработала».
-    const missed = await last("Н-07", {
-      expect: [{ code: "X_GUARD", status: 409 }],
+    // Подготовка не ответила, нарушение не отправлено — PREP_FAILED с причиной «нет ответа».
+    const noAnswer = await last("Н-07", {
+      expect: [],
       run: async (c) => {
-        c.mark({ mandate_id: "mnd_prep4" });
-        await c.violate.call("GET /pao/v1/agent", {});
-        await c.shop("GET", "/v1/shops/guarded").catch(() => undefined);
+        c.mark({ mandate_id: "mnd_prep5" });
+        await c.shop("GET", "/v1/shops").catch(() => undefined);
       },
-    }, { fetch: fake((u) => (u.pathname === "/v1/shops/guarded" ? json(409, { code: "X_GUARD" }) : undefined)) });
-    expect(missed).toMatchObject({ step: "fault.unplayed", params: { code: "PREP_FAILED" } });
+    },{ fetch: fake((u) => (u.pathname === "/v1/shops" ? (() => { throw new TypeError("fetch failed"); })() : undefined)) });
+    expect(noAnswer).toMatchObject({ step: "fault.unplayed", params: { code: "PREP_FAILED,NO_RESPONSE" } });
+  });
+
+  it("порядок и состав (решение владельца, чат 11.11): одно нарушение за прогон, подготовка после нарушения отклоняется, прошедшее нарушение старше любого исхода — оба порядка", async () => {
+    const guarded = fake((u) => (u.pathname === "/v1/shops/guarded" ? json(409, { code: "X_GUARD" }) : undefined));
+    const expectGuard = [{ code: "X_GUARD", status: 409 }];
+    // Нарушение прошло (2xx), затем «подготовка» с объявленным кодом — отклонена, не уходит; итог — «совершено».
+    const callsFrom = demo.stand.merchantCalls().length;
+    let prepAfter: unknown;
+    const passed = await once("Н-07", {
+      expect: expectGuard,
+      run: async (c) => {
+        c.mark({ mandate_id: "mnd_ord1" });
+        await c.violate.call("GET /pao/v1/agent", {});
+        prepAfter = await c.shop("GET", "/v1/shops/guarded").catch((e: unknown) => e);
+      },
+    }, { fetch: guarded });
+    expect(passed.at(-1)).toMatchObject({ step: "fault.marked", params: { mandate_id: "mnd_ord1" } });
+    expect(String((prepAfter as Error).message)).toBe("PREP_AFTER_VIOLATION");
+    expect(demo.stand.merchantCalls().slice(callsFrom).some((c) => c.path === "/v1/shops/guarded")).toBe(false);
+    // Порядок наоборот: подготовка, затем нарушение с объявленной парой — «защита сработала».
+    expect(
+      await last("Н-07", {
+        expect: expectGuard,
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_ord2" });
+          await c.call("GET /pao/v1/agent", {});
+          await c.violate.shop("GET", "/v1/shops/guarded").catch(() => undefined);
+        },
+      }, { fetch: guarded }),
+    ).toMatchObject({ step: "fault.refused", params: { code: "X_GUARD" } });
+    // Два нарушения: второе не уходит; первое 2xx — «совершено», хотя второе получило бы объявленную пару.
+    const two = await once("Н-07", {
+      expect: expectGuard,
+      run: async (c) => {
+        c.mark({ mandate_id: "mnd_ord3" });
+        await c.violate.call("GET /pao/v1/agent", {});
+        expect(String(((await c.violate.shop("GET", "/v1/shops/guarded").catch((e: unknown) => e)) as Error).message)).toBe("SECOND_VIOLATION");
+      },
+    }, { fetch: guarded });
+    expect(two.at(-1)).toMatchObject({ step: "fault.marked" });
+    expect(two.filter((x) => x.step === "fault.sent")).toHaveLength(1);
+    // Два нарушения, порядок наоборот: первое — объявленная пара, второе (было бы 2xx) не уходит — «защита сработала».
+    expect(
+      await last("Н-07", {
+        expect: expectGuard,
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_ord4" });
+          await c.violate.shop("GET", "/v1/shops/guarded").catch(() => undefined);
+          await c.violate.call("GET /pao/v1/agent", {}).catch(() => undefined);
+        },
+      }, { fetch: guarded }),
+    ).toMatchObject({ step: "fault.refused", params: { code: "X_GUARD" } });
+    // Прошедшее нарушение старше остановки ветки и её ошибки.
+    for (const after of [(c: FaultContext) => c.step("outcome" as BranchStep), () => { throw new Error("x"); }] as const) {
+      expect(
+        await last("Н-07", {
+          expect: expectGuard,
+          run: async (c) => {
+            c.mark({ mandate_id: "mnd_ord5" });
+            await c.violate.call("GET /pao/v1/agent", {});
+            after(c);
+          },
+        }),
+      ).toMatchObject({ step: "fault.marked", params: { mandate_id: "mnd_ord5" } });
+    }
+  });
+
+  it("исключение из решения о последнем кирпиче каркаса (ревью П-11.3а-4 № 1, № 2): сбой подготовки выше «защиты»; нарушение не уходит, пока подготовка не ответила", async () => {
+    const expectGuard = [{ code: "X_GUARD", status: 409 }];
+    const reply = (u: URL) =>
+      u.pathname === "/v1/shops/prep-refused" ? json(409, { code: "ORDER_MISSING" }) : u.pathname === "/v1/shops/guarded" ? json(409, { code: "X_GUARD" }) : u.pathname === "/v1/shops/prep-slow" ? pause(150).then(() => json(200, {})) : undefined;
+    // № 1: подготовка отказала (ветка проглотила), нарушение получило объявленную пару — не «защита сработала».
+    expect(
+      await last("Н-07", {
+        expect: expectGuard,
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_exc1" });
+          await c.shop("GET", "/v1/shops/prep-refused").catch(() => undefined);
+          await c.violate.shop("GET", "/v1/shops/guarded").catch(() => undefined);
+        },
+      }, { fetch: fake(reply) }),
+    ).toMatchObject({ step: "fault.unplayed", params: { code: "PREP_FAILED,ORDER_MISSING", status: 409 } });
+    // Зеркало: подготовка получила объявленный код, нарушение — 2xx — «совершено».
+    expect(
+      await last("Н-07", {
+        expect: expectGuard,
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_exc2" });
+          await c.shop("GET", "/v1/shops/guarded").catch(() => undefined);
+          await c.violate.call("GET /pao/v1/agent", {});
+        },
+      }, { fetch: fake(reply) }),
+    ).toMatchObject({ step: "fault.marked", params: { mandate_id: "mnd_exc2" } });
+    // № 2: подготовка без await (медленная, в итоге 2xx), сразу нарушение — нарушение не уходит, PREP_PENDING.
+    let pending: unknown;
+    const s = await once("Н-07", {
+      expect: expectGuard,
+      run: async (c) => {
+        c.mark({ mandate_id: "mnd_exc3" });
+        void c.shop("GET", "/v1/shops/prep-slow");
+        pending = await c.violate.shop("GET", "/v1/shops/guarded").catch((e: unknown) => e);
+      },
+    }, { fetch: fake(reply) });
+    expect(String((pending as Error).message)).toBe("PREP_PENDING");
+    expect(s.some((x) => x.step === "fault.sent" || x.step === "fault.refused")).toBe(false);
+    expect(s.at(-1)).toMatchObject({ step: "fault.unplayed", params: { code: "NOT_SENT" } });
+    // Подготовка ПАО отказала (промис отклонён, ветка поймала) — счёт ожидания снят: нарушение уходит, 2xx — «совершено»
+    // (перепроверка П-11.3а-4 № 1: снятие счёта при сбое подготовки закреплено тестом).
+    const afterFail = await once("Н-07", {
+      expect: expectGuard,
+      run: async (c) => {
+        c.mark({ mandate_id: "mnd_exc4" });
+        await c.call("POST /pao/v1/credentials", { body: {} as never, idempotencyKey: "fault-probe-exc4" }).catch(() => undefined); // подготовка: отказ ПАО
+        await c.violate.call("GET /pao/v1/agent", {});
+      },
+    });
+    expect(afterFail.filter((x) => x.step === "fault.sent")).toHaveLength(1);
+    expect(afterFail.at(-1)).toMatchObject({ step: "fault.marked", params: { mandate_id: "mnd_exc4" } });
+  });
+
+  it("ответ 2xx от ПАО с телом не JSON — «тело не разобрать», а не «нет ответа» (мелочь № 9)", async () => {
+    expect(
+      await last("Н-05", {
+        expect: [],
+        run: async (c) => (c.mark({ mandate_id: "mnd_body" }), void (await c.violate.call("GET /pao/v1/agent", {}).catch(() => undefined))),
+      }, { fetch: fake((u) => (u.pathname === "/pao/v1/agent" ? new Response("not json", { status: 200, headers: { "content-type": "application/json" } }) : undefined)) }),
+    ).toMatchObject({ step: "fault.unplayed", params: { code: "MALFORMED_BODY" } });
   });
 
   it("«защита» витрины — по объявленной паре «код + статус»: объявлена — «сработала»; другой статус или код не объявлен — «не разыграно» (повторное № 3)", async () => {
@@ -267,7 +394,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect: [{ code: "PRINCIPAL_SIGNATURE_PENDING", status: 409 }],
       run: async (c) => {
         c.mark({ mandate_id: "mnd_probe7d" });
-        await c.violate.call("GET /pao/v1/agent", {});
+        await c.call("GET /pao/v1/agent", {}); // настоящий запрос (подготовка) ушёл — но отказ ниже не его ответ
         throw new PaoCallError(409, { code: "PRINCIPAL_SIGNATURE_PENDING" as never, message: "x", retry: "never" }, 1);
       },
     });
@@ -341,17 +468,16 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect: [],
       run: async (c) => {
         c.mark({ mandate_id: "mnd_probe9a" });
-        void c.violate.call("GET /pao/v1/agent", {}); // без await — итог его дождётся
-        void c.violate.shop("GET", "/v1/shops/refused"); // без await, с отказом — не роняет процесс
-        setTimeout(() => (late = badCredential(c, "fault-probe-9a")), 20); // после конца ветки — не уходит
+        void c.violate.shop("GET", "/v1/shops/refused"); // нарушение без await, с отказом — итог его дождётся, процесс не падает
+        setTimeout(() => (late = c.call("GET /pao/v1/agent", {})), 20); // после конца ветки — не уходит
       },
     }, { fetch: fake((u) => (u.pathname === "/v1/shops/refused" ? json(404, { code: "SHOP_NOT_FOUND" }) : undefined)) });
-    expect(s.filter((x) => x.step === "fault.sent")).toHaveLength(2);
+    expect(s.filter((x) => x.step === "fault.sent")).toHaveLength(1);
     // Отказ витрины не объявлен — один исход (повторное № 3: закреплён).
     expect(s.at(-1)).toMatchObject({ step: "fault.unplayed", params: { code: "UNEXPECTED_SHOP_NOT_FOUND", status: 404 } });
     await pause(100);
     await expect(late).rejects.toThrow("CLOSED");
-    expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.path === "/pao/v1/credentials")).toEqual([]);
+    expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.path === "/pao/v1/agent")).toEqual([]);
     expect(unhandled).toEqual([]);
   });
 
@@ -552,6 +678,11 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
     expect(driverText).toMatch(/\bloadKey\b/);
     expect(driverText).not.toMatch(/\bissuer\b|bankApp|\bupk\b/); // П5 п. 5: ни эмулятора банка, ни страницы УПК
     for (const [file, expr] of Object.entries(ALLOWED_DYNAMIC)) expect(readFileSync(join(ROOT, file), "utf8"), file).toContain(expr);
+    // Сборка демо-стенда создаёт драйвер без подменного fetch и срока (они — только для автотестов, мелочь № 6).
+    const runText = readFileSync(join(ROOT, "src/demo/run.ts"), "utf8");
+    const ctor = runText.slice(runText.indexOf("new FaultyDriver("), runText.indexOf(")", runText.indexOf("{ otherBusy", runText.indexOf("new FaultyDriver("))) + 1);
+    expect(ctor).toContain("new FaultyDriver(");
+    expect(ctor).not.toMatch(/\bfetch\b|timeoutMs|branches/);
   });
 
   it("поломки ловятся на временном дереве: клиент ПАО, адаптер ядра, динамическая ссылка (и в разрешённых файлах — вне точных строк), fetch на адреса стенда, импорт драйвера", () => {
@@ -566,6 +697,10 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
       writeFileSync(join(root, "src/demo/dyn.ts"), `const m = "@kuzin4u/agentic-core/pao";\nexport const c = import(m);\n`);
       // Шаблонная строка с подстановкой — тоже динамическая ссылка (повторное № 9).
       writeFileSync(join(root, "src/demo/tpl.ts"), "const x = \"core\";\nexport const t = import(`@kuzin4u/agentic-${x}/pao`);\n");
+      // Сложение строк, второй аргумент, пробел перед скобкой (ревью П-11.3а-3 № 4).
+      writeFileSync(join(root, "src/demo/plus.ts"), `const x = "core";\nexport const t = import("@kuzin4u/agentic-" + x + "/pao");\n`);
+      writeFileSync(join(root, "src/demo/arg2.ts"), `export const t = import("@kuzin4u/agentic-core/pao", { with: {} });\n`);
+      writeFileSync(join(root, "src/demo/space.ts"), `export const t = import ("@kuzin4u/agentic-core/pao");\nexport const r = require ("agentic-buyer-ref/src/agent/adapters/pao/index.js");\n`);
       writeFileSync(
         join(root, "src/demo/platform.ts"),
         `import { createRequire } from "node:module";\nexport const v = ${ALLOWED_DYNAMIC["src/demo/platform.ts"]};\nexport const p = createRequire(import.meta.url)("@kuzin4u/agentic-core/pao");\n`,
@@ -580,6 +715,10 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
           "src/demo/raw.ts → fetch на адреса стенда",
           "src/demo/dyn.ts → динамическая ссылка на модуль",
           "src/demo/tpl.ts → динамическая ссылка на модуль",
+          "src/demo/plus.ts → динамическая ссылка на модуль",
+          "src/demo/arg2.ts → динамическая ссылка на модуль",
+          "src/demo/space.ts → @kuzin4u/agentic-core",
+          "src/demo/space.ts → адаптер ядра",
           "src/demo/platform.ts → динамическая ссылка на модуль",
           "src/pult/p.ts → faulty",
           "src/pult/p.ts → драйвер",

@@ -175,6 +175,7 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   SERVER_ERROR: p("сбой на стороне сервера", "a server-side failure"),
   NO_CODE: p("отказ без кода", "a refusal without a code"),
   MALFORMED_CODE: p("код ответа не по форме", "the response code is malformed"),
+  MALFORMED_BODY: p("ответ пришёл, но тело не разобрать", "a response arrived but its body is unreadable"),
   UNKNOWN: p("причина не определена", "cause not determined"),
   // сигналы A5 и карточка продавца
   A5_PRICE_MISMATCH: p("цена в описании не совпадает с ценой витрины", "the price in the description differs from the shop price"),

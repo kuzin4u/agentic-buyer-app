@@ -94,7 +94,7 @@ export interface FaultyOptions {
   /** Срок ожидания ветки при закрытии, мс (по умолчанию CLOSE_WAIT_MS). */
   readonly closeWaitMs?: number;
   /** Только для автотестов: подменный fetch для ПАО и витрин («нет ответа», 5xx, перенаправление, код не по форме).
-   *  Сборка демо-стенда (`run.ts`) его не передаёт (тест границы). */
+   *  Сборка демо-стенда (`run.ts`) его не передаёт (тест границы драйвера проверяет вызов конструктора в `run.ts`). */
   readonly fetch?: typeof fetch;
   /** Срок ответа на запрос ветки, мс (по умолчанию REQUEST_TIMEOUT_MS). */
   readonly timeoutMs?: number;
@@ -106,7 +106,7 @@ type StopCode = "NOT_MARKED" | "MARK_REJECTED" | "BAD_STEP" | "BAD_TARGET";
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
   constructor(
-    readonly code: StopCode | "CLOSED",
+    readonly code: StopCode | "CLOSED" | "SECOND_VIOLATION" | "PREP_AFTER_VIOLATION" | "PREP_PENDING",
     options?: { cause?: unknown },
   ) {
     super(code, options);
@@ -230,8 +230,31 @@ export class FaultyDriver {
       run.abort();
       return new FaultStop(code);
     };
-    /** Можно ли отправить запрос: ветка идёт, драйвер не закрыт, пометка стоит. Иначе — причина, запрос не уходит. */
-    const gate = (): FaultStop | undefined => (signal.aborted ? new FaultStop("CLOSED") : !marked ? halt("NOT_MARKED") : undefined);
+    /** Нарушение уже отправлено: за прогон — одно (ревью П-11.3а-3 № 1, № 2; решение владельца, чат 11.11). */
+    let violated = false;
+    /** Подготовка без ответа: пока она идёт, нарушение не уходит — иначе отказ нарушения мог бы прийти раньше, чем
+     *  подготовка сделана (ревью П-11.3а-4 № 2; исключение из решения о последнем кирпиче каркаса). */
+    let prepPending = 0;
+    /** Можно ли отправить запрос: ветка идёт, драйвер не закрыт, пометка стоит; после нарушения — ни второго нарушения,
+     *  ни подготовки (запрос не уходит; итог прошедшего нарушения это не меняет). Иначе — причина. */
+    const gate = (violation: boolean): FaultStop | undefined =>
+      signal.aborted
+        ? new FaultStop("CLOSED")
+        : !marked
+          ? halt("NOT_MARKED")
+          : violated
+            ? new FaultStop(violation ? "SECOND_VIOLATION" : "PREP_AFTER_VIOLATION")
+            : violation && prepPending > 0
+              ? new FaultStop("PREP_PENDING")
+              : undefined;
+    /** Учёт подготовки в полёте: снимается, когда пришёл её исход (ответ или сбой). */
+    const track = <T>(violation: boolean, p: Promise<T>): Promise<T> => {
+      if (violation) return p;
+      prepPending++;
+      const done = () => void prepPending--;
+      p.then(done, done);
+      return p;
+    };
 
     const mark = (ids: DemoIds): void => {
       if (signal.aborted) throw new FaultStop("CLOSED");
@@ -250,10 +273,13 @@ export class FaultyDriver {
     /** Запрос к ПАО: подготовка или нарушение (роль — в журнал; «запрос отправлен» — только у нарушения). */
     const callAs = (violation: boolean) =>
       ((op: Parameters<Pao["call"]>[0], args: Parameters<Pao["call"]>[1]) => {
-        const g = gate();
+        const g = gate(violation);
         if (g) return rejected(g);
-        if (violation) this.#step("fault.sent", { test });
-        const req = this.#pao.call(op, args);
+        if (violation) {
+          violated = true;
+          this.#step("fault.sent", { test });
+        }
+        const req = track(violation, this.#pao.call(op, args));
         journal.push(req.then((): Outcome => ({ kind: "ok" }), paoEntry).then((o) => ({ ...o, violation })));
         return req;
       }) as Pao["call"];
@@ -262,12 +288,15 @@ export class FaultyDriver {
     const shopAs =
       (violation: boolean) =>
       (method: "GET" | "POST", target: string, body?: unknown): Promise<ShopReply> => {
-        const g = gate();
+        const g = gate(violation);
         if (g) return rejected(g);
         const url = shopUrl(this.#d.urls.merchants, target);
         if (!url) return rejected(halt("BAD_TARGET"));
-        if (violation) this.#step("fault.sent", { test });
-        const req = this.#shop(method, url, body);
+        if (violation) {
+          violated = true;
+          this.#step("fault.sent", { test });
+        }
+        const req = track(violation, this.#shop(method, url, body));
         journal.push(req.then(shopEntry, (): Outcome => ({ kind: "fail", code: "NO_RESPONSE" })).then((o) => ({ ...o, violation })));
         const out = req.then((r) => {
           if (r.status >= 200 && r.status < 300) return r;
@@ -335,35 +364,36 @@ export class FaultyDriver {
     return { status: res.status, body: parsed };
   }
 
-  /** Итог по журналу (решения владельца, чат 11.11), по старшинству:
-   *  1. ветку остановил драйвер (чужой шаг, адрес вне стенда, запрос без пометки, пометка отклонена) — эта причина;
-   *  2. подготовка не удалась (любой ответ не 2xx или сбой) — `PREP_FAILED` со статусом: у подготовки учитывается лишь
-   *     сбой — ни её отказ (даже с объявленным кодом), ни её 2xx итогом нарушения не считаются (повторное № 1);
-   *  3. в ответе **нарушающего** запроса — объявленная пара «код + статус» — `fault.refused` «защита сработала»;
-   *  4. сбой нарушающего запроса (нет ответа, 5xx, перенаправление, отказ клиента ПАО, код не по форме, без кода);
-   *  5. отказ нарушающего запроса с необъявленной парой — `UNEXPECTED_<код>`;
-   *  6. ветка сломалась сама — `BRANCH_ERROR`;
-   *  7. ответ 2xx на нарушающий запрос — `fault.marked` «совершено и помечено»; нарушение не отправлено — `NOT_SENT`.
+  /** Итог по журналу (решения владельца, чат 11.11). Нарушение за прогон — одно, подготовка — только до него
+   *  (`gate`). По старшинству:
+   *  1. ответ 2xx на нарушение — `fault.marked` «совершено и помечено»: прошедшее нарушение старше любого другого исхода —
+   *     дефект защиты не прячется ни за остановкой ветки, ни за её ошибкой (ревью П-11.3а-3 № 1, № 2);
+   *  2. ветку остановил драйвер (чужой шаг, адрес вне стенда, запрос без пометки, пометка отклонена) — эта причина;
+   *  3. подготовка не удалась — `PREP_FAILED` и её настоящая причина через запятую (код, нет ответа, перенаправление…):
+   *     у подготовки учитывается лишь сбой — ни её отказ (даже с объявленным кодом), ни её 2xx итогом не считаются;
+   *     выше «защиты»: отказ нарушения мог прийти из-за несделанной подготовки (ревью П-11.3а-4 № 1);
+   *  4. в ответе нарушения — объявленная пара «код + статус» — `fault.refused` «защита сработала»;
+   *  5. сбой нарушения (нет ответа, 5xx, перенаправление, отказ клиента ПАО, тело не разобрать, код не по форме, без кода);
+   *  6. отказ нарушения с необъявленной парой — `UNEXPECTED_<код>`;
+   *  7. ветка сломалась сама — `BRANCH_ERROR`; нарушение не отправлено — `NOT_SENT`.
    *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
    *  разыграно» с причиной и идентификаторами. */
   #settle(test: FaultTest, branch: FaultBranch, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
     const ids = marked ? pick(marked) : {};
     const unplayed = (code: string, status?: number) =>
       this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
+    const v = entries.find((e) => e.violation);
+    if (marked && v?.kind === "ok") return this.#step("fault.marked", { test, ...ids });
     if (stop) return unplayed(stop);
     if (!marked) return unplayed(threw ? "BRANCH_ERROR" : "NOT_MARKED");
-    const prepFailed = entries.find((e) => !e.violation && e.kind !== "ok");
-    if (prepFailed) return unplayed("PREP_FAILED", prepFailed.kind === "ok" ? undefined : prepFailed.status);
-    const v = entries.filter((e) => e.violation);
-    const hit = v.find((e) => e.kind === "refused" && branch.expect.some((g) => g.code === e.code && g.status === e.status));
-    if (hit && hit.kind === "refused") return this.#step("fault.refused", { test, code: hit.code, status: hit.status, ...ids });
-    const fail = v.find((e) => e.kind === "fail");
-    if (fail && fail.kind === "fail") return unplayed(fail.code, fail.status);
-    const other = v.find((e) => e.kind === "refused");
-    if (other && other.kind === "refused") return unplayed(`UNEXPECTED_${other.code}`, other.status);
-    if (threw) return unplayed("BRANCH_ERROR");
-    if (v.some((e) => e.kind === "ok")) return this.#step("fault.marked", { test, ...ids });
-    return unplayed("NOT_SENT");
+    // Сбой подготовки — выше «защиты сработала»: отказ нарушения мог прийти из-за несделанной подготовки (ревью
+    // П-11.3а-4 № 1; исключение из решения о последнем кирпиче каркаса — ложный зелёный, видимый до прогона).
+    const prep = entries.find((e) => !e.violation && e.kind !== "ok");
+    if (prep && prep.kind !== "ok") return unplayed(`PREP_FAILED,${prep.code}`, prep.status);
+    if (v?.kind === "refused" && branch.expect.some((g) => g.code === v.code && g.status === v.status)) return this.#step("fault.refused", { test, code: v.code, status: v.status, ...ids });
+    if (v?.kind === "fail") return unplayed(v.code, v.status);
+    if (v?.kind === "refused") return unplayed(`UNEXPECTED_${v.code}`, v.status);
+    return unplayed(threw ? "BRANCH_ERROR" : "NOT_SENT");
   }
 
   #step(step: string, params: ScenarioStep["params"] = {}): void {
@@ -373,6 +403,9 @@ export class FaultyDriver {
 
 /** Запись журнала по отказу клиента ПАО: отказ клиента до сети, нет ответа, 5xx — сбой; 4xx — отказ с кодом по форме. */
 function paoEntry(e: unknown): Outcome {
+  // Ответ пришёл, но тело не разобрать (клиент ПАО бросает SyntaxError из JSON.parse) — не «нет ответа»: нарушение могло
+  // состояться (ревью П-11.3а-3, мелочь № 9; решение владельца, чат 11.11).
+  if (e instanceof SyntaxError) return { kind: "fail", code: "MALFORMED_BODY" };
   if (!(e instanceof PaoCallError)) return { kind: "fail", code: "NO_RESPONSE" };
   if (e.clientCode !== undefined) return { kind: "fail", code: e.clientCode };
   if (e.status === 0) return { kind: "fail", code: "NO_RESPONSE" };
