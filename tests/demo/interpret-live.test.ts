@@ -5,6 +5,7 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
 import { control, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
 import { matches } from "../../src/dashboards/passports.js";
+import { evaluate } from "../../src/pult/engine.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
@@ -217,5 +218,35 @@ describe("интерпретатор на пяти сюжетах приёмки
       const own = new Set(m.txs[0]!.seqs);
       for (const r of linked) expect(own.has(r.seq), `сюжет ${no}, ${r.ref}`).toBe(true);
     }
+  });
+
+  it("П-3.2б: движок условий на пяти сюжетах с настоящим агентом — нарушений нет; соблюдено, не применяется и сработало — по записям шины", () => {
+    const view = (no: ScenarioNo) => evaluate(buildTxModel(runs.get(no)!), runs.get(no)!);
+    const st = (no: ScenarioNo, kind: "tx" | "mandate") => {
+      const o = view(no).objs.find((x) => x.kind === kind)!;
+      return Object.fromEntries(Object.entries(o.conds).map(([k, v]) => [k, v.status]));
+    };
+    for (const no of [1, 2, 3, 4, 5] as const) {
+      const v = view(no);
+      for (const [c, res] of Object.entries(v.system)) expect(res.status, `сюжет ${no}, ${c}`).not.toBe("bad");
+      expect(v.system.R41.status, `сюжет ${no}`).toBe("ok");
+    }
+    // Сюжет 1 — поручение подписал клиент в банке.
+    expect(st(1, "mandate")).toMatchObject({ R08: "ok", R37: "na", R18: "na" });
+    // Сюжет 2 — покупка ниже порога: подпись поручения и корзины клиентом до оплаты, оплата той витрине, одно «оплачено».
+    expect(st(2, "tx")).toMatchObject({ R08: "ok", R09: "ok", R18: "ok", R21: "na", R26: "ok", R28: "ok", R30: "ok", R37: "na", R46: "ok", R17: "none" });
+    // Сюжет 3 — отказ банка по лимиту клиента: итог по событию, «оплачено» нет; защита — LIMIT_EXCEEDED клиента.
+    expect(st(3, "tx")).toMatchObject({ R08: "ok", R09: "ok", R18: "ok", R28: "ok", R30: "na", R46: "na" });
+    expect(view(3).guarantees.map((g) => g.kind)).toContain("limit_client");
+    // Сюжет 4 — выше порога: подтверждение клиентом кодом УПК до оплаты.
+    expect(st(4, "tx")).toMatchObject({ R08: "ok", R18: "ok", R21: "ok", R28: "ok", R30: "ok", R46: "ok" });
+    // Сюжет 5 — отзыв клиентом: агент остановился сам — R37 соблюдено, защита «отзыв».
+    expect(st(5, "mandate")).toMatchObject({ R08: "ok", R37: "ok" });
+    // Ветка «нарушено» R37 держится на записи журнала агента «узнал об отзыве» с номером поручения — она приходит на
+    // настоящую шину в этой форме и входит в доказательства R37 (повторное ревью П-3.2б № 7).
+    const knew = runs.get(5)!.find((r) => r.stream === "console" && r.ref === "mandate.revoked");
+    expect(knew?.ids?.mandate_id).toBe(view(5).objs.find((o) => o.kind === "mandate")!.id);
+    expect(view(5).objs.find((o) => o.kind === "mandate")!.conds.R37.seqs).toContain(knew!.seq);
+    expect(view(5).guarantees.map((g) => g.kind)).toContain("revoke");
   });
 });
