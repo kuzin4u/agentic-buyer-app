@@ -184,6 +184,129 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect($(env, "grid").classList.contains("tabs")).toBe(true);
   });
 
+  it("П-2.2 «График»: переключение вида сохраняется; строки и отрезки по времени; «сейчас» растёт без перестройки узлов; выбор строки — фокус", () => {
+    const env = start();
+    const graph = {
+      rows: [
+        { id: "G1", kind: "tx", order: 1, marks: [{ at: "2026-11-10T12:00:05.000Z", kind: "error" }], segs: [{ col: "cart", from: "2026-11-10T12:00:00.000Z", to: "2026-11-10T12:00:05.000Z" }, { col: "pay", from: "2026-11-10T12:00:05.000Z" }] },
+      ],
+    };
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [card("G1", "pay")], jumps: [], graph } });
+    expect(env.document.querySelector(".bcol")).not.toBeNull();
+    const toGraph = env.document.querySelector("[data-mode='graph']")!;
+    toGraph.click();
+    expect(toGraph.getAttribute("aria-pressed")).toBe("true");
+    expect(JSON.parse(env.storage.get("pult.layout.v1")!)).toMatchObject({ mode: "graph" });
+    expect(env.document.querySelector(".bcol")).toBeNull();
+    const row = env.document.querySelector(".grow[data-card='G1']")!;
+    expect(row.querySelector(".gname")!.textContent).toBe("G1");
+    const segs = row.querySelectorAll(".seg");
+    expect(segs.map((s) => s.className)).toEqual(["seg col-cart", "seg col-pay"]);
+    // Начало — 12:00:00, «сейчас» — 12:00:10 (+ мгновения у экрана): cart — первая половина, pay — до «сейчас».
+    expect(Number.parseFloat(segs[0]!.style.left!)).toBe(0);
+    expect(Number.parseFloat(segs[0]!.style.width!)).toBeCloseTo(50, 0);
+    expect(Number.parseFloat(segs[1]!.style.left!) + Number.parseFloat(segs[1]!.style.width!)).toBeCloseTo(100, 0);
+    expect(row.querySelector(".gmark")!.className).toBe("gmark k-error");
+    // Раз в секунду — только положения: узел строки прежний.
+    for (const f of env.intervals) f();
+    expect(env.document.querySelector(".grow[data-card='G1']")).toBe(row);
+    // Выбор строки — фокус на транзакцию.
+    row.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true }));
+    expect($(env, "grid").dataset.focusTx).toBe("G1");
+    expect(env.document.querySelector(".grow[data-card='G1']")!.classList.contains("cur")).toBe(true);
+    // Вид «График» восстанавливается из хранилища.
+    const again = start({ stored: { "pult.layout.v1": env.storage.get("pult.layout.v1")! } });
+    again.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], graph } });
+    expect(again.document.querySelector(".grow[data-card='G1']")).not.toBeNull();
+  });
+
+  it("П-2.2, ревью № 2: шкала — от начала незавершённой строки, не дальше 10 минут назад; давняя завершённая строка идущую не сжимает", () => {
+    const env = start({ stored: { "pult.layout.v1": JSON.stringify({ layout: "grid", tab: "proc", max: null, mode: "graph" }) } });
+    const graph = {
+      rows: [
+        // Завершилась 20 минут назад.
+        { id: "OLD", kind: "tx", order: 1, marks: [], segs: [{ col: "cart", from: "2026-11-10T11:40:00.000Z", to: "2026-11-10T11:40:03.000Z" }, { col: "done", from: "2026-11-10T11:40:03.000Z" }] },
+        // Идёт: началась 4 с назад (now — 12:00:10).
+        { id: "NEW", kind: "tx", order: 2, marks: [], segs: [{ col: "cart", from: "2026-11-10T12:00:06.000Z", to: "2026-11-10T12:00:08.000Z" }, { col: "pay", from: "2026-11-10T12:00:08.000Z" }] },
+      ],
+    };
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], graph } });
+    const fresh = env.document.querySelector(".grow[data-card='NEW']")!.querySelectorAll(".seg");
+    // Шкала от начала NEW: её корзина — с левого края, около половины ширины.
+    expect(Number.parseFloat(fresh[0]!.style.left!)).toBe(0);
+    expect(Number.parseFloat(fresh[0]!.style.width!)).toBeGreaterThan(40);
+    // Давняя корзина OLD — левее шкалы, обрезана (нулевая ширина).
+    const old = env.document.querySelector(".grow[data-card='OLD']")!.querySelectorAll(".seg");
+    expect(Number.parseFloat(old[0]!.style.width!)).toBe(0);
+    // Нет незавершённых — шкала от самой ранней, но не дальше 10 минут назад: 20-минутная корзина всё равно обрезана.
+    const env2 = start({ stored: { "pult.layout.v1": JSON.stringify({ layout: "grid", tab: "proc", max: null, mode: "graph" }) } });
+    env2.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], graph: { rows: [graph.rows[0]] } } });
+    expect(Number.parseFloat(env2.document.querySelector(".seg")!.style.width!)).toBe(0);
+  });
+
+  it("П-2.3 разрезы: стадия, продавец (список из карточек), тип, поручения без покупки — на доске и «Графике»; число скрытых; сброс", () => {
+    const env = start();
+    const cards = [
+      card("A", "pay", { merchantId: "MER-1", order: 1 }),
+      card("B", "cart", { merchantId: "MER-2", worst: "error", order: 2 }),
+      card("M", "mandate", { kind: "mandate", order: 3 }),
+    ];
+    const graph = { rows: cards.map((c) => ({ id: c.id, kind: c.kind, order: c.order, marks: [], segs: [{ col: c.column, from: "2026-11-10T12:00:05.000Z" }] })) };
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph } });
+    const ids = () => env.document.querySelectorAll("[data-card]").map((c) => c.dataset.card).sort();
+    const change = (id: string, v: string | boolean) => {
+      const f = $(env, id);
+      if (typeof v === "boolean") f.checked = v;
+      else f.value = v;
+      f.dispatchEvent(new FakeEvent("change", { bubbles: true }));
+    };
+    expect(ids()).toEqual(["A", "B", "M"]);
+    // Продавцы — из карточек.
+    expect($(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"))).toEqual(["", "MER-1", "MER-2"]);
+    change("cut-merchant", "MER-2");
+    expect(ids()).toEqual(["B"]);
+    expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
+    change("cut-merchant", "");
+    change("cut-stage", "pay");
+    expect(ids()).toEqual(["A"]);
+    change("cut-stage", "");
+    // Тип «ошибка» выключен — B скрыта.
+    env.document.querySelector("[data-cut-kind='error']")!.click();
+    expect(env.document.querySelector("[data-cut-kind='error']")!.getAttribute("aria-pressed")).toBe("false");
+    expect(ids()).toEqual(["A", "M"]);
+    change("cut-mandates", false);
+    expect(ids()).toEqual(["A"]);
+    // На «Графике» — тот же разрез.
+    env.document.querySelector("[data-mode='graph']")!.click();
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card)).toEqual(["A"]);
+    // Сброс — всё видно, поля в исходном положении.
+    $(env, "cut-reset").click();
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card).sort()).toEqual(["A", "B", "M"]);
+    expect($(env, "cut-mandates").checked).toBe(true);
+    expect($(env, "cut-stage").value).toBe("");
+    expect($(env, "cut-hidden").textContent).toBe("");
+  });
+
+  it("ревью П-2.3 № 1: список продавцов обновляется на месте — без дублей, новый добавляется, выбранный остаётся после ухода с доски", () => {
+    const env = start();
+    const opts = () => $(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"));
+    const send = (cards: PultCard[]) => env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph: { rows: [] } } });
+    send([card("A", "pay", { merchantId: "MER-1" }), card("B", "cart", { merchantId: "MER-2" })]);
+    expect(opts()).toEqual(["", "MER-1", "MER-2"]);
+    const sel = $(env, "cut-merchant");
+    sel.value = "MER-2";
+    sel.dispatchEvent(new FakeEvent("change", { bubbles: true }));
+    const node = sel.querySelectorAll("option")[2];
+    // Второй пакет: MER-2 ушла с доски, пришёл MER-3, MER-1 — снова. Дублей нет, узлы прежних option не пересоздаются.
+    send([card("A", "pay", { merchantId: "MER-1" }), card("C", "cart", { merchantId: "MER-3" })]);
+    expect(opts()).toEqual(["", "MER-1", "MER-2", "MER-3"]);
+    expect(sel.querySelectorAll("option")[2]).toBe(node);
+    expect(sel.value).toBe("MER-2");
+    // Выбран продавец, которого на доске нет, — карточек не видно, скрыто — обе.
+    expect(env.document.querySelectorAll("[data-card]")).toEqual([]);
+    expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
+  });
+
   it("данные карточки — только текстом: номер и фраза с разметкой не становятся элементами", () => {
     const env = start({ lang: "en" });
     env.sources[0]!.send(boardMsg([card("<img src=x>", "pay", { last: { at: NOW, phrase: { ru: "<b>ру</b>", en: "<b>en</b>" } } })]));

@@ -59,6 +59,8 @@ export class FakeElement {
   readonly attributes = new Map<string, string>();
   #text = "";
   readonly listeners = new Listeners();
+  /** Свойства стиля, заданные скриптом (CSSOM): left, width… */
+  readonly style: Record<string, string> = {};
   readonly ownerDocument: FakeDocument;
   readonly dataset: Record<string, string>;
   readonly classList: { add(c: string): void; remove(c: string): void; contains(c: string): boolean; toggle(c: string, on?: boolean): boolean };
@@ -125,6 +127,28 @@ export class FakeElement {
   }
   set title(v: string) {
     this.attributes.set("title", v);
+  }
+  /** Значение поля: у `input` — то, что задал скрипт или тест, иначе атрибут value; у `select` — только значение
+   *  существующего option (как в браузере: значение вне списка даёт "", ревью П-2.3 № 10), без выбора — первый option. */
+  #value: string | undefined;
+  get value(): string {
+    if (this.tagName === "SELECT") {
+      const opts = this.querySelectorAll("option").map((o) => o.getAttribute("value") ?? o.textContent);
+      if (this.#value !== undefined) return opts.includes(this.#value) ? this.#value : "";
+      return opts[0] ?? "";
+    }
+    return this.#value ?? this.attributes.get("value") ?? "";
+  }
+  set value(v: string) {
+    this.#value = String(v);
+  }
+  /** Флажок: без задания — по атрибуту checked. */
+  #checked: boolean | undefined;
+  get checked(): boolean {
+    return this.#checked ?? this.attributes.has("checked");
+  }
+  set checked(v: boolean) {
+    this.#checked = Boolean(v);
   }
   get firstChild(): FakeElement | null {
     return this.children[0] ?? null;

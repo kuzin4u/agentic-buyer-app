@@ -6,6 +6,7 @@ import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { SourceStatus } from "../dashboards/source.js";
 import { boardView, type BoardCard, type BoardColumn } from "./board.js";
+import { graphView, type GraphView } from "./graph.js";
 import { buildTxModel } from "./tx.js";
 
 export interface PultCard extends BoardCard {
@@ -26,6 +27,8 @@ export interface PultBoardState {
   readonly cards: readonly PultCard[];
   /** Последние переходы, новые — в конце. */
   readonly jumps: readonly PultJump[];
+  /** «График» (П-2.2): отрезки стадий по времени. */
+  readonly graph: GraphView;
 }
 
 export type PultFeedEvent =
@@ -67,7 +70,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   const listeners = new Set<(e: PultFeedEvent) => void>();
   const column = new Map<string, { column: BoardColumn; since: string }>();
   let jumps: PultJump[] = [];
-  let state: PultBoardState = { now: o.now().toISOString(), cards: [], jumps: [] };
+  let state: PultBoardState = { now: o.now().toISOString(), cards: [], jumps: [], graph: { rows: [] } };
   let timer: NodeJS.Timeout | undefined;
 
   const emit = (e: PultFeedEvent) => {
@@ -84,8 +87,11 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     timer = undefined;
     // Сбой пересчёта не роняет процесс стенда: остаётся прежняя доска (ревью П-2.1 № 8).
     let view: ReturnType<typeof boardView>;
+    let graph: GraphView;
     try {
-      view = boardView(buildTxModel(items), items);
+      const model = buildTxModel(items);
+      view = boardView(model, items);
+      graph = graphView(model, items);
     } catch {
       return;
     }
@@ -105,7 +111,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       return { ...c, since: prev.since };
     });
     if (jumps.length > kept) jumps = jumps.slice(-kept);
-    state = { now, cards, jumps: [...jumps] };
+    state = { now, cards, jumps: [...jumps], graph };
     emit({ type: "board", board: state });
   };
 

@@ -12,8 +12,8 @@ import type { PultMandate, PultTx, TxModel, TxOutcomeKind } from "./tx.js";
 export const BOARD_COLUMNS = ["mandate", "select", "cart", "confirmation", "pay", "result", "post", "done"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 
-/** Стадия интерпретатора → колонка доски. `service` колонки не меняет. */
-const STAGE_COLUMN: Readonly<Record<Stage, BoardColumn | undefined>> = {
+/** Стадия интерпретатора → колонка доски. `service` колонки не меняет. Общая для доски и «Графика» (П-2.2). */
+export const STAGE_COLUMN: Readonly<Record<Stage, BoardColumn | undefined>> = {
   mandate: "mandate",
   search: "select",
   cart: "cart",
@@ -30,6 +30,8 @@ export interface BoardCard {
   readonly kind: "tx" | "mandate";
   readonly column: BoardColumn;
   readonly intentId?: string;
+  /** Продавец покупки — для разреза «продавец» (П-2.3). */
+  readonly merchantId?: string;
   readonly outcome?: TxOutcomeKind;
   /** seq события итога — порядок «Завершены»: последние итоги сначала (повторное ревью П-2.1 № 4). */
   readonly outcomeSeq?: number;
@@ -80,6 +82,7 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       kind: "tx",
       column: txColumn(t),
       ...(t.intentId !== undefined && { intentId: t.intentId }),
+      ...(t.merchantId !== undefined && { merchantId: t.merchantId }),
       ...(t.outcome && { outcome: t.outcome.kind, outcomeSeq: t.outcome.seq }),
       ...(t.outcome?.code !== undefined && { code: t.outcome.code }),
       worst: t.worst,

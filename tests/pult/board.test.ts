@@ -47,8 +47,9 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
   });
 
   it("транзакция идёт по стадиям последней ключевой записи; «Завершены» — только по итогу события Платформы, шаг сюжета — «Итог»", () => {
-    const base = [step("cart.created", { mandate_id: "C2", intent_id: "I2" }, { stage: "cart" }), step("order.placed", { order_id: "O2", mandate_id: "C2" }, { stage: "payment" })];
-    expect(view(base).cards[0]).toMatchObject({ column: "pay" });
+    const base = [step("cart.created", { mandate_id: "C2", intent_id: "I2" }, { stage: "cart" }), step("order.placed", { order_id: "O2", mandate_id: "C2", merchant_id: "MER-9" }, { stage: "payment" })];
+    // Продавец покупки — для разреза «продавец» (П-2.3).
+    expect(view(base).cards[0]).toMatchObject({ column: "pay", merchantId: "MER-9" });
     const stepOnly = [...base, step("outcome", { op_ref: "P2", order_id: "O2", mandate_id: "C2" }, { stage: "outcome" })];
     expect(view(stepOnly).cards[0]).toMatchObject({ column: "result" });
     expect(view(stepOnly).cards[0]!.outcome).toBeUndefined();
