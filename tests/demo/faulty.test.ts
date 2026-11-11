@@ -912,12 +912,24 @@ describe("драйвер нарушителя «ПР» — при режиме �
     /** Авторизации заказа на мониторе — события Платформы, которые получило ядро (инвариант 6). */
     const authorized = (opRef: string) =>
       demo.bus.history().filter((i) => i.stream === "monitor" && i.event.source === "pao_event" && i.event.what === "operation.authorized" && i.event.ids.op_ref === opRef);
-    /** Подглядывающий fetch (только автотест): настоящий ответ, из ответа на реквизит — три значения для проверки «нигде нет». */
-    const spying = (secrets: string[]): typeof fetch =>
+    /** Пометка «ПР» Н-01 по заказу на стенде — в журнале стенда с `from`. */
+    const markedByOrder = (from: number, orderId: string) =>
+      demo.stand.stand
+        .demo!.log()
+        .slice(from)
+        .some((e) => e.what === "MARKED" && e.test === "Н-01" && e.ids?.order_id === orderId && e.ids?.order_ref === orderId);
+    /** Подглядывающий fetch (только автотест): настоящий ответ, из ответа на реквизит — три значения для проверки «нигде нет»;
+     *  в момент запроса реквизита — стоит ли уже пометка по заказу из его тела (`before`, ревью П-11.3г-1 № 1). */
+    const spying = (secrets: string[], before?: { logFrom: number; marked?: boolean }): typeof fetch =>
       (async (input: string | URL | Request, init?: RequestInit) => {
-        const r = await fetch(input, init);
         const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname === "/pao/v1/credentials" && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST" && r.ok) {
+        const isCredential = url.pathname === "/pao/v1/credentials" && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST";
+        if (isCredential && before && typeof init?.body === "string") {
+          const orderRef = (JSON.parse(init.body) as { order_ref?: unknown }).order_ref;
+          before.marked = typeof orderRef === "string" && markedByOrder(before.logFrom, orderRef);
+        }
+        const r = await fetch(input, init);
+        if (isCredential && r.ok) {
           const b = (await r.clone().json()) as { credential_ref?: unknown; payload?: { cryptogram?: unknown; token_ref?: unknown } };
           // Без фильтра: каждое поле — явно (как обратный тест Н-08, ревью П-11.3в № 1).
           secrets.push(...([b.credential_ref, b.payload?.cryptogram, b.payload?.token_ref] as string[]));
@@ -930,7 +942,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
       const histFrom = demo.bus.history().length;
       const credsFrom = demo.stand.stand.issuedCredentials().length;
       const secrets: string[] = [];
-      const d = real({ fetch: spying(secrets) });
+      const logFrom = demo.stand.stand.demo!.log().length;
+      const before: { logFrom: number; marked?: boolean } = { logFrom };
+      const d = real({ fetch: spying(secrets, before) });
       expect(d.start("Н-01")).toEqual({ ok: true });
       const cartId = await clientSignsBoth(n);
       await d.settled();
@@ -940,7 +954,12 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(s.find((x) => x.step === "fault.note.first_payment")?.params).toMatchObject({ test: "Н-01", order_id: orderId });
       // Порядок: первая оплата прошла раньше, чем ушёл нарушающий запрос.
       expect(s.findIndex((x) => x.step === "fault.note.first_payment")).toBeLessThan(s.findIndex((x) => x.step === "fault.sent"));
-      expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-01", code: "ORDER_NOT_PAYABLE", status: 409, mandate_id: cartId } });
+      expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-01", code: "ORDER_NOT_PAYABLE", status: 409, mandate_id: cartId, order_id: orderId, order_ref: orderId } });
+      // Третья пометка «ПР» — по заказу (П-11.3г-1, решение по В4): на стенде этого прогона; стояла уже в момент запроса
+      // реквизита — значит, до реквизита, первой оплаты и нарушения.
+      const log = demo.stand.stand.demo!.log().slice(logFrom);
+      expect(log.some((e) => e.what === "MARKED" && e.test === "Н-01" && e.ids?.order_id === orderId && e.ids?.order_ref === orderId && e.ids?.mandate_id === cartId), "пометка по заказу на стенде").toBe(true);
+      expect(before.marked, "пометка по заказу — до запроса реквизита").toBe(true);
       // Первое списание — по событию Платформы; второе не ушло: событие одно и после отказа не прибавилось.
       // Событие — по op_ref операции первой оплаты (номера заказа в событии нет: операцию нарушителя ядро не читает — это не
       // его покупка). Лента ядра читает по сигналу: до отказа её будит только ветка (wakeEvents); после нарушения тест
@@ -995,7 +1014,10 @@ describe("драйвер нарушителя «ПР» — при режиме �
         const s = steps().slice(n);
         expect(s.some((x) => x.step === "fault.sent"), name).toBe(false);
         expect(s.some((x) => x.step === "fault.note.first_payment"), name).toBe(false);
-        expect(s.at(-1), name).toMatchObject({ step: "fault.unplayed", params: { test: "Н-01", code: "FIRST_PAYMENT_NOT_AUTHORIZED", mandate_id: cartId } });
+        // Итог несёт идентификаторы последней пометки — по заказу (ревью П-11.3г-1 № 3).
+        const orderId = s.find((x) => x.step === "fault.note.order_placed")?.params.order_id;
+        expect(orderId, name).toMatch(/^ORD-/);
+        expect(s.at(-1), name).toMatchObject({ step: "fault.unplayed", params: { test: "Н-01", code: "FIRST_PAYMENT_NOT_AUTHORIZED", mandate_id: cartId, order_id: orderId, order_ref: orderId } });
       }
     });
 

@@ -199,6 +199,8 @@ export const n09Branch = (shops: readonly { readonly merchant_id: string; readon
 });
 
 /** Ветка Н-01 «повторная оплата заказа» (R46 «два списания»; ответ Платформы по #112 п. 4; решения владельца, чат 11.11).
+ *  Пометки «ПР» — по продавцу и по корзине (intentAndCart) и третья — по заказу: после проверки номера, до реквизита
+ *  (решение владельца по В4, чат 12.11).
  *  Подготовка — настоящая покупка: подписанная клиентом корзина, заказ у витрины, реквизит по этому заказу, первая оплата
  *  пакетом агентской оплаты — законная, с авторизацией на Платформе (событие `operation.authorized` на шине). Нарушение —
  *  тот же пакет ещё раз на тот же заказ → витрина 409 ORDER_NOT_PAYABLE, вторая авторизация не уходит.
@@ -218,6 +220,10 @@ const n01Branch: FaultBranch = {
     // Номер — ещё и сегмент пути оплаты: первый знак — буква или цифра (ни «.», ни «..»), иначе реквизит выдавался бы впустую
     // до отказа адреса BAD_TARGET (повторное ревью П-11.3г № 5).
     if (typeof orderId !== "string" || !ID_FORM.test(orderId) || !/^[A-Za-z0-9]/.test(orderId)) throw new BranchStop("ORDER_ID_MALFORMED");
+    // Третья пометка — по заказу, до реквизита и первой оплаты (решение владельца по В4, чат 12.11; ревью П-11.3г № 2):
+    // в Н-01 нарушение совершается над заказом — без пометки по нему разбор «ПР» на стенде неполон. Итог несёт её
+    // идентификаторы (последняя пометка).
+    c.mark({ mandate_id: cartId, order_id: orderId, order_ref: orderId, merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
     c.step("fault.note.order_placed", { order_id: orderId, mandate_id: cartId });
     const cred = await c.call("POST /pao/v1/credentials", { body: credentialBody(cartId, key, { orderRef: orderId }), idempotencyKey: `${key}-credential` });
     const pkg = { credential_ref: cred.credential_ref, kind: cred.kind, payload: cred.payload, aoi: cred.aoi, cart_mandate_id: cartId, order_ref: orderId };
