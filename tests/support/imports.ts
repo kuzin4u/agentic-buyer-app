@@ -7,8 +7,9 @@ import { join } from "node:path";
 const SPEC =
   /(?:^|[\s;])(?:import|export)\s[^"'`;]*?from\s*["'`]([^"'`]+)["'`]|(?:^|[\s;])import\s*["'`]([^"'`]+)["'`]|import\(\s*["'`]([^"'`]+)["'`]\s*\)|\brequire(?:\.resolve)?\(\s*["'`]([^"'`]+)["'`]\s*\)|\/\/\/\s*<reference\s+(?:types|path)\s*=\s*["']([^"']+)["']/g;
 
-/** Динамическая ссылка, которую статически не прочитать, — сама нарушение. */
-export const DYNAMIC = /import\(\s*[^"'`\s)]|\brequire\(\s*[^"'`\s)]|\bcreateRequire\(/;
+/** Динамическая ссылка, которую статически не прочитать, — сама нарушение: не строка или шаблонная строка с подстановкой
+ *  (`import(\`…${x}…\`)` — ревью П-11.3а-2, повторное № 9). */
+export const DYNAMIC = /import\(\s*(?:[^"'`\s)]|`[^`]*\$\{)|\brequire\(\s*(?:[^"'`\s)]|`[^`]*\$\{)|\bcreateRequire\(/;
 
 export function specifiers(source: string): string[] {
   const out: string[] = [];

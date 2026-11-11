@@ -61,6 +61,9 @@ export interface FaultContext {
   /** Запрос к витрине ключом агента (подпись, как у ядра) — по тем же правилам и только на адрес витрин стенда: путь —
    *  с `/`, без `#`; иначе не уходит. Ответ не 2xx — отказ промиса. */
   readonly shop: (method: "GET" | "POST", target: string, body?: unknown) => Promise<ShopReply>;
+  /** **Нарушающий** запрос (ревью П-11.3а-2, повторное № 1): те же `call` и `shop`, но итог считается только по ним —
+   *  «защита сработала» и «совершено». `call` и `shop` выше — подготовка: у неё учитывается лишь сбой. */
+  readonly violate: { readonly call: Pao["call"]; readonly shop: FaultContext["shop"] };
   readonly urls: Readonly<{ pao: string; merchants: string }>;
   /** Шаг на шину: имя — из BRANCH_STEPS, параметры — только `code`, `status` и идентификаторы стенда по форме. */
   readonly step: (step: BranchStep, params?: ScenarioStep["params"]) => void;
@@ -80,8 +83,9 @@ const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {};
 
 /** Сколько закрытие ждёт идущую ветку (как у сюжетов): ответ стенда без таймаута не вешает остановку демо. */
 const CLOSE_WAIT_MS = 3000;
-/** Срок ответа витрины на запрос ветки, мс. */
-const SHOP_TIMEOUT_MS = 10_000;
+/** Срок ответа ПАО и витрины на запрос ветки, мс: повисший запрос не держит драйвер (и через блокировку — сюжеты)
+ *  занятым (повторное № 2). */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface FaultyOptions {
   readonly branches?: Partial<Record<FaultTest, FaultBranch>>;
@@ -89,8 +93,11 @@ export interface FaultyOptions {
   readonly otherBusy?: () => boolean;
   /** Срок ожидания ветки при закрытии, мс (по умолчанию CLOSE_WAIT_MS). */
   readonly closeWaitMs?: number;
-  /** Подменный fetch для ПАО и витрин (тесты: «нет ответа», 5xx, перенаправление, код не по форме). */
+  /** Только для автотестов: подменный fetch для ПАО и витрин («нет ответа», 5xx, перенаправление, код не по форме).
+   *  Сборка демо-стенда (`run.ts`) его не передаёт (тест границы). */
   readonly fetch?: typeof fetch;
+  /** Срок ответа на запрос ветки, мс (по умолчанию REQUEST_TIMEOUT_MS). */
+  readonly timeoutMs?: number;
 }
 
 /** Причина остановки ветки драйвером. */
@@ -106,7 +113,7 @@ class FaultStop extends Error {
   }
 }
 
-/** Отказ витрины на запрос ветки: ответ не 2xx или нет ответа (status 0). */
+/** Отказ витрины на запрос ветки: ответ не 2xx. */
 class ShopCallError extends Error {
   constructor(
     readonly status: number,
@@ -116,8 +123,10 @@ class ShopCallError extends Error {
   }
 }
 
-/** Запись журнала запросов ветки: ответ 2xx, отказ (код по форме и статус — кандидат в «защиту»), сбой (не защита). */
-type Entry = { readonly kind: "ok" } | { readonly kind: "refused"; readonly code: string; readonly status: number } | { readonly kind: "fail"; readonly code: string; readonly status?: number };
+/** Исход запроса ветки: ответ 2xx, отказ (код по форме и статус — кандидат в «защиту»), сбой (не защита). */
+type Outcome = { readonly kind: "ok" } | { readonly kind: "refused"; readonly code: string; readonly status: number } | { readonly kind: "fail"; readonly code: string; readonly status?: number };
+/** Запись журнала: исход и роль — подготовка или нарушение. */
+type Entry = Outcome & { readonly violation: boolean };
 
 const CODE_FORM = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ID_FORM = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -151,9 +160,14 @@ export class FaultyDriver {
     if (active.length !== 1) throw new Error(`ключ агента приложения: действующих ${active.length}, нужен один (П7)`);
     const { signer } = loadKey(d.keysDir, active[0]!.kid);
     this.#signer = signer;
+    // Срок и отмена — у каждого запроса, ПАО и витрин (повторное № 2): повисший ответ кончается «нет ответа», закрытие
+    // драйвера обрывает идущие запросы.
+    const base = o.fetch ?? fetch;
+    const timeoutMs = o.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.#fetch = ((input: string | URL | Request, init?: RequestInit) =>
+      base(input, { ...init, signal: AbortSignal.any([this.#ac.signal, AbortSignal.timeout(timeoutMs), ...(init?.signal ? [init.signal] : [])]) })) as typeof fetch;
     // Одна попытка: нарушитель не повторяет — код защиты нужен как есть.
-    this.#fetch = o.fetch ?? fetch;
-    this.#pao = new PaoClient({ baseUrl: d.urls.pao, agentCode: d.agentCode, signer, maxAttempts: 1, ...(o.fetch && { fetch: o.fetch }) });
+    this.#pao = new PaoClient({ baseUrl: d.urls.pao, agentCode: d.agentCode, signer, maxAttempts: 1, fetch: this.#fetch });
     this.#d = d;
     this.#emit = emit;
     this.#branches = o.branches ?? BRANCHES;
@@ -221,6 +235,10 @@ export class FaultyDriver {
 
     const mark = (ids: DemoIds): void => {
       if (signal.aborted) throw new FaultStop("CLOSED");
+      // Форма до стенда (повторное № 6): хотя бы один идентификатор, все — по форме; иначе пометка на стенде и итог на
+      // шине разошлись бы, а пустая пометка открыла бы защёлку.
+      const entries = Object.entries(ids).filter(([, v]) => v !== undefined);
+      if (entries.length === 0 || entries.some(([k, v]) => !(ID_FIELDS as readonly string[]).includes(k) || typeof v !== "string" || !ID_FORM.test(v))) throw halt("MARK_REJECTED");
       try {
         this.#d.stand.demo!.mark(test, ids);
       } catch (e) {
@@ -229,31 +247,37 @@ export class FaultyDriver {
       marked = { ...ids }; // копия: изменение объекта веткой после пометки не расходится с записью MARKED
     };
 
-    const call = ((op: Parameters<Pao["call"]>[0], args: Parameters<Pao["call"]>[1]) => {
-      const g = gate();
-      if (g) return rejected(g);
-      this.#step("fault.sent", { test });
-      const req = this.#pao.call(op, args);
-      journal.push(req.then((): Entry => ({ kind: "ok" }), paoEntry));
-      return req;
-    }) as Pao["call"];
+    /** Запрос к ПАО: подготовка или нарушение (роль — в журнал; «запрос отправлен» — только у нарушения). */
+    const callAs = (violation: boolean) =>
+      ((op: Parameters<Pao["call"]>[0], args: Parameters<Pao["call"]>[1]) => {
+        const g = gate();
+        if (g) return rejected(g);
+        if (violation) this.#step("fault.sent", { test });
+        const req = this.#pao.call(op, args);
+        journal.push(req.then((): Outcome => ({ kind: "ok" }), paoEntry).then((o) => ({ ...o, violation })));
+        return req;
+      }) as Pao["call"];
 
-    const shop = (method: "GET" | "POST", target: string, body?: unknown): Promise<ShopReply> => {
-      const g = gate();
-      if (g) return rejected(g);
-      const url = shopUrl(this.#d.urls.merchants, target);
-      if (!url) return rejected(halt("BAD_TARGET"));
-      this.#step("fault.sent", { test });
-      const req = this.#shop(method, url, body);
-      const entry = req.then(shopEntry, (): Entry => ({ kind: "fail", code: "NO_RESPONSE" }));
-      journal.push(entry);
-      const out = req.then((r) => {
-        if (r.status >= 200 && r.status < 300) return r;
-        throw new ShopCallError(r.status, formCode((r.body as { code?: unknown } | null)?.code));
-      });
-      out.catch(() => undefined); // ветка может не дождаться — отказ не уходит необработанным
-      return out;
-    };
+    /** Запрос к витрине: подготовка или нарушение. */
+    const shopAs =
+      (violation: boolean) =>
+      (method: "GET" | "POST", target: string, body?: unknown): Promise<ShopReply> => {
+        const g = gate();
+        if (g) return rejected(g);
+        const url = shopUrl(this.#d.urls.merchants, target);
+        if (!url) return rejected(halt("BAD_TARGET"));
+        if (violation) this.#step("fault.sent", { test });
+        const req = this.#shop(method, url, body);
+        journal.push(req.then(shopEntry, (): Outcome => ({ kind: "fail", code: "NO_RESPONSE" })).then((o) => ({ ...o, violation })));
+        const out = req.then((r) => {
+          if (r.status >= 200 && r.status < 300) return r;
+          throw new ShopCallError(r.status, formCode((r.body as { code?: unknown } | null)?.code));
+        });
+        out.catch(() => undefined); // ветка может не дождаться — отказ не уходит необработанным
+        return out;
+      };
+    const call = callAs(false);
+    const shop = shopAs(false);
 
     const step = (s: BranchStep, p: ScenarioStep["params"] = {}): void => {
       if (signal.aborted) return; // после конца ветки, её остановки и закрытия шагов нет
@@ -261,7 +285,15 @@ export class FaultyDriver {
       this.#step(s, { test, ...safeParams(p) });
     };
 
-    const ctx: FaultContext = { call, shop, urls: { pao: this.#d.urls.pao, merchants: this.#d.urls.merchants }, step, signal, mark };
+    const ctx: FaultContext = {
+      call,
+      shop,
+      violate: { call: callAs(true), shop: shopAs(true) },
+      urls: { pao: this.#d.urls.pao, merchants: this.#d.urls.merchants },
+      step,
+      signal,
+      mark,
+    };
     let threw = false;
     try {
       await branch.run(ctx);
@@ -277,7 +309,7 @@ export class FaultyDriver {
   }
 
   /** Подписанный запрос к витрине ключом агента — как у ядра: x-agent-code, x-timestamp, x-nonce, подпись; без повторов
-   *  и перенаправлений; срок — SHOP_TIMEOUT_MS. Нет ответа — исключение. */
+   *  и перенаправлений; срок и отмена — у обёртки fetch. Нет ответа — исключение. */
   async #shop(method: "GET" | "POST", url: URL, body: unknown): Promise<ShopReply> {
     const text = body === undefined ? undefined : JSON.stringify(body);
     const headers = {
@@ -291,7 +323,6 @@ export class FaultyDriver {
       method,
       headers: signed.headers,
       redirect: "manual",
-      signal: AbortSignal.any([this.#ac.signal, AbortSignal.timeout(SHOP_TIMEOUT_MS)]),
       ...(text !== undefined && { body: text }),
     });
     const raw = await res.text();
@@ -306,11 +337,13 @@ export class FaultyDriver {
 
   /** Итог по журналу (решения владельца, чат 11.11), по старшинству:
    *  1. ветку остановил драйвер (чужой шаг, адрес вне стенда, запрос без пометки, пометка отклонена) — эта причина;
-   *  2. в журнале — объявленная пара «код + статус» — `fault.refused` «защита сработала»;
-   *  3. сбой запроса (нет ответа, 5xx, перенаправление, отказ клиента ПАО, код не по форме, отказ без кода) — причина;
-   *  4. отказ с необъявленной парой — `UNEXPECTED_<код>`;
-   *  5. ветка сломалась сама — `BRANCH_ERROR`;
-   *  6. пришёл ответ 2xx — `fault.marked` «совершено и помечено»; ни одного ответа — `NOT_SENT`.
+   *  2. подготовка не удалась (любой ответ не 2xx или сбой) — `PREP_FAILED` со статусом: у подготовки учитывается лишь
+   *     сбой — ни её отказ (даже с объявленным кодом), ни её 2xx итогом нарушения не считаются (повторное № 1);
+   *  3. в ответе **нарушающего** запроса — объявленная пара «код + статус» — `fault.refused` «защита сработала»;
+   *  4. сбой нарушающего запроса (нет ответа, 5xx, перенаправление, отказ клиента ПАО, код не по форме, без кода);
+   *  5. отказ нарушающего запроса с необъявленной парой — `UNEXPECTED_<код>`;
+   *  6. ветка сломалась сама — `BRANCH_ERROR`;
+   *  7. ответ 2xx на нарушающий запрос — `fault.marked` «совершено и помечено»; нарушение не отправлено — `NOT_SENT`.
    *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
    *  разыграно» с причиной и идентификаторами. */
   #settle(test: FaultTest, branch: FaultBranch, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
@@ -319,14 +352,17 @@ export class FaultyDriver {
       this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
     if (stop) return unplayed(stop);
     if (!marked) return unplayed(threw ? "BRANCH_ERROR" : "NOT_MARKED");
-    const hit = entries.find((e) => e.kind === "refused" && branch.expect.some((g) => g.code === e.code && g.status === e.status));
+    const prepFailed = entries.find((e) => !e.violation && e.kind !== "ok");
+    if (prepFailed) return unplayed("PREP_FAILED", prepFailed.kind === "ok" ? undefined : prepFailed.status);
+    const v = entries.filter((e) => e.violation);
+    const hit = v.find((e) => e.kind === "refused" && branch.expect.some((g) => g.code === e.code && g.status === e.status));
     if (hit && hit.kind === "refused") return this.#step("fault.refused", { test, code: hit.code, status: hit.status, ...ids });
-    const fail = entries.find((e) => e.kind === "fail");
+    const fail = v.find((e) => e.kind === "fail");
     if (fail && fail.kind === "fail") return unplayed(fail.code, fail.status);
-    const other = entries.find((e) => e.kind === "refused");
+    const other = v.find((e) => e.kind === "refused");
     if (other && other.kind === "refused") return unplayed(`UNEXPECTED_${other.code}`, other.status);
     if (threw) return unplayed("BRANCH_ERROR");
-    if (entries.some((e) => e.kind === "ok")) return this.#step("fault.marked", { test, ...ids });
+    if (v.some((e) => e.kind === "ok")) return this.#step("fault.marked", { test, ...ids });
     return unplayed("NOT_SENT");
   }
 
@@ -336,7 +372,7 @@ export class FaultyDriver {
 }
 
 /** Запись журнала по отказу клиента ПАО: отказ клиента до сети, нет ответа, 5xx — сбой; 4xx — отказ с кодом по форме. */
-function paoEntry(e: unknown): Entry {
+function paoEntry(e: unknown): Outcome {
   if (!(e instanceof PaoCallError)) return { kind: "fail", code: "NO_RESPONSE" };
   if (e.clientCode !== undefined) return { kind: "fail", code: e.clientCode };
   if (e.status === 0) return { kind: "fail", code: "NO_RESPONSE" };
@@ -348,7 +384,7 @@ function paoEntry(e: unknown): Entry {
 
 /** Запись журнала по ответу витрины: 2xx — ответ; 3xx — перенаправление (сбой, как у клиента ПАО); 5xx — сбой; 4xx — отказ
  *  с кодом по форме (без кода или не по форме — сбой). */
-function shopEntry(r: ShopReply): Entry {
+function shopEntry(r: ShopReply): Outcome {
   if (r.status >= 200 && r.status < 300) return { kind: "ok" };
   if (r.status >= 300 && r.status < 400) return { kind: "fail", code: "REDIRECT", status: r.status };
   const raw = (r.body as { code?: unknown } | null)?.code;

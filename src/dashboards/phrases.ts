@@ -165,6 +165,7 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   NOT_MARKED: p("нарушение не помечено на стенде до запроса", "the violation was not marked on the stand before the request"),
   MARK_REJECTED: p("стенд не принял пометку нарушения", "the stand rejected the violation mark"),
   NOT_SENT: p("нарушающий запрос не отправлен", "the violating request was not sent"),
+  PREP_FAILED: p("подготовка к нарушению не удалась", "the preparation for the violation failed"),
   BRANCH_ERROR: p("сбой в сценарии нарушения, не ответ защиты", "a fault in the violation script, not a safeguard response"),
   BAD_STEP: p("сценарий нарушения выпустил недопустимый шаг", "the violation script emitted a forbidden step"),
   CLOSED: p("драйвер нарушителя остановлен", "the violator driver was stopped"),
