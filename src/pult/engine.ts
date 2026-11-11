@@ -6,9 +6,17 @@
 // последовательность (инвариант 1).
 // Здесь — условия по записям шины: R08, R09, R17 (по MANDATE_SCOPE, В8), R18, R21, R26, R28, R30, R37, R41, R46.
 // R20, R23, R25, R27, R31, R32, R47 — по журналу сбоев стенда (П-3.2в, В9); до него — «на стенде не проверяется».
+// П-3.2в: R20, R23, R25, R27, R31, R32, R47 — по журналу сбоев стенда (`standlog.ts`, В9), пометки «ПР» (`MARKED`) —
+// к R17, R18, R26, R37, R46, R47 (В8; решение владельца — PR #9 #pullrequestreview-5861020062); срок R31 — от «сейчас»,
+// переданного аргументом.
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { Phrase } from "./phrases.js";
 import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Rule89 } from "./rules89.js";
+import { STAND_DELAY_MAX_MS, type StandLogEntry, type StandLogWhat, type StandTest } from "./standlog.js";
+
+/** Срок позднего итога R31 по умолчанию: наибольшая задержка стенда (60 с) + запас 15 с — законно задержанное событие
+ *  «нарушено» не даёт (ревью П-3.2в № 2; срок контролёра паспортов, 15 с, к позднему событию отношения не имеет). */
+export const LATE_MS = STAND_DELAY_MAX_MS + 15_000;
 import type { PultMandate, PultTx, TxModel } from "./tx.js";
 
 const p = (ru: string, en: string): Phrase => ({ ru, en });
@@ -49,6 +57,18 @@ export interface CondResult {
   /** seq записей-доказательств (для «Причин» и журнала). */
   readonly seqs: readonly number[];
   readonly note?: Note;
+  /** Номера записей журнала сбоев стенда (свой счёт стенда, не seq шины) — доказательства из журнала (П-3.2в). */
+  readonly log?: readonly number[];
+}
+
+export interface EngineOptions {
+  /** Журнал сбоев стенда (на шину — П-11.2). Нет — условия журнала «на стенде не проверяется»; есть (даже пустой) —
+   *  считаются. */
+  readonly standLog?: readonly StandLogEntry[];
+  /** «Сейчас» для срока позднего итога R31 — аргументом, не системными часами: модель без часов, тесты детерминированы. */
+  readonly now?: string;
+  /** Срок позднего итога R31, мс; по умолчанию `LATE_MS` (75 с: задержка стенда до 60 с + запас). */
+  readonly lateMs?: number;
 }
 export type CondResults = Readonly<Record<CheckableCondition, CondResult>>;
 
@@ -91,7 +111,42 @@ const isAgentPay = (x: Interpretation) => x.ref === PAY_CALL && x.source === "ag
 /** Подпись поручения клиентом на стенде — обращение эмулятора банка (`stand`); любой другой источник — не клиент (№ 6). */
 const notByClient = (x: Interpretation, mandate: string) => x.ref === SIGN_CALL && mid(x) === mandate && x.source !== "stand";
 
-const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note): CondResult => ({ status, seqs, ...(note && { note }) });
+const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note, log?: readonly number[]): CondResult => ({
+  status,
+  seqs,
+  ...(note && { note }),
+  ...(log && log.length > 0 && { log }),
+});
+
+/** Сбой стенда или пометка «ПР» → условия и статус. Срок R31 — отдельно (`r31`): «итог есть» — «соблюдено». */
+const FAULT_EFFECT: Partial<Record<StandLogWhat, readonly (readonly [CheckableCondition, CondStatus])[]>> = {
+  UPK_CODE_LEAKED: [["R20", "bad"]],
+  SECOND_CREDENTIAL_ISSUED: [["R23", "bad"], ["R25", "bad"]],
+  // В7: витрина ответила «оплачено» до итога — нарушила витрина, защитил пульт (итог — только по событию).
+  PAID_BEFORE_OUTCOME: [["R27", "fired"]],
+  FULFILLED_BEFORE_OUTCOME: [["R32", "bad"]],
+};
+const MARK_EFFECT: Partial<Record<StandTest, readonly [CheckableCondition, CondStatus]>> = {
+  "Н-01": ["R46", "bad"],
+  "Н-05": ["R47", "bad"],
+  "Н-06": ["R37", "bad"],
+  "Н-07": ["R18", "bad"],
+  // В8: сумма не та — первой ловит Платформа (MANDATE_SCOPE), R17 «сработало».
+  "Н-08": ["R17", "fired"],
+  "Н-09": ["R26", "bad"],
+};
+const LATE = new Set<StandLogWhat>(["OUTCOME_EVENT_DELAYED", "OUTCOME_EVENTS_REORDERED"]);
+const effectsOf = (e: StandLogEntry): readonly (readonly [CheckableCondition, CondStatus])[] =>
+  e.what === "MARKED" ? (e.test !== undefined && MARK_EFFECT[e.test] ? [MARK_EFFECT[e.test]!] : []) : (FAULT_EFFECT[e.what] ?? []);
+
+/** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. Неточная привязка записи
+ *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4). */
+function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, logSeq: number, weak = false): void {
+  const st: CondStatus = weak && RANK[status] < RANK.wait ? "wait" : status;
+  const cur = out[c] ?? r("na");
+  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak ? "link_conflict" : undefined, [logSeq]);
+  else if (st === cur.status) out[c] = r(cur.status, cur.seqs, cur.note ?? (weak ? "link_conflict" : undefined), [...(cur.log ?? []), logSeq]);
+}
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
 
@@ -160,7 +215,47 @@ function r37(ids: readonly string[], recs: readonly Interpretation[], afterRevok
   return r("ok", [rv.seq, ...(learned ? [learned.seq] : [])]);
 }
 
-function txConds(t: PultTx, recs: readonly Interpretation[], intentRecs: readonly Interpretation[]): CondResults {
+/** Условия журнала сбоев по транзакции: база — по записям шины, затем сбои и пометки, привязанные к транзакции. */
+function standConds(
+  t: PultTx,
+  recs: readonly Interpretation[],
+  log: readonly StandLogEntry[],
+  s: { started: boolean; paid: boolean },
+  o: EngineOptions,
+): Partial<Record<CheckableCondition, CondResult>> {
+  const out: Partial<Record<CheckableCondition, CondResult>> = {};
+  const done = t.outcome !== undefined;
+  const progress = (okSeq?: number) => (okSeq !== undefined ? r("ok", [okSeq]) : s.started ? r("wait") : r("na"));
+  const asked = recs.filter((x) => isEvent(x, "confirmation.required")).map((x) => x.seq);
+  out.R20 = asked.length > 0 ? r("ok", asked) : r("na");
+  // R23, R25: повтор отклонён Платформой (IDEMPOTENCY_CONFLICT) — защита сработала; иначе — по ходу покупки.
+  const idem = recs.filter((x) => x.who?.code === "IDEMPOTENCY_CONFLICT").map((x) => x.seq);
+  out.R23 = idem.length > 0 ? r("fired", idem) : progress(t.outcome?.seq);
+  out.R25 = out.R23;
+  out.R27 = progress(t.outcome?.seq);
+  out.R32 = s.paid ? r("ok", [t.outcome!.seq]) : done ? r("na") : progress();
+  out.R47 = r("na");
+  // R31 (В7): поздний или переставленный итог — итог у транзакции есть: «соблюдено, позднее событие учтено»; итога нет и
+  // срок от записи стенда прошёл — «нарушено» (пульт потерял итог); иначе — «ждёт».
+  const late = log.filter((e) => LATE.has(e.what));
+  if (late.length === 0) out.R31 = progress(t.outcome?.seq);
+  else {
+    const ls = late.map((e) => e.seq);
+    const first = Math.min(...late.map((e) => Date.parse(e.at)));
+    const overdue = o.now !== undefined && Date.parse(o.now) - first > (o.lateMs ?? LATE_MS);
+    out.R31 = done ? r("ok", [t.outcome!.seq], undefined, ls) : overdue ? r("bad", [], undefined, ls) : r("wait", [], undefined, ls);
+  }
+  return out;
+}
+
+function txConds(
+  t: PultTx,
+  recs: readonly Interpretation[],
+  intentRecs: readonly Interpretation[],
+  log: readonly StandLogEntry[] | undefined,
+  o: EngineOptions,
+  weak?: ReadonlySet<number>,
+): CondResults {
   const all = [...recs, ...intentRecs].sort((a, b) => a.seq - b.seq);
   const pays = recs.filter(isAgentPay);
   const opEvents = recs.filter((x) => x.source === "pao_event" && x.ref.startsWith("operation."));
@@ -281,19 +376,59 @@ function txConds(t: PultTx, recs: readonly Interpretation[], intentRecs: readonl
   // «нарушено» — две законные покупки дали бы ложное R26 и R46; «ждёт» с пометкой, решает человек (ревью П-3.2б № 2).
   if (t.linkConflict) for (const c of ["R18", "R21", "R26", "R28", "R30", "R46"] as const) out[c] = r("wait", out[c]!.seqs, "link_conflict");
 
-  for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
+  if (log === undefined) for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
+  else {
+    Object.assign(out, standConds(t, recs, log, { started, paid }, o));
+    if (t.linkConflict) for (const c of ["R27", "R31", "R32"] as const) out[c] = r("wait", out[c]!.seqs, "link_conflict", out[c]!.log);
+    // Сбои стенда и пометки «ПР», привязанные к транзакции, — поднимают статус (R31 — выше, по сроку). Запись с неточной
+    // привязкой (несколько кандидатов или только номер заказа у транзакции с конфликтом звеньев) — не выше «ждёт».
+    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq, weak?.has(e.seq));
+  }
   return out as CondResults;
 }
 
-function mandateConds(m: PultMandate, recs: readonly Interpretation[]): CondResults {
+function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: readonly StandLogEntry[] | undefined): CondResults {
   const out: Partial<Record<CheckableCondition, CondResult>> = {};
   for (const c of CHECKABLE_CONDITIONS) out[c] = r("na");
   out.R08 = r08(m.id, recs, false);
   out.R37 = r37([m.id], recs, false);
   out.R41 = r41(recs);
   out.R17 = r("none", [], "amounts_after_mvp");
-  for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
+  if (log === undefined) for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
+  else for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq);
   return out as CondResults;
+}
+
+/** Привязка записи журнала стенда к объектам (П-3.2г; ревью П-3.2в № 3, 4) — правило вердикта, записано в STATUS
+ *  «Открыто». Уровни по старшинству, решает первый, на котором нашёлся кандидат: операция (`op_ref`) → запрос
+ *  подтверждения (`confirmation_id`) → заказ (`order_id`, `order_ref` — номер заказа в запросе реквизита; при `shop_id` в
+ *  записи — только транзакции, где заказ с этим номером был у этой витрины) → поручение корзины → поручение-намерение →
+ *  поручение без покупки. Неточная привязка (`weak`): кандидатов несколько — запись ко всем, но статус не выше «ждёт»;
+ *  привязка только номером заказа к транзакции с конфликтом звеньев — тоже. Не нашлось — запись системы. */
+function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly string[]; readonly weak: boolean } {
+  const { op_ref: p, confirmation_id: q, mandate_id: md, shop_id: sh } = e.ids;
+  const ord = e.ids.order_id ?? e.ids.order_ref;
+  const pack = (c: readonly PultTx[], weak = c.length > 1) => ({ ids: c.map((t) => t.id), weak });
+  const levels: (readonly PultTx[])[] = [
+    p !== undefined ? model.txs.filter((t) => t.opRefs.includes(p)) : [],
+    q !== undefined ? model.txs.filter((t) => t.confirmationIds.includes(q)) : [],
+  ];
+  for (const c of levels) if (c.length > 0) return pack(c);
+  if (ord !== undefined) {
+    // Номера заказов разных витрин могут совпасть: при `shop_id` — только транзакции, где этот заказ был у этой витрины
+    // (обращений к витрине по заказу нет — судить не по чему, транзакция остаётся кандидатом).
+    const c = model.txs.filter((t) => t.orderIds.includes(ord) && (sh === undefined || !t.shopsByOrder[ord] || t.shopsByOrder[ord]!.includes(sh)));
+    if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
+  }
+  if (md !== undefined) {
+    // У транзакции с конфликтом звеньев корзина и намерение не заданы — её поручения в `linkConflict`; такая привязка неточна
+    // (иначе запись уходила бы в систему без ограничения «не выше „ждёт“»; повторное ревью П-3.2г № 1).
+    const levelCart = model.txs.filter((t) => t.cartMandateId === md || t.linkConflict?.carts.includes(md));
+    const levelIntent = model.txs.filter((t) => t.intentId === md || t.linkConflict?.intents.includes(md));
+    for (const c of [levelCart, levelIntent]) if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
+    if (model.mandates.some((m) => m.id === md && m.txIds.length === 0)) return { ids: [md], weak: false };
+  }
+  return { ids: [], weak: false };
 }
 
 function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<number, string>): GuaranteeHit[] {
@@ -309,34 +444,76 @@ function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<numbe
   return hits;
 }
 
-/** Условия по транзакциям и поручениям без покупки, сводно по системе, сработавшие защиты. */
-export function evaluate(model: TxModel, items: readonly Interpretation[]): EngineView {
+/** Условия по транзакциям и поручениям без покупки, сводно по системе, сработавшие защиты. Журнал сбоев стенда и
+ *  «сейчас» для срока R31 — аргументами (`EngineOptions`). */
+export function evaluate(model: TxModel, items: readonly Interpretation[], o: EngineOptions = {}): EngineView {
   const bySeq = new Map(items.map((x) => [x.seq, x] as const));
   const recsOf = (seqs: readonly number[]) => seqs.map((s) => bySeq.get(s)).filter((x): x is Interpretation => x !== undefined);
   const mandateById = new Map(model.mandates.map((m) => [m.id, m] as const));
+  // Записи журнала по объектам; без объекта — к системе.
+  const logOf = new Map<string, StandLogEntry[]>();
+  // Записи с неточной привязкой — по объекту: номер записи журнала стенда.
+  const weakOf = new Map<string, Set<number>>();
+  const systemLog: StandLogEntry[] = [];
+  for (const e of o.standLog ?? []) {
+    const { ids, weak } = objsOfEntry(e, model);
+    if (ids.length === 0) systemLog.push(e);
+    for (const id of ids) {
+      logOf.set(id, [...(logOf.get(id) ?? []), e]);
+      if (weak) weakOf.set(id, (weakOf.get(id) ?? new Set()).add(e.seq));
+    }
+  }
+  const own = (id: string) => (o.standLog === undefined ? undefined : (logOf.get(id) ?? []));
   const objOf = new Map<number, string>();
   const objs: ObjCheck[] = [];
   for (const t of model.txs) {
     const intent = t.intentId !== undefined ? mandateById.get(t.intentId) : undefined;
-    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : []) });
+    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id)) });
     for (const s of t.seqs) objOf.set(s, t.id);
   }
   for (const m of model.mandates) {
     for (const s of m.seqs) if (!objOf.has(s)) objOf.set(s, m.id);
     if (m.txIds.length > 0) continue;
-    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs)) });
+    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs), own(m.id)) });
   }
+  const logOn = o.standLog !== undefined;
   const system: Partial<Record<CheckableCondition, CondResult>> = {};
   for (const c of CHECKABLE_CONDITIONS) {
-    const res = objs.map((o) => o.conds[c]);
-    const status = worstStatus(res.map((x) => x.status), c === "R17" || STAND_LOG.includes(c) ? "none" : "na");
+    const res = objs.map((x) => x.conds[c]);
+    const stand = STAND_LOG.includes(c) && !logOn;
+    const status = worstStatus(res.map((x) => x.status), c === "R17" || stand ? "none" : "na");
     const same = res.filter((x) => x.status === status);
-    const fallback: Note | undefined = status !== "none" ? undefined : c === "R17" ? "amounts_after_mvp" : STAND_LOG.includes(c) ? "stand_log" : undefined;
+    const fallback: Note | undefined = status !== "none" ? undefined : c === "R17" ? "amounts_after_mvp" : stand ? "stand_log" : undefined;
     const note = same.find((x) => x.note !== undefined)?.note ?? fallback;
-    system[c] = r(status, same.flatMap((x) => x.seqs), note);
+    const log = same.flatMap((x) => x.log ?? []);
+    system[c] = r(status, same.flatMap((x) => x.seqs), note, log);
   }
   // R41 сводно — по всем записям: записи вне транзакций (служебные, поиск) тоже не должны нести номера карт.
   system.R41 = r41(items);
+  if (logOn) {
+    // R47 (В7, решение владельца): каталог с инструкцией агенту отдан (`INSTRUCTION_SERVED`) и агент исключил предложение
+    // (`A5_INSTRUCTION`) — защита сработала; исключения ещё нет — «ждёт». Подбор — до корзины, поэтому сводно.
+    const served = (o.standLog ?? []).filter((e) => e.what === "INSTRUCTION_SERVED").map((e) => e.seq);
+    if (served.length > 0) {
+      const excluded = items.filter((x) => x.who?.code === "A5_INSTRUCTION").map((x) => x.seq);
+      const st = excluded.length > 0 ? r("fired", excluded, undefined, served) : r("wait", [], undefined, served);
+      if (RANK[st.status] < RANK[system.R47!.status]) system.R47 = st;
+    }
+    // Записи журнала без объекта — к системе: сбои и пометки. Поздний итог без объекта (ревью П-3.2в № 1): стенд пишет
+    // только `op_ref`, а пока событие задержано, операции на шине нет. Срок прошёл, а записи с этим `op_ref` на шине так
+    // и нет — пульт потерял итог: «нарушено»; до срока или без `op_ref` (судить не по чему) — «ждёт».
+    const seenOps = new Set(items.map((x) => x.ids?.op_ref).filter((x): x is string => x !== undefined));
+    // Окно записей конечно (лента пульта, шина), журнал стенда — нет: запись старше первой записи окна не судится — её
+    // транзакция могла уйти из окна, «нет на шине» тогда ложно (повторное ревью П-3.2в № A).
+    const windowFrom = items.length > 0 ? Math.min(...items.map((x) => Date.parse(x.at))) : undefined;
+    for (const e of systemLog) {
+      for (const [c, st] of effectsOf(e)) raise(system, c, st, e.seq);
+      if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
+      const p = e.ids.op_ref;
+      const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
+      raise(system, "R31", p !== undefined && overdue && !seenOps.has(p) ? "bad" : "wait", e.seq);
+    }
+  }
   return { objs, system: system as CondResults, guarantees: guaranteesOf(items, objOf) };
 }
 

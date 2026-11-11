@@ -247,9 +247,11 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
   it("П-2.3 разрезы: стадия, продавец (список из карточек), тип, поручения без покупки — на доске и «Графике»; число скрытых; сброс", () => {
     const env = start();
     const cards = [
-      card("A", "pay", { merchantId: "MER-1", order: 1 }),
-      card("B", "cart", { merchantId: "MER-2", worst: "error", order: 2 }),
+      card("A", "pay", { merchantIds: ["MER-1"], order: 1 }),
+      card("B", "cart", { merchantIds: ["MER-2"], worst: "error", order: 2 }),
       card("M", "mandate", { kind: "mandate", order: 3 }),
+      // Ревью П-2.3 № 4: транзакция с конфликтом звеньев — два продавца; видна в разрезе каждого.
+      card("K", "pay", { merchantIds: ["MER-2", "MER-3"], linkConflict: true, order: 4 }),
     ];
     const graph = { rows: cards.map((c) => ({ id: c.id, kind: c.kind, order: c.order, marks: [], segs: [{ col: c.column, from: "2026-11-10T12:00:05.000Z" }] })) };
     env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph } });
@@ -260,28 +262,30 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
       else f.value = v;
       f.dispatchEvent(new FakeEvent("change", { bubbles: true }));
     };
-    expect(ids()).toEqual(["A", "B", "M"]);
-    // Продавцы — из карточек.
-    expect($(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"))).toEqual(["", "MER-1", "MER-2"]);
+    expect(ids()).toEqual(["A", "B", "K", "M"]);
+    // Продавцы — из карточек, все продавцы каждой.
+    expect($(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"))).toEqual(["", "MER-1", "MER-2", "MER-3"]);
     change("cut-merchant", "MER-2");
-    expect(ids()).toEqual(["B"]);
+    expect(ids()).toEqual(["B", "K"]);
     expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
+    change("cut-merchant", "MER-3");
+    expect(ids()).toEqual(["K"]);
     change("cut-merchant", "");
     change("cut-stage", "pay");
-    expect(ids()).toEqual(["A"]);
+    expect(ids()).toEqual(["A", "K"]);
     change("cut-stage", "");
     // Тип «ошибка» выключен — B скрыта.
     env.document.querySelector("[data-cut-kind='error']")!.click();
     expect(env.document.querySelector("[data-cut-kind='error']")!.getAttribute("aria-pressed")).toBe("false");
-    expect(ids()).toEqual(["A", "M"]);
+    expect(ids()).toEqual(["A", "K", "M"]);
     change("cut-mandates", false);
-    expect(ids()).toEqual(["A"]);
+    expect(ids()).toEqual(["A", "K"]);
     // На «Графике» — тот же разрез.
     env.document.querySelector("[data-mode='graph']")!.click();
-    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card)).toEqual(["A"]);
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card)).toEqual(["A", "K"]);
     // Сброс — всё видно, поля в исходном положении.
     $(env, "cut-reset").click();
-    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card).sort()).toEqual(["A", "B", "M"]);
+    expect(env.document.querySelectorAll(".grow").map((r) => r.dataset.card).sort()).toEqual(["A", "B", "K", "M"]);
     expect($(env, "cut-mandates").checked).toBe(true);
     expect($(env, "cut-stage").value).toBe("");
     expect($(env, "cut-hidden").textContent).toBe("");
@@ -291,14 +295,14 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     const env = start();
     const opts = () => $(env, "cut-merchant").querySelectorAll("option").map((o) => o.getAttribute("value"));
     const send = (cards: PultCard[]) => env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], graph: { rows: [] } } });
-    send([card("A", "pay", { merchantId: "MER-1" }), card("B", "cart", { merchantId: "MER-2" })]);
+    send([card("A", "pay", { merchantIds: ["MER-1"] }), card("B", "cart", { merchantIds: ["MER-2"] })]);
     expect(opts()).toEqual(["", "MER-1", "MER-2"]);
     const sel = $(env, "cut-merchant");
     sel.value = "MER-2";
     sel.dispatchEvent(new FakeEvent("change", { bubbles: true }));
     const node = sel.querySelectorAll("option")[2];
     // Второй пакет: MER-2 ушла с доски, пришёл MER-3, MER-1 — снова. Дублей нет, узлы прежних option не пересоздаются.
-    send([card("A", "pay", { merchantId: "MER-1" }), card("C", "cart", { merchantId: "MER-3" })]);
+    send([card("A", "pay", { merchantIds: ["MER-1"] }), card("C", "cart", { merchantIds: ["MER-3"] })]);
     expect(opts()).toEqual(["", "MER-1", "MER-2", "MER-3"]);
     expect(sel.querySelectorAll("option")[2]).toBe(node);
     expect(sel.value).toBe("MER-2");

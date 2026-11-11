@@ -63,7 +63,10 @@ export interface PultTx {
   readonly orderIds: readonly string[];
   readonly opRefs: readonly string[];
   readonly confirmationIds: readonly string[];
-  readonly merchantId?: string;
+  /** Продавцы записей транзакции, по алфавиту: все, а не первый встреченный (ревью П-2.3 № 4). */
+  readonly merchantIds: readonly string[];
+  /** Обращения к витринам: номер заказа → витрины (`shop_id`) — уточнение привязки журнала стенда (П-3.2г). */
+  readonly shopsByOrder: Readonly<Record<string, readonly string[]>>;
   /** Стадия — по последней ключевой записи транзакции. */
   readonly stage: Stage;
   readonly outcome?: TxOutcome;
@@ -178,7 +181,7 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
   interface TxAcc {
     nodes: Set<string>;
     intents: Set<string>;
-    merchantId?: string;
+    merchants: Set<string>;
     items: Interpretation[];
   }
   const txAcc = new Map<string, TxAcc>();
@@ -189,12 +192,12 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
     if (n.length > 0) {
       const root = links.find(n[0]!);
       let acc = txAcc.get(root);
-      if (!acc) txAcc.set(root, (acc = { nodes: new Set(), intents: new Set(), items: [] }));
+      if (!acc) txAcc.set(root, (acc = { nodes: new Set(), intents: new Set(), merchants: new Set(), items: [] }));
       for (const x of n) acc.nodes.add(x);
       const i = id(r.ids?.intent_id);
       if (i !== undefined) acc.intents.add(i);
       const mer = id(r.ids?.merchant_id);
-      if (mer !== undefined && acc.merchantId === undefined) acc.merchantId = mer;
+      if (mer !== undefined) acc.merchants.add(mer);
       acc.items.push(r);
       continue;
     }
@@ -326,7 +329,8 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
       orderIds: pick("o:"),
       opRefs: pick("p:"),
       confirmationIds: pick("c:"),
-      ...(acc.merchantId !== undefined && { merchantId: acc.merchantId }),
+      merchantIds: [...acc.merchants].sort(),
+      shopsByOrder: shopsByOrder(acc.items),
       stage: stageOf(acc.items),
       ...(outcome && { outcome }),
       worst,
@@ -364,6 +368,17 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
   }
   mandates.sort((a, b) => a.seqs[0]! - b.seqs[0]!);
   return { mandates, txs, unattached };
+}
+
+/** Номер заказа → витрины (`shop_id`) обращений к витрине с этим номером в пути. */
+function shopsByOrder(items: readonly Interpretation[]): Record<string, string[]> {
+  const out: Record<string, Set<string>> = {};
+  for (const r of items) {
+    const o = r.ids?.order_id;
+    const s = r.ids?.shop_id;
+    if (o && s) (out[o] ??= new Set()).add(s);
+  }
+  return Object.fromEntries(Object.entries(out).map(([o, s]) => [o, [...s].sort()]));
 }
 
 /** Стадия по последней ключевой записи, не служебной; ключевых нет — по последней записи. */

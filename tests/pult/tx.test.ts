@@ -51,7 +51,7 @@ describe("модель транзакций пульта (П-1.2)", () => {
     ]);
     expect(m.txs).toHaveLength(1);
     const t = m.txs[0]!;
-    expect(t).toMatchObject({ id: "C1", intentId: "I1", cartMandateId: "C1", orderIds: ["O1"], opRefs: ["P1"], confirmationIds: ["Q1"], merchantId: "MER-1", stage: "outcome" });
+    expect(t).toMatchObject({ id: "C1", intentId: "I1", cartMandateId: "C1", orderIds: ["O1"], opRefs: ["P1"], confirmationIds: ["Q1"], merchantIds: ["MER-1"], stage: "outcome" });
     expect(t.outcome?.kind).toBe("paid");
     expect(m.mandates).toEqual([expect.objectContaining({ id: "I1", status: "active", txIds: ["C1"] })]);
     expect(m.unattached).toEqual([]);

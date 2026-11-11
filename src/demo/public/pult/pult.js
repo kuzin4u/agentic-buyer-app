@@ -391,7 +391,8 @@
   function pass(c) {
     if (!c) return true;
     if (cut.stage && c.column !== cut.stage) return false;
-    if (cut.merchant && c.merchantId !== cut.merchant) return false;
+    // Продавцов у транзакции может быть несколько (конфликт звеньев) — видна в разрезе любого своего (ревью П-2.3 № 4).
+    if (cut.merchant && !(Array.isArray(c.merchantIds) && c.merchantIds.indexOf(cut.merchant) >= 0)) return false;
     if (cut.kinds[c.worst] === false) return false;
     if (!cut.mandates && c.kind === "mandate") return false;
     return true;
@@ -400,7 +401,9 @@
   /** Список продавцов — по карточкам доски; обновляется на месте, выбранный остаётся (даже если ушёл с доски). */
   function syncMerchants() {
     if (!cutMerchant || !board) return;
-    const ids = Array.from(new Set(board.cards.map((c) => c.merchantId).filter((m) => typeof m === "string"))).sort();
+    const all = [];
+    for (const c of board.cards) if (Array.isArray(c.merchantIds)) for (const m of c.merchantIds) if (typeof m === "string") all.push(m);
+    const ids = Array.from(new Set(all)).sort();
     if (cut.merchant && ids.indexOf(cut.merchant) < 0) ids.push(cut.merchant);
     const have = Array.prototype.slice.call(cutMerchant.querySelectorAll("option")).map((o) => o.getAttribute("value"));
     for (const id of ids) {

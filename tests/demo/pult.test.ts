@@ -227,12 +227,13 @@ async function sseMessages(url: string, n: number, ms = 10_000): Promise<unknown
 
 describe("пульт: доска «Ход по стадиям» на живом стенде (П-2.1)", { timeout: 120_000 }, () => {
   let demo: Demo;
+  let run2: Awaited<ReturnType<ReturnType<typeof driver>["run"]>>;
 
   beforeAll(async () => {
     demo = await startDemo();
     const d = driver(demo);
     await d.run(1);
-    await d.run(2);
+    run2 = await d.run(2);
     // Пересчёт доски — с паузой после записи (200 мс).
     await new Promise((r) => setTimeout(r, 400));
   }, 120_000);
@@ -259,7 +260,11 @@ describe("пульт: доска «Ход по стадиям» на живом 
     // done, и время в стадии — время этого перехода.
     const toDone = first.board.jumps.find((j) => j.id === tx[0]!.id && j.to === "done");
     expect(toDone).toBeDefined();
-    expect(tx[0]!.since).toBe(toDone!.at);
+    // Ревью П-2.1 № 10: время перехода и «в стадии с» — время события итога Платформы на шине, а не значение из того же
+    // расчёта (сравнение с `toDone.at` было тавтологией).
+    const authorized = run2.find((i) => i.stream === "monitor" && i.event.source === "pao_event" && i.event.what === "operation.authorized");
+    expect(authorized?.stream === "monitor" && authorized.event.at).toBe(tx[0]!.since);
+    expect(toDone!.at).toBe(tx[0]!.since);
     // «График» (П-2.2): у покупки — отрезки по стадиям, последний — «Завершены», открытый, предыдущие закрыты.
     const row = first.board.graph.rows.find((r) => r.id === tx[0]!.id)!;
     expect(row.kind).toBe("tx");

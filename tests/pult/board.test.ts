@@ -50,7 +50,7 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
   it("транзакция идёт по стадиям последней ключевой записи; «Завершены» — только по итогу события Платформы, шаг сюжета — «Итог»", () => {
     const base = [step("cart.created", { mandate_id: "C2", intent_id: "I2" }, { stage: "cart" }), step("order.placed", { order_id: "O2", mandate_id: "C2", merchant_id: "MER-9" }, { stage: "payment" })];
     // Продавец покупки — для разреза «продавец» (П-2.3).
-    expect(view(base).cards[0]).toMatchObject({ column: "pay", merchantId: "MER-9" });
+    expect(view(base).cards[0]).toMatchObject({ column: "pay", merchantIds: ["MER-9"] });
     const stepOnly = [...base, step("outcome", { op_ref: "P2", order_id: "O2", mandate_id: "C2" }, { stage: "outcome" })];
     expect(view(stepOnly).cards[0]).toMatchObject({ column: "result" });
     expect(view(stepOnly).cards[0]!.outcome).toBeUndefined();
@@ -85,6 +85,46 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
     expect(unconfirmed.cards[0]).toMatchObject({ unconfirmed: true });
     expect(unconfirmed.cards[0]!.pending).toBeUndefined();
     expect(unconfirmed.cards[0]!.column).not.toBe("done");
+  });
+
+  it("ревью П-2.1 № 6: доска и «График» — один код: колонка карточки = колонка последнего отрезка строки, время входа = его начало", () => {
+    const items = [
+      // Поручение без покупки в поиске; отозванное поручение без покупки.
+      step("intent.awaiting_signature", { mandate_id: "IS" }, { stage: "mandate" }),
+      rec("console", "purchase.stage", { mandate_id: "IS" }, { stage: "search" }),
+      step("intent.awaiting_signature", { mandate_id: "IR" }, { stage: "mandate" }),
+      event("mandate.revoked", { mandate_id: "IR" }, { stage: "revoke" }),
+      // Поручения без покупки на стадиях корзины и оплаты — у доски «Подбор» и «Поручение»; «График» — то же (П-3.2г,
+      // повторное ревью № 2: раньше «График» брал колонку стадии — «Корзина», «Реквизит и оплата»).
+      step("intent.awaiting_signature", { mandate_id: "IC" }, { stage: "mandate" }),
+      rec("console", "purchase.stage", { mandate_id: "IC" }, { stage: "cart" }),
+      step("intent.awaiting_signature", { mandate_id: "IY" }, { stage: "mandate" }),
+      rec("console", "purchase.stage", { mandate_id: "IY" }, { stage: "payment" }),
+      // Оплаченная покупка, покупка в оплате, покупка с конфликтом звеньев.
+      step("cart.created", { mandate_id: "CP", intent_id: "IP" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OP", mandate_id: "CP" }),
+      event("operation.authorized", { op_ref: "PP", order_id: "OP" }, { stage: "outcome" }),
+      step("outcome", { op_ref: "PP", order_id: "OP", mandate_id: "CP" }, { stage: "outcome" }),
+      step("cart.created", { mandate_id: "CW", intent_id: "IW" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OW", mandate_id: "CW" }),
+      step("order.placed", { order_id: "OK", mandate_id: "CK1" }),
+      step("order.placed", { order_id: "OK", mandate_id: "CK2" }, { stage: "confirmation" }),
+    ];
+    const model = buildTxModel(items);
+    const cards = boardView(model, items).cards;
+    const rows = new Map(graphView(model, items).rows.map((r) => [r.id, r]));
+    expect(cards.length).toBeGreaterThanOrEqual(7);
+    expect(cards.filter((c) => c.kind === "mandate").map((c) => [c.id, c.column])).toEqual([
+      ["IS", "select"],
+      ["IR", "done"],
+      ["IC", "select"],
+      ["IY", "mandate"],
+    ]);
+    for (const c of cards) {
+      const last = rows.get(c.id)?.segs.at(-1);
+      expect(last?.col, c.id).toBe(c.column);
+      expect(last?.from, c.id).toBe(c.enteredAt);
+    }
   });
 
   it("П-3.2а: «оплачено» после отзыва и два списания — на карточке и строке «Графика»; операции — на карточке при повторе", () => {
@@ -170,6 +210,48 @@ describe("лента пульта (П-2.1)", () => {
     await tick();
     expect(p.board().cards[0]).toMatchObject({ column: "pay", since: order.at });
     expect(got.filter((e) => e.type === "board").length).toBeGreaterThanOrEqual(3);
+    p.close();
+  });
+
+  it("ревью П-2.1 № 6: в одной пачке время перехода — запись, которая перевела в колонку, а не последняя; «Завершены» — время события итога", async () => {
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 20 });
+    const created = step("cart.created", { mandate_id: "C6", intent_id: "I6" }, { stage: "cart" });
+    f.push(created);
+    await new Promise((r) => setTimeout(r, 40));
+    // Одна пачка: заказ (переводит в «Реквизит и оплата»), затем ещё запись той же колонки.
+    const order = step("order.placed", { order_id: "O6", mandate_id: "C6" }, { stage: "payment" });
+    const started = step("payment.started", { order_id: "O6" }, { stage: "payment" });
+    f.push(order, started);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(p.board().cards[0]).toMatchObject({ column: "pay", since: order.at });
+    expect(p.board().jumps.at(-1)).toEqual({ at: order.at, id: "C6", from: "cart", to: "pay" });
+    // Одна пачка: событие итога и шаг агента после него — «Завершены» с события, а не с шага.
+    const paid = event("operation.authorized", { op_ref: "P6", order_id: "O6" }, { stage: "outcome" });
+    const fin = step("outcome", { op_ref: "P6", order_id: "O6", mandate_id: "C6" }, { stage: "outcome" });
+    f.push(paid, fin);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(p.board().cards[0]).toMatchObject({ column: "done", since: paid.at });
+    expect(p.board().jumps.at(-1)).toEqual({ at: paid.at, id: "C6", from: "pay", to: "done" });
+    p.close();
+  });
+
+  it("ревью П-2.1 № 7: карточка ушла с доски (окно записей) и вернулась — без ложного перехода из старой колонки, время — новое", async () => {
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0, limit: 2 });
+    f.push(step("cart.created", { mandate_id: "CA7", intent_id: "IA7" }, { stage: "cart" }));
+    await tick();
+    expect(p.board().cards.map((c) => c.id)).toEqual(["CA7"]);
+    // Две записи другой покупки вытесняют CA7 из окна.
+    f.push(step("cart.created", { mandate_id: "CB7", intent_id: "IB7" }, { stage: "cart" }), step("order.placed", { order_id: "OB7", mandate_id: "CB7" }));
+    await tick();
+    expect(p.board().cards.map((c) => c.id)).toEqual(["CB7"]);
+    // CA7 возвращается записью другой колонки: прежний «Корзина» забыт — перехода нет, время — новой записи.
+    const back = step("order.placed", { order_id: "OA7", mandate_id: "CA7" });
+    f.push(back);
+    await tick();
+    expect(p.board().cards.find((c) => c.id === "CA7")).toMatchObject({ column: "pay", since: back.at });
+    expect(p.board().jumps.filter((j) => j.id === "CA7")).toEqual([]);
     p.close();
   });
 

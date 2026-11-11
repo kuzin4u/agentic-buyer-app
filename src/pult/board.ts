@@ -3,6 +3,7 @@
 // (`tx.ts`): что на карточке и в какой она колонке. Тексты карточки — фразы интерпретатора ru/en (данные для textContent,
 // инвариант 4); «завершена» — только по итогу из события Платформы (инвариант 6, модель транзакций).
 import type { Interpretation, Kind, Stage, Texts } from "../dashboards/interpret.js";
+// Отрезки колонок (`segments`) — здесь, а не в `graph.ts`: «График» импортирует доску, обратный импорт дал бы цикл.
 import type { PultMandate, PultTx, TxModel, TxOpKind, TxOutcomeKind } from "./tx.js";
 
 /** Колонки доски — как в модели 1.23 (`BOARD_COLS`). «После операции» — расчёт и возврат после итога (после MVP на стенде
@@ -30,8 +31,12 @@ export interface BoardCard {
   readonly kind: "tx" | "mandate";
   readonly column: BoardColumn;
   readonly intentId?: string;
-  /** Продавец покупки — для разреза «продавец» (П-2.3). */
-  readonly merchantId?: string;
+  /** Продавцы покупки — для разреза «продавец» (П-2.3): все, не первый встреченный; у транзакции с конфликтом звеньев их
+   *  несколько — она видна в разрезе любого своего продавца (ревью П-2.3 № 4). */
+  readonly merchantIds?: readonly string[];
+  /** Время входа в текущую колонку — время записи, которая её туда перевела (для «Завершены» — событие итога): начало
+   *  последнего отрезка `segments`, тем же кодом, что у «Графика» (ревью П-2.1 № 6). */
+  readonly enteredAt?: string;
   readonly outcome?: TxOutcomeKind;
   /** seq события итога — порядок «Завершены»: последние итоги сначала (повторное ревью П-2.1 № 4). */
   readonly outcomeSeq?: number;
@@ -66,10 +71,67 @@ export function txColumn(t: PultTx): BoardColumn {
   return STAGE_COLUMN[t.stage] ?? "mandate";
 }
 
-/** Колонка поручения без покупки: отозвано — «Завершены»; конвейер в поиске — «Подбор»; иначе — «Поручение». */
+/** Колонка поручения без покупки по стадии: конвейер в поиске или корзине — «Подбор»; иначе — «Поручение». */
+const mandateStageColumn = (s: Stage): BoardColumn => (s === "search" || s === "cart" ? "select" : "mandate");
+
+/** Колонка поручения без покупки: отозвано — «Завершены»; иначе — по стадии (`mandateStageColumn`). */
 export function mandateColumn(m: PultMandate): BoardColumn {
   if (m.status === "revoked") return "done";
-  return m.stage === "search" || m.stage === "cart" ? "select" : "mandate";
+  return mandateStageColumn(m.stage);
+}
+
+export interface Segment {
+  readonly col: BoardColumn;
+  readonly from: string;
+  /** Конец отрезка — начало следующего; у последнего нет (идёт до «сейчас»). */
+  readonly to?: string;
+}
+
+/** Колонка записи: транзакция — по стадии (`STAGE_COLUMN`), поручение без покупки — по `mandateStageColumn`. */
+export const recordColumn = (kind: "tx" | "mandate", r: Interpretation): BoardColumn | undefined =>
+  kind === "tx" ? STAGE_COLUMN[r.stage] : r.stage === "service" ? undefined : mandateStageColumn(r.stage);
+
+/** Отрезки колонок по записям — один код для доски (время входа в колонку, П-2.1 № 6) и «Графика» (П-2.2): смена колонки —
+ *  новая ключевая запись другой колонки, итог — отрезок «Завершены» с его времени. Время монотонно: записи идут по seq, а у
+ *  событий Платформы `at` — по часам Платформы; начало отрезка не раньше начала предыдущего (ревью П-2.2 № 3). */
+export function segments(
+  kind: "tx" | "mandate",
+  seqs: readonly number[],
+  bySeq: ReadonlyMap<number, Interpretation>,
+  done?: { at: string; seq: number },
+): Segment[] {
+  const segs: { col: BoardColumn; from: string; to?: string }[] = [];
+  const open = (col: BoardColumn, at: string) => {
+    const last = segs[segs.length - 1];
+    if (last && last.col === col) return;
+    const from = last && Date.parse(at) < Date.parse(last.from) ? last.from : at;
+    if (last) last.to = from;
+    segs.push({ col, from });
+  };
+  for (const s of seqs) {
+    if (done && s >= done.seq) break;
+    const r = bySeq.get(s);
+    if (!r || r.level !== "key") continue;
+    const col = recordColumn(kind, r);
+    if (col) open(col, r.at);
+  }
+  if (done) open("done", done.at);
+  return segs;
+}
+
+/** Итог строки: транзакция — событие итога Платформы; поручение без покупки — событие отзыва `mandate.revoked`. */
+export function doneOf(
+  kind: "tx" | "mandate",
+  x: PultTx | PultMandate,
+  bySeq: ReadonlyMap<number, Interpretation>,
+): { at: string; seq: number } | undefined {
+  if (kind === "tx") {
+    const o = (x as PultTx).outcome;
+    return o ? { at: o.at, seq: o.seq } : undefined;
+  }
+  if ((x as PultMandate).status !== "revoked") return undefined;
+  const r = x.seqs.map((s) => bySeq.get(s)).find((y) => y?.source === "pao_event" && y.ref === "mandate.revoked");
+  return r ? { at: r.at, seq: r.seq } : undefined;
 }
 
 function lastKey(seqs: readonly number[], bySeq: ReadonlyMap<number, Interpretation>): BoardCard["last"] {
@@ -84,14 +146,22 @@ function lastKey(seqs: readonly number[], bySeq: ReadonlyMap<number, Interpretat
 export function boardView(model: TxModel, items: readonly Interpretation[]): BoardView {
   const bySeq = new Map(items.map((r) => [r.seq, r] as const));
   const cards: BoardCard[] = [];
+  // Время входа в колонку — начало последнего отрезка, если он той же колонки (иначе записей колонки нет — без времени).
+  const entered = (kind: "tx" | "mandate", x: PultTx | PultMandate, column: BoardColumn) => {
+    const last = segments(kind, x.seqs, bySeq, doneOf(kind, x, bySeq)).at(-1);
+    return last && last.col === column ? last.from : undefined;
+  };
   for (const t of model.txs) {
     const last = lastKey(t.seqs, bySeq);
+    const column = txColumn(t);
+    const enteredAt = entered("tx", t, column);
     cards.push({
       id: t.id,
       kind: "tx",
-      column: txColumn(t),
+      column,
+      ...(enteredAt !== undefined && { enteredAt }),
       ...(t.intentId !== undefined && { intentId: t.intentId }),
-      ...(t.merchantId !== undefined && { merchantId: t.merchantId }),
+      ...(t.merchantIds.length > 0 && { merchantIds: t.merchantIds }),
       ...(t.outcome && { outcome: t.outcome.kind, outcomeSeq: t.outcome.seq }),
       ...(t.outcome?.code !== undefined && { code: t.outcome.code }),
       worst: t.worst,
@@ -108,7 +178,9 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
   for (const m of model.mandates) {
     if (m.txIds.length > 0) continue;
     const last = lastKey(m.seqs, bySeq);
-    cards.push({ id: m.id, kind: "mandate", column: mandateColumn(m), worst: m.worst, ...(last && { last }), order: m.seqs[0]! });
+    const column = mandateColumn(m);
+    const enteredAt = entered("mandate", m, column);
+    cards.push({ id: m.id, kind: "mandate", column, ...(enteredAt !== undefined && { enteredAt }), worst: m.worst, ...(last && { last }), order: m.seqs[0]! });
   }
   cards.sort((a, b) => a.order - b.order);
   return { cards };
