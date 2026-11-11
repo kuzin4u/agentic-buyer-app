@@ -4,7 +4,6 @@
 // в ответе, «совершено» — только при пришедшем ответе, что ветка бросила или поймала — не решает; закрытый перечень шагов
 // ветки; на шину — только тест, код, статус и идентификаторы по форме; метка прогона, взаимная блокировка, закрытие;
 // маршрут; граница импортов.
-import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -15,7 +14,7 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv } from "../../src/da
 import { parseDiagSnapshot, parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { ScenarioLine } from "../../src/demo/bus.js";
 import { FAULT_TESTS, type FaultTest } from "../../src/demo/fault-tests.js";
-import { BRANCH_STEPS, credentialFor, FAULT_PLAN, FaultyDriver, ID_FIELDS, n09Branch, otherMerchant, signedCart, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
+import { BRANCH_STEPS, FAULT_PLAN, FaultyDriver, ID_FIELDS, n08Branch, n09Branch, otherMerchant, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { DemoScenarios } from "../../src/demo/scenarios.js";
@@ -834,6 +833,36 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await demo.stand.stand.issuer.sign(cartId)).statusCode).toBe(200);
     return cartId;
   };
+  /** Пометка «ПР» теста по заказу на стенде — в журнале стенда с `from`. */
+  const markedByOrder = (test: FaultTest, from: number, orderId: string) =>
+    demo.stand.stand
+      .demo!.log()
+      .slice(from)
+      .some((e) => e.what === "MARKED" && e.test === test && e.ids?.order_id === orderId && e.ids?.order_ref === orderId);
+  /** Тело запроса реквизита — поля, по которым Платформа решает MANDATE_SCOPE (не реквизит). */
+  type CredentialAsk = { mandate_id?: unknown; merchant_id?: unknown; amount_max?: unknown; order_ref?: unknown };
+  /** Подглядывающий fetch (только автотест): настоящий ответ, из ответа на реквизит — три значения (credential_ref,
+   *  cryptogram, token_ref) для проверки «нигде нет»; тела запросов реквизита — в `asks` (что именно просила ветка: отказ
+   *  MANDATE_SCOPE — из-за того поля, что заявлено, ревью П-11.3д-2 № 1, № 4); в момент запроса реквизита — стоит ли уже
+   *  пометка Н-01 по заказу из его тела (`before`, ревью П-11.3г-1 № 1). Ветка реквизит наружу не отдаёт — его видит только
+   *  тест. */
+  const spying = (secrets: string[], before?: { logFrom: number; marked?: boolean }, asks?: CredentialAsk[]): typeof fetch =>
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const isCredential = url.pathname === "/pao/v1/credentials" && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST";
+      if (isCredential && typeof init?.body === "string") {
+        const ask = JSON.parse(init.body) as CredentialAsk;
+        asks?.push(ask);
+        if (before) before.marked = typeof ask.order_ref === "string" && markedByOrder("Н-01", before.logFrom, ask.order_ref);
+      }
+      const r = await fetch(input, init);
+      if (isCredential && r.ok) {
+        const b = (await r.clone().json()) as { credential_ref?: unknown; payload?: { cryptogram?: unknown; token_ref?: unknown } };
+        // Без фильтра: каждое поле — явно (ревью П-11.3в № 1).
+        secrets.push(...([b.credential_ref, b.payload?.cryptogram, b.payload?.token_ref] as string[]));
+      }
+      return r;
+    }) as typeof fetch;
 
   describe("П-11.3в: ветка MANDATE_SCOPE — Н-08, Н-09 (по подписанной корзине)", { timeout: 60_000 }, () => {
     const price = MASSA_MADRE.items[0]!.price!;
@@ -841,56 +870,53 @@ describe("драйвер нарушителя «ПР» — при режиме �
     it("Н-08: реквизит по подписанной корзине на сумму на одну единицу больше её предела → 409 MANDATE_SCOPE, реквизит не выдан", async () => {
       const n = steps().length;
       const credsFrom = demo.stand.stand.issuedCredentials().length;
-      const d = real();
+      const asks: CredentialAsk[] = [];
+      const d = real({ fetch: spying([], undefined, asks) });
       expect(d.start("Н-08")).toEqual({ ok: true });
       const cartId = await clientSignsBoth(n);
       await d.settled();
       const s = steps().slice(n);
       expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-08", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+      // Отказ — из-за суммы: на одну единицу больше предела, продавец и корзина — свои (ревью П-11.3д-2 № 4).
+      expect(asks).toEqual([expect.objectContaining({ mandate_id: cartId, merchant_id: MASSA_MADRE.merchant_id, amount_max: price + 1 })]);
     });
 
-    it("Н-08, обратный (только автотест): сумма в пределе корзины — не защита: реквизит выдан, «совершено»; криптограмма и token_ref — только в памяти ветки", async () => {
+    it("Н-08, обратный (только автотест): сумма в пределе корзины — не защита: реквизит выдан, «совершено»; реквизит не выходит ни на шину, ни в журналы агента и стенда", async () => {
       const n = steps().length;
       const credsFrom = demo.stand.stand.issuedCredentials().length;
-      let secrets: string[] = [];
-      // Тот же ход, что ветка Н-08, но amount_max = цене корзины (в пределе); таблица — настоящая FAULT_PLAN.
+      const secrets: string[] = [];
+      // Та же фабрика, что у ветки таблицы (n08Branch(цена + 1)), — с суммой в пределе корзины: отличие — одно поле (ревью
+      // П-11.3в № 2). Таблица — настоящая FAULT_PLAN; реквизит видит только тест — подглядывающим fetch.
+      expect(FAULT_PLAN["Н-08"].violations).toEqual(["POST /pao/v1/credentials"]);
       const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
         otherBusy: () => demo.scenarios.busy,
         clientWaitMs: 15_000,
-        branches: {
-          "Н-08": {
-            run: async (c) => {
-              // Ключ — с UUID, как у веток: метка времени Date.now() — 13 цифр в order_ref; с верной суммой Луна Платформа
-              // принимает её за номер карты и отвечает CREDENTIALS_FORBIDDEN (плавающий отказ, П-11.3г).
-              const key = `n08r-${randomUUID()}`;
-              const { cartId } = await signedCart(c, key);
-              const cred = await credentialFor(c, cartId, key, { amountMax: price });
-              // Без фильтра: каждое поле — явно (ревью П-11.3в № 1 — исключение: отсутствующее поле не проверялось бы молча).
-              secrets = [cred.payload?.cryptogram, cred.payload?.token_ref, cred.credential_ref] as string[];
-            },
-          },
-        },
+        fetch: spying(secrets),
+        branches: { "Н-08": n08Branch(price) },
       });
-      d.start("Н-08");
+      expect(d.start("Н-08")).toEqual({ ok: true });
       await clientSignsBoth(n);
       await d.settled();
       const end = steps().slice(n).at(-1);
       expect(end, JSON.stringify(end?.params)).toMatchObject({ step: "fault.marked", params: { test: "Н-08" } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1); // MANDATE_SCOPE в прямом тесте — из-за суммы
-      const [cryptogram, tokenRef, credentialRef] = secrets;
-      for (const [name, v] of [["cryptogram", cryptogram], ["token_ref", tokenRef], ["credential_ref", credentialRef]] as const) {
-        expect(typeof v === "string" && v.length > 0, `${name} — непустая строка`).toBe(true);
-      }
-      // Явно, а не полагаясь на фильтр шага: ни на шине, ни в журнале агента, ни в журнале стенда, ни в ответах маршрута.
-      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log()), replies.join("")].join("\n");
+      expect(secrets).toHaveLength(3);
+      for (const [i, name] of ["credential_ref", "cryptogram", "token_ref"].entries()) expect(typeof secrets[i] === "string" && secrets[i]!.length > 0, `${name} — непустая строка`).toBe(true);
+      // Явно, а не полагаясь на фильтр шага: ни на шине, ни в журнале агента, ни в журнале стенда. Ответы маршрута не
+      // проверяются: прогон — через d.start, маршрут отдаёт только {ok, code} (ревью П-11.3в № 4).
+      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log())].join("\n");
       for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
     });
 
+    // У Н-09 своего обратного нет: «в пределе с продавцом корзины реквизит выдаётся» доказывает обратный тест Н-08 выше; что
+    // Н-09 отличается от него только продавцом (сумма — в пределе, корзина — своя), тест проверяет по телу запроса реквизита
+    // (ревью П-11.3в № 2, П-11.3д-2 № 1).
     it("Н-09: реквизит по подписанной корзине «Массы Мадре» на другого продавца стенда → 409 MANDATE_SCOPE, реквизит не выдан", async () => {
       const n = steps().length;
       const credsFrom = demo.stand.stand.issuedCredentials().length;
-      const d = real();
+      const asks: CredentialAsk[] = [];
+      const d = real({ fetch: spying([], undefined, asks) });
       expect(d.start("Н-09")).toEqual({ ok: true });
       const cartId = await clientSignsBoth(n);
       await d.settled();
@@ -901,6 +927,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(DEMO_SHOPS.some((x) => x.merchant_id === other.params.merchant_id)).toBe(true);
       expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-09", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+      expect(asks).toEqual([expect.objectContaining({ mandate_id: cartId, merchant_id: otherMerchant(DEMO_SHOPS), amount_max: price })]);
     });
 
     it("Н-09 без второго продавца на стенде — «не разыграно» NO_SECOND_MERCHANT до пометки и запросов, не «Масса Мадре» по умолчанию", async () => {
@@ -921,30 +948,6 @@ describe("драйвер нарушителя «ПР» — при режиме �
     /** Авторизации заказа на мониторе — события Платформы, которые получило ядро (инвариант 6). */
     const authorized = (opRef: string) =>
       demo.bus.history().filter((i) => i.stream === "monitor" && i.event.source === "pao_event" && i.event.what === "operation.authorized" && i.event.ids.op_ref === opRef);
-    /** Пометка «ПР» Н-01 по заказу на стенде — в журнале стенда с `from`. */
-    const markedByOrder = (from: number, orderId: string) =>
-      demo.stand.stand
-        .demo!.log()
-        .slice(from)
-        .some((e) => e.what === "MARKED" && e.test === "Н-01" && e.ids?.order_id === orderId && e.ids?.order_ref === orderId);
-    /** Подглядывающий fetch (только автотест): настоящий ответ, из ответа на реквизит — три значения для проверки «нигде нет»;
-     *  в момент запроса реквизита — стоит ли уже пометка по заказу из его тела (`before`, ревью П-11.3г-1 № 1). */
-    const spying = (secrets: string[], before?: { logFrom: number; marked?: boolean }): typeof fetch =>
-      (async (input: string | URL | Request, init?: RequestInit) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        const isCredential = url.pathname === "/pao/v1/credentials" && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST";
-        if (isCredential && before && typeof init?.body === "string") {
-          const orderRef = (JSON.parse(init.body) as { order_ref?: unknown }).order_ref;
-          before.marked = typeof orderRef === "string" && markedByOrder(before.logFrom, orderRef);
-        }
-        const r = await fetch(input, init);
-        if (isCredential && r.ok) {
-          const b = (await r.clone().json()) as { credential_ref?: unknown; payload?: { cryptogram?: unknown; token_ref?: unknown } };
-          // Без фильтра: каждое поле — явно (как обратный тест Н-08, ревью П-11.3в № 1).
-          secrets.push(...([b.credential_ref, b.payload?.cryptogram, b.payload?.token_ref] as string[]));
-        }
-        return r;
-      }) as typeof fetch;
 
     it("Н-01: заказ, реквизит, первая оплата — авторизация Платформы (одна operation.authorized); повтор тем же пакетом → 409 ORDER_NOT_PAYABLE; реквизит и пакет — только в памяти ветки", async () => {
       const n = steps().length;

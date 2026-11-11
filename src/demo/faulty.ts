@@ -127,9 +127,9 @@ const mandateBody = (type: "INTENT" | "CART", parent: string | null, validTo: st
   };
 };
 
-/** Подготовка Н-06…Н-09: пометка по продавцу, поручение нарушителя, подпись клиента, корзина под ним, пометка по корзине.
- *  Экспортирована для обратных автотестов (Н-08 «в пределе»); сборка демо-стенда ветки задаёт только таблицей BRANCHES. */
-export async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
+/** Подготовка Н-01, Н-06…Н-09: пометка по продавцу, поручение нарушителя, подпись клиента, корзина под ним, пометка по
+ *  корзине. Не экспортируется: обратный автотест Н-08 берёт ветку фабрикой n08Branch (П-11.3д-2; ревью П-11.3в № 5). */
+async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
   c.mark({ merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
   const validTo = new Date(Date.now() + 86_400_000).toISOString();
   const intent = await c.call("POST /pao/v1/mandates", { body: mandateBody("INTENT", null, validTo), idempotencyKey: `${key}-intent` });
@@ -151,7 +151,7 @@ export async function intentAndCart(c: FaultContext, key: string): Promise<{ int
 /** Реквизит по корзине нарушителя — нарушение Н-06…Н-09 (операция таблицы FAULT_PLAN). Сумма — минимальные единицы и
  *  валюта корзины (правило совместимости 2); по умолчанию — цена корзины и продавец корзины. Тело ответа (реквизит) — только
  *  в памяти вызывающего: в журнал нарушения идёт лишь исход (ответ / отказ / сбой), на шину — код и статус (инвариант 1). */
-export const credentialFor = (c: FaultContext, cartId: string, key: string, o: CredentialOptions = {}) =>
+const credentialFor = (c: FaultContext, cartId: string, key: string, o: CredentialOptions = {}) =>
   c.violate.call("POST /pao/v1/credentials", { body: credentialBody(cartId, key, o), idempotencyKey: `${key}-credential` });
 
 type CredentialOptions = { amountMax?: number; merchantId?: string; orderRef?: string };
@@ -168,7 +168,7 @@ const credentialBody = (cartId: string, key: string, o: CredentialOptions) => ({
 
 /** Подпись корзины клиентом перед нарушением Н-08, Н-09: в ПАО проверка «не подписан» стоит раньше «вне области» — по
  *  неподписанной корзине защита MANDATE_SCOPE не проверяется (план П-11.3в). */
-export async function signedCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
+async function signedCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
   const ids = await intentAndCart(c, key);
   c.step("fault.note.cart_sign_ask_scope", { mandate_id: ids.cartId });
   await c.waitClient(ids.cartId, "ACTIVE");
@@ -177,7 +177,7 @@ export async function signedCart(c: FaultContext, key: string): Promise<{ intent
 }
 
 /** Остановка ветки ею самой с конкретной причиной (до пометки — «не помечено», после — «помечено, но не разыграно»). */
-export class BranchStop extends Error {
+class BranchStop extends Error {
   constructor(readonly code: "NO_SECOND_MERCHANT" | "ORDER_ID_MALFORMED" | "FIRST_PAYMENT_NOT_AUTHORIZED") {
     super(code);
   }
@@ -187,6 +187,17 @@ export class BranchStop extends Error {
  *  литерал молча указал бы на несуществующего продавца). Нет такой — undefined (решение владельца, чат 11.11). */
 export const otherMerchant = (shops: readonly { readonly merchant_id: string; readonly id: string }[]): string | undefined =>
   shops.find((s) => s.merchant_id !== VIOLATOR_SHOP.merchant_id)?.merchant_id;
+
+/** Ветка Н-08 на данной сумме реквизита (ревью П-11.3в № 2): в таблице — цена корзины + 1 (нарушение), в обратном автотесте —
+ *  цена корзины (в пределе): один ход, отличие — одно поле; правка ветки не разводит прямой и обратный тесты. Н-09 —
+ *  отдельная ветка: что она отличается от обратного Н-08 только продавцом, тест проверяет по телу запроса реквизита. */
+export const n08Branch = (amountMax: number): FaultBranch => ({
+  run: async (c) => {
+    const key = `n08-${randomUUID()}`;
+    const { cartId } = await signedCart(c, key);
+    await credentialFor(c, cartId, key, { amountMax });
+  },
+});
 
 /** Ветка Н-09 на данном наборе витрин (для автотестов «нет второго продавца»; в сборке — DEMO_SHOPS). */
 export const n09Branch = (shops: readonly { readonly merchant_id: string; readonly id: string }[]): FaultBranch => ({
@@ -291,13 +302,7 @@ const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
   },
   // Н-08 «сумма операции ≠ корзине» (R17), ветка MANDATE_SCOPE (Р-1459 В5): реквизит по подписанной корзине на сумму на одну
   // минимальную единицу больше её предела → 409 MANDATE_SCOPE.
-  "Н-08": {
-    run: async (c) => {
-      const key = `n08-${randomUUID()}`;
-      const { cartId } = await signedCart(c, key);
-      await credentialFor(c, cartId, key, { amountMax: VIOLATOR_PRICE + 1 });
-    },
-  },
+  "Н-08": n08Branch(VIOLATOR_PRICE + 1),
   // Н-09 «оплата другому продавцу» (R26), ветка MANDATE_SCOPE: реквизит по подписанной корзине продавца А на продавца Б →
   // 409 MANDATE_SCOPE. Это и защита Платформы для П-06 (сюжет 8 — защитил агент).
   "Н-09": n09Branch(DEMO_SHOPS),
