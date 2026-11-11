@@ -72,6 +72,7 @@ const ru = {
   "card.subject": "Что покупать",
   "card.limit": "Предел",
   "card.valid_days": "Срок, дней",
+  "card.valid_sec": "Срок, секунд",
   "card.merchants": "Продавцов стенда",
   "card.scope": "Продавцы поручения",
   "card.single_use": "Разовое: одна покупка",
@@ -160,6 +161,15 @@ const ru = {
   "step.operator.reinstate_failed": "Снять приостановление агента {agent_code} не удалось (повтор тоже): {code}. Допущен ли агент — по сверке ниже.",
   "step.suspend.resumed": "Агент сверился с реестром Платформы — снова допущен.",
   "step.suspend.resume_failed": "Агент сверился с реестром, но не возобновил работу: {code}.",
+  "scenario.expired": "10. Срок поручения истёк",
+  "scenario.expired_note":
+    "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
+  "card.intent_expired.title": "Карточка поручения сюжета 10 (видна до подписи)",
+  "step.run.expired": "— Сюжет 10: срок поручения истёк —",
+  "step.expiry.wait": "Поручение {mandate_id} действует до {valid_to} — сюжет ждёт конца срока.",
+  "step.expiry.attempt": "Срок поручения {mandate_id} вышел — агент пробует купить.",
+  "step.expiry.refused":
+    "После конца срока поручения {mandate_id} агент остановил попытку до витрин, корзины и оплаты — {code} (состояние {state}). Ответ агента: {core_text}",
   "orders.title": "Заказы в витрине продавца",
   "orders.hint":
     "Номер, сумма и ответ витрины на оплату — слова продавца (эмулятор). Итог оплаты — отдельной колонкой и только по событию Платформы.",
@@ -289,6 +299,7 @@ const en: Record<MessageKey, string> = {
   "card.subject": "What to buy",
   "card.limit": "Limit",
   "card.valid_days": "Valid, days",
+  "card.valid_sec": "Valid, seconds",
   "card.merchants": "Stand merchants",
   "card.scope": "Mandate merchants",
   "card.single_use": "Single use: one purchase",
@@ -376,6 +387,15 @@ const en: Record<MessageKey, string> = {
   "step.operator.reinstate_failed": "Could not lift the suspension of agent {agent_code} (retry failed too): {code}. Whether the agent is admitted — see the check below.",
   "step.suspend.resumed": "The agent checked the Platform registry — admitted again.",
   "step.suspend.resume_failed": "The agent checked the registry but did not resume: {code}.",
+  "scenario.expired": "10. The mandate has expired",
+  "scenario.expired_note":
+    "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",
+  "card.intent_expired.title": "Scenario 10 mandate card (shown before signing)",
+  "step.run.expired": "— Scenario 10: the mandate has expired —",
+  "step.expiry.wait": "Mandate {mandate_id} is valid until {valid_to} — the scenario waits for it to expire.",
+  "step.expiry.attempt": "Mandate {mandate_id} has expired — the agent tries to buy.",
+  "step.expiry.refused":
+    "After mandate {mandate_id} expired, the agent stopped the attempt before shops, cart and payment — {code} (state {state}). Agent reply: {core_text}",
   "orders.title": "Orders in the merchant shop",
   "orders.hint":
     "Number, amount and the shop reply to payment are the merchant's words (emulator). The payment outcome is a separate column and only by the Platform event.",

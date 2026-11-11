@@ -98,7 +98,10 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
     <dt>${e(titleKey)}</dt>
     <dd>${e("card.subject")}: ${escapeHtml(card.subject)}</dd>
     <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: card.limit.amount, currency: card.limit.currency }, lang))}</dd>
-    <dd>${e("card.valid_days")}: ${card.validDays}</dd>
+    ${
+      // Срок в секундах — у поручения сюжета 10 «срок поручения истёк» (П-11.1д); иначе — в днях.
+      card.validSec !== undefined ? `<dd>${e("card.valid_sec")}: ${card.validSec}</dd>` : `<dd>${e("card.valid_days")}: ${card.validDays}</dd>`
+    }
     ${
       // Область продавцов — ключевое условие поручения (Т3а): у поручения не на всех продавцов — кто именно (данные витрин
       // стенда, экранируются; ревью П-11.1в № 4).

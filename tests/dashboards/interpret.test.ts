@@ -158,6 +158,11 @@ describe("интерпретатор: квалификация по правил
     const r = interpret(step("failed", { code: "REVOKED_NOT_ENFORCED", state: "AUTHORIZING" }), ENV);
     expect(r).toMatchObject({ kind: "error", stage: "payment" });
     expect(r.who).toMatchObject({ status: "unknown", side: ["agent"], verdict: "failure" });
+    // Сюжет 10: агент дошёл до выдачи по истёкшему поручению — сбой агента, код словами (ревью П-11.1д № 2).
+    const x = interpret(step("failed", { code: "EXPIRED_NOT_ENFORCED", state: "OFFERS" }), ENV);
+    expect(x).toMatchObject({ kind: "error" });
+    expect(x.who).toMatchObject({ side: ["agent"], verdict: "failure" });
+    for (const lang of ["ru", "en"] as const) expect(rawInHumanText(x.phrase[lang], lang), x.phrase[lang]).toBeUndefined();
   });
 
   it("«оплачено» — только у события с источником pao_event (инвариант 6, ревью № 8); без суммы и кода — без пустых скобок", () => {

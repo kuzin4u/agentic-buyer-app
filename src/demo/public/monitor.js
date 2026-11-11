@@ -78,6 +78,7 @@
       l.step === "scope.refused" ||
       l.step === "scope.not_refused" ||
       l.step === "suspend.stopped" ||
+      l.step === "expiry.refused" ||
       l.step === "operator.reinstate_failed" ||
       l.step === "suspend.resume_failed";
     li.className = stop ? "step warn" : l.step === "outcome" ? "step outcome" : "step";

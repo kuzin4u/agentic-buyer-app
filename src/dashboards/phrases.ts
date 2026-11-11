@@ -55,6 +55,10 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.unconfirmed": p("Начат сюжет 7 «Клиент не подтвердил покупку»", "Scenario 7 “The client did not confirm the purchase” started"),
   "run.scope": p("Начат сюжет 8 «Продавец вне поручения»", "Scenario 8 “Merchant outside the mandate” started"),
   "run.suspended": p("Начат сюжет 9 «Агент приостановлен»", "Scenario 9 “The agent is suspended” started"),
+  "run.expired": p("Начат сюжет 10 «Срок поручения истёк»", "Scenario 10 “The mandate has expired” started"),
+  "expiry.wait": p("Поручение[ {mandate_id}] действует до {valid_to} — сюжет ждёт конца срока", "Mandate[ {mandate_id}] is valid until {valid_to} — the scenario waits for it to expire"),
+  "expiry.attempt": p("Срок поручения вышел — агент пробует купить", "The mandate has expired — the agent tries to buy"),
+  "expiry.refused": p("После конца срока агент остановил попытку — до витрин и оплаты: {code}", "After the expiry the agent stopped the attempt — before shops and payment: {code}"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
@@ -183,6 +187,7 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   IDEMPOTENCY_CONFLICT: p("повтор запроса с другим содержимым", "a repeated request with different content"),
   // сюжеты демо-стенда
   REVOKED_NOT_ENFORCED: p("агент не остановился после отзыва поручения", "the agent did not stop after the mandate was revoked"),
+  EXPIRED_NOT_ENFORCED: p("агент не остановился после конца срока поручения", "the agent did not stop after the mandate expired"),
 };
 
 export const PHRASES = {

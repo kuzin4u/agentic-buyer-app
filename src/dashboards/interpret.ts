@@ -111,7 +111,11 @@ const IMPERSONATION = new Set(["SIGNATURE_INVALID", "AGENT_UNKNOWN", "KEY_UNKNOW
 /** Коды передачи решения человеку (инвариант 3): это норма, не отказ. */
 export const TO_HUMAN_CODES = new Set(["CONFIRMATION_REQUIRED", "CONFIRMATION_PENDING"]);
 /** Коды сюжета демо-стенда (не реестров): агент не остановился после отзыва — ошибка агента (ревью К1.3 № 7). */
-const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = { REVOKED_NOT_ENFORCED: ["agent"] };
+const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = {
+  REVOKED_NOT_ENFORCED: ["agent"],
+  // Сюжет 10: ядро дошло до выдачи по истёкшему поручению (ревью П-11.1д № 2).
+  EXPIRED_NOT_ENFORCED: ["agent"],
+};
 
 /** Кто отказал: Платформа, продавец или сам агент (журнал агента). */
 export type Origin = "platform" | "merchant" | "agent";
@@ -356,6 +360,8 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   // Сюжет 9: действия оператора Системы и возобновление агента — служебная стадия; остановка покупки — по state ядра.
   operator: "service",
   suspend: "service",
+  // Сюжет 10: ожидание срока поручения — стадия поручения; остановка — по state ядра.
+  expiry: "mandate",
   failed: "outcome",
   aborted: "service",
 };
@@ -401,7 +407,7 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
 
 /** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
  *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
-const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped"]);
+const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped", "expiry.refused"]);
 
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
