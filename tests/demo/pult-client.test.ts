@@ -307,6 +307,32 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect($(env, "cut-hidden").textContent).toBe(`${ru("cut.hidden")}: 2`);
   });
 
+  it("П-3.2а: признаки итога на карточке и строке «Графика» — ru/en; операции списком; «ждём шаг агента»; номера операций — текстом", () => {
+    const flagged = card("F", "done", {
+      outcome: "paid",
+      outcomeSeq: 9,
+      afterRevoke: true,
+      doubleDebit: true,
+      ops: [{ opRef: "<i>P1</i>", kind: "declined" }, { opRef: "P2", kind: "paid" }, { opRef: "P3" }],
+    });
+    const waiting = card("W", "result", { pending: true, order: 2 });
+    const graph = { rows: [{ id: "F", kind: "tx", order: 1, marks: [], segs: [{ col: "done", from: "2026-11-10T12:00:05.000Z" }], afterRevoke: true, doubleDebit: true }] };
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [flagged, waiting], jumps: [], graph } });
+      const f = env.document.querySelector("[data-card='F']")!;
+      expect(f.querySelectorAll(".bc-w").map((x) => x.textContent)).toEqual([PULT["card.after_revoke"][lang], PULT["card.double_debit"][lang]]);
+      expect(f.querySelector(".bc-ops")!.textContent).toBe(
+        `${PULT["card.ops"][lang]}: <i>P1</i> — ${PULT["op.declined"][lang]} · P2 — ${PULT["op.paid"][lang]} · P3 — ${PULT["op.none"][lang]}`,
+      );
+      expect(f.querySelectorAll("i")).toEqual([]);
+      expect(env.document.querySelector("[data-card='W']")!.querySelector(".bc-p")!.textContent).toBe(PULT["card.pending"][lang]);
+      env.document.querySelector("[data-mode='graph']")!.click();
+      const name = env.document.querySelector(".grow[data-card='F']")!.querySelector(".gname")!;
+      expect(name.querySelectorAll(".gflag").map((x) => x.textContent)).toEqual([PULT["card.after_revoke"][lang], PULT["card.double_debit"][lang]]);
+    }
+  });
+
   it("данные карточки — только текстом: номер и фраза с разметкой не становятся элементами", () => {
     const env = start({ lang: "en" });
     env.sources[0]!.send(boardMsg([card("<img src=x>", "pay", { last: { at: NOW, phrase: { ru: "<b>ру</b>", en: "<b>en</b>" } } })]));

@@ -99,14 +99,25 @@ describe("модель транзакций пульта (П-1.2)", () => {
     ]);
   });
 
-  it("Р-1458: операция связана с корзиной только номером заказа витрины — «связь не подтверждена», итога нет; шаг агента подтверждает связь", () => {
+  it("Р-1458, П-3.2а: операция связана с корзиной только номером заказа витрины — итога нет: до шага итога агента «ждём шаг агента», после — «связь не подтверждена»; шаг агента подтверждает связь", () => {
     const only = buildTxModel([
       step("cart.created", { mandate_id: "CU", intent_id: "IU" }),
       step("order.placed", { order_id: "OU", mandate_id: "CU" }),
       event("operation.authorized", { op_ref: "PX", order_id: "OU" }),
     ]);
     expect(only.txs[0]!.outcome).toBeUndefined();
-    expect(only.txs[0]!.unconfirmedOps).toEqual(["PX"]);
+    expect(only.txs[0]!.pendingOps).toEqual(["PX"]);
+    expect(only.txs[0]!.unconfirmedOps).toBeUndefined();
+    // Шаг итога пришёл, но операцию с корзиной не связал (без поручения корзины) — «связь не подтверждена».
+    const stepNoLink = buildTxModel([
+      step("cart.created", { mandate_id: "CU", intent_id: "IU" }),
+      step("order.placed", { order_id: "OU", mandate_id: "CU" }),
+      event("operation.authorized", { op_ref: "PX", order_id: "OU" }),
+      step("outcome", { op_ref: "PX", order_id: "OU" }),
+    ]);
+    expect(stepNoLink.txs[0]!.outcome).toBeUndefined();
+    expect(stepNoLink.txs[0]!.unconfirmedOps).toEqual(["PX"]);
+    expect(stepNoLink.txs[0]!.pendingOps).toBeUndefined();
     const linked = buildTxModel([
       step("cart.created", { mandate_id: "CU", intent_id: "IU" }),
       step("order.placed", { order_id: "OU", mandate_id: "CU" }),
@@ -144,7 +155,8 @@ describe("модель транзакций пульта (П-1.2)", () => {
       event("operation.authorized", { op_ref: "PN", order_id: "ON" }),
     ]);
     expect(m.txs[0]!.outcome).toBeUndefined();
-    expect(m.txs[0]!.unconfirmedOps).toEqual(["PN"]);
+    // Обращение «по сети» — не шаг агента: «ждём шаг агента» (П-3.2а).
+    expect(m.txs[0]!.pendingOps).toEqual(["PN"]);
   });
 
   it("повторное ревью П-1.2 № 1: чужая операция с повторённым номером заказа (шагов второй покупки в выборке нет) — итог корзине не ставится", () => {
@@ -155,7 +167,7 @@ describe("модель транзакций пульта (П-1.2)", () => {
     ]);
     expect(m.txs).toHaveLength(1);
     expect(m.txs[0]!.outcome).toBeUndefined();
-    expect(m.txs[0]!.unconfirmedOps).toEqual(["PB"]);
+    expect(m.txs[0]!.pendingOps).toEqual(["PB"]);
   });
 
   it("повторное ревью П-1.2 № 2: повтор номера до события второй покупки при отказе первой; вторая без cart.created; шаг итога без mandate_id — конфликт или нет итога", () => {
@@ -270,5 +282,202 @@ describe("модель транзакций пульта (П-1.2)", () => {
       event("operation.declined", { op_ref: "P6" }),
     ]);
     expect(settled.txs[0]!.outcome?.kind).toBe("settled");
+  });
+});
+
+// П-3.2а (Р-1444, В5, В6; оценка — PR #9 #issuecomment-6795476926): итог по каждой операции. Каждое правило — на трёх
+// порядках одних и тех же записей: результат от порядка прихода не зависит, кроме порядка, который и есть правило
+// (отзыв раньше «оплачено»).
+type F = () => Interpretation;
+const S = (ref: string, ids: TxIds, o: Parameters<typeof rec>[3] = {}): F => () => step(ref, ids, o);
+const E = (ref: string, ids: TxIds, o: Parameters<typeof rec>[3] = {}): F => () => event(ref, ids, o);
+const inOrders = (...orders: F[][]) => orders.map((fs) => buildTxModel(fs.map((f) => f())));
+
+describe("правила итога пульта (П-3.2а)", () => {
+  it("В6: отказ P1, затем повтор P2 «оплачено» — одна транзакция, итог «оплачено» по P2, обе операции в списке", () => {
+    const cart = S("cart.created", { mandate_id: "CR", intent_id: "IR" }, { stage: "cart" });
+    const order = S("order.placed", { order_id: "OR", mandate_id: "CR" });
+    const d1 = E("operation.declined", { op_ref: "P1" }, { who: who("LIMIT_EXCEEDED") });
+    const s1 = S("failed", { op_ref: "P1", order_id: "OR", mandate_id: "CR" });
+    const a2 = E("operation.authorized", { op_ref: "P2", order_id: "OR" });
+    const s2 = S("outcome", { op_ref: "P2", order_id: "OR", mandate_id: "CR" });
+    for (const m of inOrders([cart, order, d1, s1, a2, s2], [cart, order, s1, d1, s2, a2], [cart, order, d1, a2, s2, s1])) {
+      expect(m.txs).toHaveLength(1);
+      const t = m.txs[0]!;
+      expect(t.outcome?.kind).toBe("paid");
+      expect(t.ops.map((o) => [o.opRef, o.kind, o.code])).toEqual([
+        ["P1", "declined", "LIMIT_EXCEEDED"],
+        ["P2", "paid", undefined],
+      ]);
+      // Время итога — событие «оплачено» P2, а не отказ P1.
+      expect(t.outcome?.seq).toBe(t.ops[1]!.seq);
+      expect(t.doubleDebit).toBeUndefined();
+      expect(t.afterRevoke).toBeUndefined();
+    }
+  });
+
+  it("R46: два «оплачено» по одной корзине — признак «два списания»; итог — «оплачено» с первого", () => {
+    const order = S("order.placed", { order_id: "OD", mandate_id: "CD" });
+    const a1 = E("operation.authorized", { op_ref: "PD1", order_id: "OD" });
+    const s1 = S("outcome", { op_ref: "PD1", order_id: "OD", mandate_id: "CD" });
+    const a2 = E("operation.authorized", { op_ref: "PD2", order_id: "OD" });
+    const s2 = S("outcome", { op_ref: "PD2", order_id: "OD", mandate_id: "CD" });
+    for (const m of inOrders([order, a1, s1, a2, s2], [order, s1, a1, s2, a2], [order, a1, a2, s2, s1])) {
+      const t = m.txs[0]!;
+      expect(t.doubleDebit).toBe(true);
+      expect(t.outcome?.kind).toBe("paid");
+      expect(t.outcome?.seq).toBe(Math.min(...t.ops.map((o) => o.seq!)));
+      expect(t.ops.map((o) => o.kind)).toEqual(["paid", "paid"]);
+    }
+  });
+
+  it("В5: «оплачено» после события отзыва поручения корзины — итог «оплачено» с признаком «после отзыва»; отзыв после оплаты — без признака", () => {
+    const cart = S("cart.created", { mandate_id: "CV", intent_id: "IV" }, { stage: "cart" });
+    const order = S("order.placed", { order_id: "OV", mandate_id: "CV" });
+    const rv = E("mandate.revoked", { mandate_id: "CV" }, { stage: "revoke" });
+    const a = E("operation.authorized", { op_ref: "PV", order_id: "OV" });
+    const s = S("outcome", { op_ref: "PV", order_id: "OV", mandate_id: "CV" });
+    for (const m of inOrders([cart, order, rv, a, s], [cart, order, rv, s, a], [cart, order, s, rv, a])) {
+      const t = m.txs[0]!;
+      expect(t.outcome?.kind).toBe("paid");
+      expect(t.afterRevoke).toBe(true);
+    }
+    for (const m of inOrders([cart, order, a, s, rv], [cart, order, s, a, rv], [cart, order, a, rv, s])) {
+      const t = m.txs[0]!;
+      expect(t.outcome?.kind).toBe("paid");
+      expect(t.afterRevoke).toBeUndefined();
+    }
+    // Отзыв без оплаты — итог «отозвано» (как раньше); отказ и отзыв без оплаты — первый по времени итог.
+    for (const m of inOrders([cart, order, rv], [rv, cart, order], [cart, rv, order])) expect(m.txs[0]!.outcome?.kind).toBe("revoked");
+    const d = E("operation.declined", { op_ref: "PV" });
+    const f = S("failed", { op_ref: "PV", order_id: "OV", mandate_id: "CV" });
+    for (const m of inOrders([cart, order, d, f, rv], [cart, order, f, d, rv], [cart, order, d, rv, f])) expect(m.txs[0]!.outcome?.kind).toBe("declined");
+    for (const m of inOrders([cart, order, rv, d, f], [cart, order, rv, f, d], [cart, order, f, rv, d])) expect(m.txs[0]!.outcome?.kind).toBe("revoked");
+  });
+
+  it("повторное ревью П-2.1 № 1: событие операции раньше шага агента — «ждём шаг агента», не «связь не подтверждена»; транзакция без корзины — тоже", () => {
+    const cart = S("cart.created", { mandate_id: "CW", intent_id: "IW" }, { stage: "cart" });
+    const order = S("order.placed", { order_id: "OW", mandate_id: "CW" });
+    const a = E("operation.authorized", { op_ref: "PW", order_id: "OW" });
+    // Обычная оплата в живом сюжете: событие, строка журнала агента `operation.status`, затем шаг `outcome` — до шага «ждём».
+    const read = (): Interpretation => rec("console", "operation.status", { op_ref: "PW" }, { level: "detail" });
+    for (const m of inOrders([cart, order, a, read], [a, read, cart, order], [cart, read, a, order])) {
+      const t = m.txs[0]!;
+      expect(t.pendingOps).toEqual(["PW"]);
+      expect(t.unconfirmedOps).toBeUndefined();
+      expect(t.outcome).toBeUndefined();
+      expect(t.ops).toEqual([]);
+    }
+    // Корзины нет (только операция и шаг итога без поручения) — про корзину не говорим: «ждём шаг агента». Записей две —
+    // порядков два.
+    const bare = E("operation.declined", { op_ref: "PZ", order_id: "OZ" });
+    const stepBare = S("outcome", { op_ref: "PZ", order_id: "OZ" });
+    for (const m of inOrders([bare, stepBare], [stepBare, bare])) {
+      const t = m.txs[0]!;
+      expect(t.cartMandateId).toBeUndefined();
+      expect(t.pendingOps).toEqual(["PZ"]);
+      expect(t.unconfirmedOps).toBeUndefined();
+    }
+  });
+
+  it("операция, связанная шагом агента, без события Платформы — в списке без итога; итога транзакции нет", () => {
+    const order = S("order.placed", { order_id: "ON2", mandate_id: "CN2" });
+    const s = S("outcome", { op_ref: "PN2", order_id: "ON2", mandate_id: "CN2" });
+    const other = E("operation.created", { op_ref: "PN2" });
+    for (const m of inOrders([order, s], [s, order], [order, other, s])) {
+      const t = m.txs[0]!;
+      expect(t.ops).toEqual([{ opRef: "PN2" }]);
+      expect(t.outcome).toBeUndefined();
+      expect(t.pendingOps).toBeUndefined();
+    }
+  });
+
+  it("ревью П-3.2а № 1: повтор, шаг агента по P1 пришёл, событие P2 — раньше своего шага: P2 «ждём шаг агента», не «связь не подтверждена»", () => {
+    const cart = S("cart.created", { mandate_id: "CP", intent_id: "IP" }, { stage: "cart" });
+    const order = S("order.placed", { order_id: "OP", mandate_id: "CP" });
+    const d1 = E("operation.declined", { op_ref: "PP1" });
+    const s1 = S("failed", { op_ref: "PP1", order_id: "OP", mandate_id: "CP" });
+    const a2 = E("operation.authorized", { op_ref: "PP2", order_id: "OP" });
+    // Неполный набор — шага P2 ещё нет: состояние «ждём» видно только здесь.
+    for (const m of inOrders([cart, order, d1, s1, a2], [cart, order, s1, d1, a2], [cart, order, d1, a2, s1])) {
+      const t = m.txs[0]!;
+      expect(t.pendingOps).toEqual(["PP2"]);
+      expect(t.unconfirmedOps).toBeUndefined();
+      expect(t.outcome?.kind).toBe("declined");
+    }
+    // Строка журнала агента `operation.status` (чтение операции, только op_ref) — не шаг итога: P2 по-прежнему «ждём»
+    // (ревью П-3.2а № 11: в живом сюжете она приходит между событием и шагом `outcome`).
+    const read2 = (): Interpretation => rec("console", "operation.status", { op_ref: "PP2" }, { level: "detail" });
+    for (const m of inOrders([cart, order, d1, s1, a2, read2], [cart, order, read2, s1, d1, a2], [cart, order, a2, read2, d1, s1])) {
+      expect(m.txs[0]!.pendingOps).toEqual(["PP2"]);
+      expect(m.txs[0]!.unconfirmedOps).toBeUndefined();
+    }
+    // Шаг P2 пришёл без поручения корзины — шаг итога по P2 есть, связи нет: «связь не подтверждена».
+    const s2bare = S("outcome", { op_ref: "PP2", order_id: "OP" });
+    for (const m of inOrders([cart, order, d1, s1, a2, s2bare], [cart, order, s2bare, s1, d1, a2], [cart, order, a2, s2bare, d1, s1])) {
+      expect(m.txs[0]!.unconfirmedOps).toEqual(["PP2"]);
+      expect(m.txs[0]!.pendingOps).toBeUndefined();
+    }
+  });
+
+  it("ревью П-3.2а № 2: «оплачено» P1 до отзыва, «оплачено» P2 после — признак «после отзыва» и «два списания»; время итога — P1", () => {
+    const order = S("order.placed", { order_id: "OQ2", mandate_id: "CQ2" });
+    const a1 = E("operation.authorized", { op_ref: "PQ1", order_id: "OQ2" });
+    const s1 = S("outcome", { op_ref: "PQ1", order_id: "OQ2", mandate_id: "CQ2" });
+    const rv = E("mandate.revoked", { mandate_id: "CQ2" }, { stage: "revoke" });
+    const a2 = E("operation.authorized", { op_ref: "PQ2", order_id: "OQ2" });
+    const s2 = S("outcome", { op_ref: "PQ2", order_id: "OQ2", mandate_id: "CQ2" });
+    for (const m of inOrders([order, a1, s1, rv, a2, s2], [order, s1, a1, rv, s2, a2], [order, s2, a1, rv, a2, s1])) {
+      const t = m.txs[0]!;
+      expect(t.afterRevoke).toBe(true);
+      expect(t.doubleDebit).toBe(true);
+      expect(t.outcome?.seq).toBe(t.ops.find((o) => o.opRef === "PQ1")!.seq);
+    }
+  });
+
+  it("ревью П-3.2а № 4: конфликт звеньев — ни итога, ни признаков, ни операций; отзыв поручения-намерения признака не даёт; «проведено» без «оплачено» — итог «проведено»", () => {
+    const conflict = buildTxModel([
+      step("cart.created", { mandate_id: "CA", intent_id: "IA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CA" }),
+      step("order.placed", { order_id: "O1", mandate_id: "CB" }),
+      event("mandate.revoked", { mandate_id: "CA" }, { stage: "revoke" }),
+      event("operation.authorized", { op_ref: "PA", order_id: "O1" }),
+      step("outcome", { op_ref: "PA", order_id: "O1", mandate_id: "CA" }),
+      event("operation.authorized", { op_ref: "PB", order_id: "O1" }),
+      step("outcome", { op_ref: "PB", order_id: "O1", mandate_id: "CB" }),
+    ]).txs[0]!;
+    expect(conflict.linkConflict).toBeDefined();
+    expect(conflict).toMatchObject({ ops: [] });
+    for (const k of ["outcome", "pendingOps", "unconfirmedOps", "afterRevoke", "doubleDebit"] as const) expect(conflict[k], k).toBeUndefined();
+    // Отзыв поручения-намерения (не корзины) — не «после отзыва» этой корзины.
+    const intentRevoked = buildTxModel([
+      step("cart.created", { mandate_id: "CI", intent_id: "II" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OI", mandate_id: "CI" }),
+      event("mandate.revoked", { mandate_id: "II" }, { stage: "revoke" }),
+      event("operation.authorized", { op_ref: "PI", order_id: "OI" }),
+      step("outcome", { op_ref: "PI", order_id: "OI", mandate_id: "CI" }),
+    ]).txs[0]!;
+    expect(intentRevoked.outcome?.kind).toBe("paid");
+    expect(intentRevoked.afterRevoke).toBeUndefined();
+    // «Проведено» без «оплачено» — итог «проведено», время — события «проведено».
+    const settledOnly = buildTxModel([
+      step("order.placed", { order_id: "OS", mandate_id: "CS" }),
+      step("outcome", { op_ref: "PS", order_id: "OS", mandate_id: "CS" }),
+      event("operation.settled", { op_ref: "PS" }),
+    ]).txs[0]!;
+    expect(settledOnly.outcome?.kind).toBe("settled");
+    expect(settledOnly.outcome?.seq).toBe(settledOnly.ops[0]!.seq);
+  });
+
+  it("П-2.1 № 12 (часть движка): confirmation.expired без поручения корзины — «связь не подтверждена», итога нет (итог «истёк» — П-8.1)", () => {
+    const cart = S("cart.created", { mandate_id: "CX", intent_id: "IX" }, { stage: "cart" });
+    const order = S("order.placed", { order_id: "OX", mandate_id: "CX" });
+    const req = E("confirmation.required", { confirmation_id: "QX", order_id: "OX" }, { stage: "confirmation" });
+    const exp = E("confirmation.expired", { confirmation_id: "QX", order_id: "OX" }, { stage: "confirmation" });
+    for (const m of inOrders([cart, order, req, exp], [req, exp, cart, order], [cart, req, order, exp])) {
+      const t = m.txs[0]!;
+      expect(t.unconfirmedConfirmations).toEqual(["QX"]);
+      expect(t.outcome).toBeUndefined();
+    }
   });
 });

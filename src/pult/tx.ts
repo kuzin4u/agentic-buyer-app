@@ -23,6 +23,19 @@ export interface TxOutcome {
   readonly at: string;
 }
 
+/** Итог одной операции по событию Платформы (П-3.2а, Р-1444). */
+export type TxOpKind = "paid" | "settled" | "declined";
+
+/** Операция транзакции, связанная с корзиной шагом агента (Р-1458): итог — по её событиям Платформы; нет события — `kind` нет. */
+export interface TxOperation {
+  readonly opRef: string;
+  readonly kind?: TxOpKind;
+  readonly code?: string;
+  /** seq и время события, давшего итог операции («проведено» уточняет «оплачено», время — «оплачено»). */
+  readonly seq?: number;
+  readonly at?: string;
+}
+
 export interface PultTx {
   /** Номер транзакции на пульте: поручение корзины, если оно известно, иначе первое звено с типом (`order:…`, `op:…`,
    *  `confirmation:…`) — не совпадёт с номером корзины (ревью П-1.2 № 8). */
@@ -32,12 +45,21 @@ export interface PultTx {
   /** Конфликт звеньев: в транзакцию попали две корзины или два поручения-намерения — например, витрина повторила номер
    *  заказа другой покупки. Звенья не сливаются молча: итог не присваивается, решает человек (ревью П-1.2 № 1, Р-1444). */
   readonly linkConflict?: { readonly carts: readonly string[]; readonly intents: readonly string[] };
-  /** Операции с событием Платформы, связанные с корзиной только через номер заказа витрины (нет записи агента с op_ref и
-   *  поручением корзины): «связь не подтверждена», итога по ним нет (Р-1458). */
+  /** Операции с событием Платформы, не связанные с корзиной: корзина есть, запись агента по этой операции пришла, но с
+   *  корзиной её не связала — «связь не подтверждена», итога по ним нет (Р-1458; П-3.2а — только при корзине и после шага). */
   readonly unconfirmedOps?: readonly string[];
-  /** Запросы подтверждения с итоговым событием (`confirmation.rejected`), где нет поручения корзины: «связь не
-   *  подтверждена», итога нет (Р-1460; поручение к событию через шину — П-8.1). */
+  /** То же, но записи агента по операции ещё нет (или корзины нет): «ждём шаг агента» — событие Платформы обычно приходит
+   *  раньше шага (повторное ревью П-2.1 № 1). Паузы нет — модель без часов; «шаг не пришёл за N с» — П-4.1. */
+  readonly pendingOps?: readonly string[];
+  /** Запросы подтверждения с итоговым событием (`confirmation.rejected`, `confirmation.expired`), где нет поручения
+   *  корзины: «связь не подтверждена», итога нет (Р-1460; поручение к событию и итог «истёк» — П-8.1). */
   readonly unconfirmedConfirmations?: readonly string[];
+  /** Операции, связанные с корзиной шагом агента, — по порядку первой записи; итог каждой — по её событиям (В6). */
+  readonly ops: readonly TxOperation[];
+  /** «Оплачено» пришло после события отзыва поручения корзины: итог — «оплачено», деньги ушли (В5; R09, R37 — П-3.2б). */
+  readonly afterRevoke?: true;
+  /** Две и больше операций с «оплачено» по одной корзине — два списания (для R46, П-3.2б). */
+  readonly doubleDebit?: true;
   readonly orderIds: readonly string[];
   readonly opRefs: readonly string[];
   readonly confirmationIds: readonly string[];
@@ -78,13 +100,20 @@ export interface TxModel {
 const KIND_RANK: Readonly<Record<Kind, number>> = { norm: 0, conflict: 1, error: 2, fraud: 3 };
 const worse = (a: Kind, b: Kind): Kind => (KIND_RANK[b] > KIND_RANK[a] ? b : a);
 
-/** Событие Платформы → итог транзакции. Только `pao_event`: шаг сюжета `outcome` и ответ витрины итогом не являются. */
-const OUTCOME_EVENT: Readonly<Record<string, TxOutcomeKind>> = {
+/** Событие Платформы об операции → итог операции. Только `pao_event`: шаг сюжета `outcome` и ответ витрины итогом не
+ *  являются (инвариант 6). */
+const OP_EVENT: Readonly<Record<string, TxOpKind>> = {
   "operation.authorized": "paid",
   "operation.settled": "settled",
   "operation.declined": "declined",
-  "confirmation.rejected": "rejected",
 };
+
+/** Итоговые события запроса подтверждения: итог транзакции — только с поручением корзины в событии (П-8.1). */
+const CONFIRMATION_FINAL = new Set(["confirmation.rejected", "confirmation.expired"]);
+
+/** Шаги сюжета, которыми агент сообщает итог покупки по операции (`op_ref`): после них операция без связи с корзиной —
+ *  «связь не подтверждена», до них — «ждём шаг агента» (П-3.2а). */
+const OUTCOME_STEPS = new Set(["outcome", "limit.declined", "failed"]);
 
 /** Объединение множеств со сжатием пути. */
 class Links {
@@ -196,15 +225,27 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
     // Источник связки — шаг сюжета, журнал агента или событие Платформы; обращение «по сети» (чужое) связку не
     // подтверждает (ревью П-2.1 № 5).
     const confirmedOps = new Set<string>();
-    if (cart !== undefined)
-      for (const r of acc.items) {
-        if (r.stream === "monitor" && r.source !== "pao_event") continue;
-        const p = id(r.ids?.op_ref);
-        if (p !== undefined && id(r.ids?.mandate_id) === cart) confirmedOps.add(p);
-      }
-    const unconfirmed = new Set<string>();
+    // Операции, по которым пришёл шаг итога агента — шаг сюжета `outcome`, `limit.declined`, `failed` с этим op_ref, — по
+    // каждой операции отдельно. Нет шага по операции — «ждём шаг агента»; шаг есть, но с корзиной не связал — «связь не
+    // подтверждена» (П-3.2а; ревью П-3.2а № 1: при повторе шаг P1 не делает событие P2 «не подтверждённым» до шага P2).
+    // Строка журнала агента `operation.status` (чтение операции, только op_ref) шагом итога не считается (ревью № 11).
+    const agentOps = new Set<string>();
+    for (const r of acc.items) {
+      const p = id(r.ids?.op_ref);
+      if (p !== undefined && r.stream === "scenario" && OUTCOME_STEPS.has(r.ref)) agentOps.add(p);
+      if (cart === undefined || (r.stream === "monitor" && r.source !== "pao_event")) continue;
+      if (p !== undefined && id(r.ids?.mandate_id) === cart) confirmedOps.add(p);
+    }
+    const unlinked = new Set<string>();
     const unconfirmedConf = new Set<string>();
-    let outcome: TxOutcome | undefined;
+    // Итог каждой операции — по её событиям (Р-1444): первый итог операции остаётся, «проведено» уточняет «оплачено».
+    const ops = new Map<string, { opRef: string; kind?: TxOpKind; code?: string; seq?: number; at?: string }>();
+    for (const r of acc.items) {
+      const p = id(r.ids?.op_ref);
+      if (p !== undefined && confirmedOps.has(p) && !ops.has(p)) ops.set(p, { opRef: p });
+    }
+    let revokedAt: { seq: number; at: string; code?: string } | undefined;
+    let rejected: TxOutcome | undefined;
     let worst: Kind = conflict ? "conflict" : "norm";
     for (const r of acc.items) {
       worst = worse(worst, r.kind);
@@ -212,30 +253,61 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
       if (r.ref.startsWith("operation.")) {
         const p = id(r.ids?.op_ref);
         if (p === undefined || !confirmedOps.has(p)) {
-          if (p !== undefined) unconfirmed.add(p);
+          if (p !== undefined && OP_EVENT[r.ref] !== undefined) unlinked.add(p);
           continue;
         }
+        const k = OP_EVENT[r.ref];
+        const op = ops.get(p)!;
+        if (k === undefined) continue;
+        if (op.kind === undefined) {
+          op.kind = k;
+          op.seq = r.seq;
+          op.at = r.at;
+          if (k === "declined" && r.who?.code !== undefined) op.code = r.who.code;
+        } else if (op.kind === "paid" && k === "settled") op.kind = "settled";
+        continue;
       }
       // Подтверждение — итог только с поручением этой корзины в самом событии. По ПАО 1.4.0 событие несёт только
       // `confirmation_id`, шина добавляет номер заказа из записи подтверждения — связь только номером заказа: «связь не
-      // подтверждена», итога нет (ревью П-2.1 № 1, Р-1460). Поручение корзины к событию через шину — П-8.1.
-      if (r.ref.startsWith("confirmation.") && OUTCOME_EVENT[r.ref] !== undefined && (cart === undefined || id(r.ids?.mandate_id) !== cart)) {
-        const c = id(r.ids?.confirmation_id);
-        if (c !== undefined) unconfirmedConf.add(c);
+      // подтверждена», итога нет (ревью П-2.1 № 1, Р-1460). Поручение корзины к событию и итог «истёк» — П-8.1.
+      if (CONFIRMATION_FINAL.has(r.ref)) {
+        if (cart === undefined || id(r.ids?.mandate_id) !== cart) {
+          const c = id(r.ids?.confirmation_id);
+          if (c !== undefined) unconfirmedConf.add(c);
+        } else if (r.ref === "confirmation.rejected" && rejected === undefined)
+          rejected = { kind: "rejected", ...(r.who?.code !== undefined && { code: r.who.code }), seq: r.seq, at: r.at };
+        // `confirmation.expired` с поручением корзины в событии — до П-8.1 не итог (по ПАО 1.4.0 недостижимо: поручения в
+        // событии подтверждения нет); итог «истёк» — П-8.1 (ревью П-3.2а № 7).
         continue;
       }
-      const k = OUTCOME_EVENT[r.ref] ?? (r.ref === "mandate.revoked" && cart !== undefined && r.ids?.mandate_id === cart ? "revoked" : undefined);
-      // Первый итог остаётся итогом; «проведено» (settled) — уточнение «оплачено», а не новый исход. Итог после отзыва и
-      // повтор операции — правила движка условий (STATUS «Открыто», П-3.2).
-      // Время итога — первого итогового события: «проведено» уточняет вид, но «Завершены» — с «оплачено» (ревью П-2.2 № 1).
-      if (k !== undefined && (outcome === undefined || (outcome.kind === "paid" && k === "settled")))
-        outcome = {
-          kind: k,
-          ...(r.who?.code !== undefined && k !== "paid" && k !== "settled" && { code: r.who.code }),
-          seq: outcome?.seq ?? r.seq,
-          at: outcome?.at ?? r.at,
-        };
+      if (r.ref === "mandate.revoked" && cart !== undefined && id(r.ids?.mandate_id) === cart && revokedAt === undefined)
+        revokedAt = { seq: r.seq, at: r.at, ...(r.who?.code !== undefined && { code: r.who.code }) };
     }
+    // Итог транзакции из итогов операций (П-3.2а): «оплачено» по любой операции — итог «оплачено», даже после отказа
+    // другой (повтор, В6) и после отзыва поручения (деньги ушли — признак «после отзыва», В5); время — первого «оплачено».
+    // Иначе — первый по времени итог: отказ операции, отклонённое подтверждение, отзыв поручения.
+    const opList = [...ops.values()];
+    const paidOps = opList.filter((o) => o.kind === "paid" || o.kind === "settled").sort((a, b) => a.seq! - b.seq!);
+    let outcome: TxOutcome | undefined;
+    let afterRevoke = false;
+    if (paidOps.length > 0) {
+      const first = paidOps[0]!;
+      outcome = { kind: paidOps.some((o) => o.kind === "settled") ? "settled" : "paid", seq: first.seq!, at: first.at! };
+      // Любое «оплачено» после события отзыва: P1 до отзыва, P2 после — деньги P2 ушли после отзыва (ревью П-3.2а № 2).
+      afterRevoke = revokedAt !== undefined && paidOps.some((o) => o.seq! > revokedAt!.seq);
+    } else {
+      const finals: TxOutcome[] = [];
+      for (const o of opList)
+        if (o.kind === "declined") finals.push({ kind: "declined", ...(o.code !== undefined && { code: o.code }), seq: o.seq!, at: o.at! });
+      if (rejected) finals.push(rejected);
+      if (revokedAt) finals.push({ kind: "revoked", ...(revokedAt.code !== undefined && { code: revokedAt.code }), seq: revokedAt.seq, at: revokedAt.at });
+      finals.sort((a, b) => a.seq - b.seq);
+      outcome = finals[0];
+    }
+    // Без связи с корзиной: корзина есть и запись агента по этой операции пришла — «связь не подтверждена»; иначе — «ждём
+    // шаг агента» (без корзины про корзину не говорим). Срок ожидания шага — «Идёт к нарушению», П-4.1.
+    const unconfirmed = new Set([...unlinked].filter((p) => cart !== undefined && agentOps.has(p)));
+    const pending = new Set([...unlinked].filter((p) => !unconfirmed.has(p)));
     const NODE_TYPE: Readonly<Record<string, string>> = { m: "cart", o: "order", p: "op", c: "confirmation" };
     const firstNode = [...acc.nodes].sort()[0]!;
     const txId = cartList.length === 1 ? cartList[0]! : `${NODE_TYPE[firstNode[0]!]}:${firstNode.slice(2)}`;
@@ -246,7 +318,11 @@ export function buildTxModel(items: readonly Interpretation[]): TxModel {
       ...(cart !== undefined && { cartMandateId: cart }),
       ...(conflict && { linkConflict: { carts: cartList, intents: intentList } }),
       ...(unconfirmed.size > 0 && { unconfirmedOps: [...unconfirmed].sort() }),
+      ...(pending.size > 0 && { pendingOps: [...pending].sort() }),
       ...(unconfirmedConf.size > 0 && { unconfirmedConfirmations: [...unconfirmedConf].sort() }),
+      ops: opList.map((o) => ({ ...o })),
+      ...(afterRevoke && { afterRevoke: true as const }),
+      ...(paidOps.length > 1 && { doubleDebit: true as const }),
       orderIds: pick("o:"),
       opRefs: pick("p:"),
       confirmationIds: pick("c:"),

@@ -5,6 +5,7 @@ import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
 import { createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
+import { graphView } from "../../src/pult/graph.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 
 let seq = 0;
@@ -71,9 +72,46 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
     ]);
     expect(conflict.cards[0]).toMatchObject({ linkConflict: true, worst: "conflict" });
     expect(conflict.cards[0]!.outcome).toBeUndefined();
-    const unconfirmed = view([step("order.placed", { order_id: "OU", mandate_id: "CU" }), event("operation.authorized", { op_ref: "PX", order_id: "OU" })]);
+    // До шага итога агента — «ждём шаг агента»; после шага без связи — «связь не подтверждена» (П-3.2а).
+    const pending = view([step("order.placed", { order_id: "OU", mandate_id: "CU" }), event("operation.authorized", { op_ref: "PX", order_id: "OU" })]);
+    expect(pending.cards[0]).toMatchObject({ pending: true });
+    expect(pending.cards[0]!.unconfirmed).toBeUndefined();
+    expect(pending.cards[0]!.column).not.toBe("done");
+    const unconfirmed = view([
+      step("order.placed", { order_id: "OU", mandate_id: "CU" }),
+      event("operation.authorized", { op_ref: "PX", order_id: "OU" }),
+      step("outcome", { op_ref: "PX", order_id: "OU" }),
+    ]);
     expect(unconfirmed.cards[0]).toMatchObject({ unconfirmed: true });
+    expect(unconfirmed.cards[0]!.pending).toBeUndefined();
     expect(unconfirmed.cards[0]!.column).not.toBe("done");
+  });
+
+  it("П-3.2а: «оплачено» после отзыва и два списания — на карточке и строке «Графика»; операции — на карточке при повторе", () => {
+    const items = [
+      step("order.placed", { order_id: "OF", mandate_id: "CF" }),
+      event("mandate.revoked", { mandate_id: "CF" }, { stage: "revoke" }),
+      event("operation.authorized", { op_ref: "PF1", order_id: "OF" }),
+      step("outcome", { op_ref: "PF1", order_id: "OF", mandate_id: "CF" }),
+      event("operation.authorized", { op_ref: "PF2", order_id: "OF" }),
+      step("outcome", { op_ref: "PF2", order_id: "OF", mandate_id: "CF" }),
+    ];
+    const c = view(items).cards[0]!;
+    expect(c).toMatchObject({ outcome: "paid", column: "done", afterRevoke: true, doubleDebit: true });
+    expect(c.ops).toEqual([
+      { opRef: "PF1", kind: "paid" },
+      { opRef: "PF2", kind: "paid" },
+    ]);
+    expect(graphView(buildTxModel(items), items).rows[0]).toMatchObject({ afterRevoke: true, doubleDebit: true });
+    // Одна операция — списка нет; признаков нет.
+    const one = view([
+      step("order.placed", { order_id: "OG", mandate_id: "CG" }),
+      event("operation.authorized", { op_ref: "PG", order_id: "OG" }),
+      step("outcome", { op_ref: "PG", order_id: "OG", mandate_id: "CG" }),
+    ]).cards[0]!;
+    expect(one.ops).toBeUndefined();
+    expect(one.afterRevoke).toBeUndefined();
+    expect(one.doubleDebit).toBeUndefined();
   });
 });
 

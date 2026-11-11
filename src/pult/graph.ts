@@ -23,6 +23,9 @@ export interface GraphRow {
   readonly kind: "tx" | "mandate";
   readonly segs: readonly GraphSeg[];
   readonly marks: readonly GraphMark[];
+  /** «Оплачено» после отзыва поручения (В5) и два списания по корзине (R46) — пометки строки (П-3.2а). */
+  readonly afterRevoke?: true;
+  readonly doubleDebit?: true;
   /** seq первой записи — порядок строк. */
   readonly order: number;
 }
@@ -73,6 +76,8 @@ export function graphView(model: TxModel, items: readonly Interpretation[], limi
       kind: "tx",
       segs: segments(t.seqs, bySeq, t.outcome ? { at: t.outcome.at, seq: t.outcome.seq } : undefined),
       marks: marks(t.seqs, bySeq),
+      ...(t.afterRevoke && { afterRevoke: true as const }),
+      ...(t.doubleDebit && { doubleDebit: true as const }),
       order: t.seqs[0]!,
     });
   }
