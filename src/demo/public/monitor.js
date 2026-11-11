@@ -69,8 +69,17 @@
     const text = fill(m["step." + l.step] || l.step, l.params);
     const li = document.createElement("li");
     // Остановка покупки — с пометкой: сбой сюжета, отказ корзины в банке (сюжет 6 и сюжеты 2–4; ревью П-11.1а № 4) и
-    // покупка не подтверждена (сюжет 7 и сюжет 4), продавец вне поручения (сюжет 8).
-    const stop = l.step === "failed" || l.step === "cart.rejected" || l.step === "upk.declined" || l.step === "scope.refused" || l.step === "scope.not_refused";
+    // покупка не подтверждена (сюжет 7 и сюжет 4), продавец вне поручения (сюжет 8), агент приостановлен и сбой снятия
+    // приостановления (сюжет 9).
+    const stop =
+      l.step === "failed" ||
+      l.step === "cart.rejected" ||
+      l.step === "upk.declined" ||
+      l.step === "scope.refused" ||
+      l.step === "scope.not_refused" ||
+      l.step === "suspend.stopped" ||
+      l.step === "operator.reinstate_failed" ||
+      l.step === "suspend.resume_failed";
     li.className = stop ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
     li.textContent = time(l.at) + "  " + text;
     consoleList.insertBefore(li, consoleList.firstChild);

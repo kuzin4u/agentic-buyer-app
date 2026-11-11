@@ -39,6 +39,9 @@ const monitor: Readonly<Record<string, Phrase>> = {
   "operation.declined": p("Платформа: оплата отклонена[ ({code})]", "Platform: payment declined[ ({code})]"),
   "operation.settled": p("Платформа: списание подтверждено[ — {amount}]", "Platform: settlement confirmed[ — {amount}]"),
   "operation.refunded": p("Платформа: оформлен возврат[ — {amount}]", "Platform: refund issued[ — {amount}]"),
+  // Статус допуска агента (РП54): событие несёт только agent_code, основания нет (сюжет 9, П-07).
+  "agent.suspended": p("Платформа: агент приостановлен оператором Системы", "Platform: the agent was suspended by the System operator"),
+  "agent.reinstated": p("Платформа: приостановление агента снято", "Platform: the agent's suspension was lifted"),
 };
 
 const scenario: Readonly<Record<string, Phrase>> = {
@@ -51,6 +54,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.reject": p("Начат сюжет 6 «Клиент отказался от корзины»", "Scenario 6 “The client refused the cart” started"),
   "run.unconfirmed": p("Начат сюжет 7 «Клиент не подтвердил покупку»", "Scenario 7 “The client did not confirm the purchase” started"),
   "run.scope": p("Начат сюжет 8 «Продавец вне поручения»", "Scenario 8 “Merchant outside the mandate” started"),
+  "run.suspended": p("Начат сюжет 9 «Агент приостановлен»", "Scenario 9 “The agent is suspended” started"),
   "intent.created": p("Агент просит поручение: «{subject}», до {limit}", "The agent asks for a mandate: “{subject}”, up to {limit}"),
   "intent.awaiting_signature": p("Поручение[ {mandate_id}] ждёт подписи клиента в банке", "Mandate[ {mandate_id}] awaits the client's signature in the bank"),
   "intent.signed": p("Поручение[ {mandate_id}] действует", "Mandate[ {mandate_id}] is active"),
@@ -87,6 +91,14 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "unconfirmed.ask": p("Сюжет просит клиента не подтверждать покупку на странице УПК", "The scenario asks the client not to confirm the purchase on the confirmation page"),
   "upk.declined": p("Покупка не подтверждена в банке — агент остановился: {code}", "The purchase was not confirmed in the bank — the agent stopped: {code}"),
   "scope.refused": p("Агент сам отказался от корзины у продавца[ {merchant_id}]: {code}", "The agent refused a cart from merchant[ {merchant_id}] on its own: {code}"),
+  "operator.suspended": p("Оператор Системы приостановил агента", "The System operator suspended the agent"),
+  "suspend.stopped": p("Покупка остановлена до корзины: {code}", "The purchase stopped before the cart: {code}"),
+  "suspend.by_platform": p("Остановила Платформа: запрос агента отклонён", "Stopped by the Platform: the agent's request was refused"),
+  "suspend.by_agent": p("Остановил агент сам, запрос не отправлен", "Stopped by the agent itself, the request was not sent"),
+  "operator.reinstated": p("Оператор Системы снял приостановление агента", "The System operator lifted the agent's suspension"),
+  "operator.reinstate_failed": p("Снять приостановление агента не удалось: {code}", "Could not lift the agent's suspension: {code}"),
+  "suspend.resumed": p("Агент сверился с реестром и снова допущен", "The agent checked the registry and is admitted again"),
+  "suspend.resume_failed": p("Агент не возобновил работу после снятия: {code}", "The agent did not resume after reinstatement: {code}"),
   "scope.not_refused": p("Выбор оказался у продавца поручения[ {merchant_id}] — сюжет 8 остановлен до подписи корзины", "The choice fell at a mandate merchant[ {merchant_id}] — scenario 8 stopped before the cart signature"),
   "reject.signed": p("Корзина[ {mandate_id}] подписана, а сюжет ждал отказа — покупка дальше не идёт", "Cart[ {mandate_id}] was signed, but the scenario expected a refusal — the purchase does not continue"),
   aborted: p("Сюжет прерван", "Scenario aborted"),
@@ -130,6 +142,15 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   CONFIRMATION_EXPIRED: p("срок подтверждения истёк", "the confirmation period expired"),
   // Сюжет 8 (П-06): продавец вне области поручения — политика ядра.
   MANDATE_OUT_OF_SCOPE: p("вне пределов поручения", "outside the mandate"),
+  // Сюжет 9 (П-07): приостановление агента оператором Системы.
+  AGENT_SUSPENDED: p("агент приостановлен", "the agent is suspended"),
+  // Сбои реестра стенда при снятии приостановления (сюжет 9; ревью П-11.1г № 7) и сбои шага сюжета.
+  AGENT_STATUS_TRANSITION: p("реестр не принял смену статуса агента", "the registry refused the agent status change"),
+  AGENT_STATUS_EVENT_MISSING: p("статус агента сменён, событие Платформы не записано", "the agent status changed, the Platform event was not recorded"),
+  AGENT_STATUS_EVENT_CONFLICT: p("событие смены статуса агента уже записано", "the agent status change event already exists"),
+  AGENT_NOT_FOUND: p("агента нет в реестре", "the agent is not in the registry"),
+  PRICE_INVALID: p("цена товара не по форме", "the item price is malformed"),
+  UNKNOWN: p("причина не определена", "cause not determined"),
   // сигналы A5 и карточка продавца
   A5_PRICE_MISMATCH: p("цена в описании не совпадает с ценой витрины", "the price in the description differs from the shop price"),
   A5_DECISION_FORGED: p("в описании товара — подложенное «решение» для агента", "the item description contains a forged “decision” for the agent"),

@@ -273,6 +273,9 @@ const EVENTS: Readonly<Record<string, MonitorRule>> = {
   "operation.declined": { stage: "outcome", actor: "platform", level: "key" },
   "operation.settled": { stage: "outcome", actor: "platform", level: "key" },
   "operation.refunded": { stage: "outcome", actor: "platform", level: "key" },
+  // Статус допуска агента (РП54, сюжет 9): служебная стадия — не стадия покупки.
+  "agent.suspended": { stage: "service", actor: "platform", level: "key" },
+  "agent.reinstated": { stage: "service", actor: "platform", level: "key" },
 };
 
 /** Событие ленты ПАО — отказ (норма у остальных); код — если пришёл. */
@@ -350,6 +353,9 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   reject: "cart",
   unconfirmed: "confirmation",
   scope: "cart",
+  // Сюжет 9: действия оператора Системы и возобновление агента — служебная стадия; остановка покупки — по state ядра.
+  operator: "service",
+  suspend: "service",
   failed: "outcome",
   aborted: "service",
 };
@@ -369,6 +375,11 @@ const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "reject.ask": "client",
   "reject.signed": "client",
   "unconfirmed.ask": "client",
+  // Оператор Системы — сторона Платформы (эмулятор стенда).
+  "operator.suspended": "platform",
+  "operator.reinstated": "platform",
+  "operator.reinstate_failed": "platform",
+  "suspend.by_platform": "platform",
 };
 const STEP_SITUATION: Readonly<Record<string, string>> = {
   "intent.created": "С-01",
@@ -390,7 +401,7 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
 
 /** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
  *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
-const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused"]);
+const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped"]);
 
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
@@ -405,7 +416,9 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   const codes = [l.params.code, l.params.codes].filter((c): c is string => typeof c === "string").flatMap((c) => c.split(","));
   const code = codes.find((c) => CODE_RE.test(c) && !TO_HUMAN_CODES.has(c));
   if (code !== undefined) {
-    const q = qualifyCode(env, code, { origin: l.step === "limit.declined" ? "platform" : "agent", sender: "agent" });
+    // Отказ Платформы (лимит) и сбой эмулятора оператора Системы (сюжет 9) — не агента (ревью П-11.1г № 8).
+    const platform = l.step === "limit.declined" || head === "operator";
+    const q = qualifyCode(env, code, { origin: platform ? "platform" : "agent", sender: platform ? "platform" : "agent" });
     kind = q.kind;
     who = q.who;
     situation = q.situation ?? situation;
