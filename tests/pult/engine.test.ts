@@ -42,8 +42,8 @@ type Phase = "cart" | "signed" | "order" | "start" | "pay" | "done" | "end";
 /** Покупка в форме настоящей шины (сюжет 2): поручение подписано клиентом (обращение эмулятора банка `stand` и событие)
  *  → корзина → подпись корзины → заказ → шаг `payment.started` (до вызова) → обращение агента к витрине `agent_merchant`
  *  (пишется после ответа) → «оплачено» и шаг итога. `at` — записи перед фазой; `skip` — фазы, которых нет. */
-function purchase(n: string, o: { at?: Partial<Record<Phase, () => Interpretation[]>>; skip?: Phase[]; intent?: () => Interpretation[] } = {}) {
-  const [c, i, ord, op] = [`C${n}`, `I${n}`, `O${n}`, `P${n}`];
+function purchase(n: string, o: { at?: Partial<Record<Phase, () => Interpretation[]>>; skip?: Phase[]; intent?: () => Interpretation[]; intentId?: string } = {}) {
+  const [c, i, ord, op] = [`C${n}`, o.intentId ?? `I${n}`, `O${n}`, `P${n}`];
   const out: Interpretation[] = [];
   const phase = (p: Phase, make: () => Interpretation[]) => {
     out.push(...(o.at?.[p]?.() ?? []));
@@ -440,5 +440,62 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const v = withLog(intentOnly, [entry("MARKED", { mandate_id: "IMX" }, { test: "Н-06" }), entry("UPK_CODE_LEAKED", { confirmation_id: "Q-нет" })]);
     expect(v.objs[0]!.conds.R37.status).toBe("bad");
     expect(v.system.R20.status).toBe("bad");
+  });
+});
+
+// П-3.2г (ревью П-3.2в № 3, 4; решение владельца — отзыв PR #9 «(чат, 11.11) — ответ на план П-3.2г»): привязка записи
+// журнала стенда по старшинству полей; неточная привязка — не выше «ждёт».
+describe("привязка записей журнала стенда (П-3.2г)", () => {
+  const statusOf = (v: ReturnType<typeof withLog>, id: string, c: keyof CondResults) => v.objs.find((x) => x.id === id)!.conds[c];
+
+  it("две покупки — запись одной не трогает другую", () => {
+    const items = [...purchase("G1"), ...purchase("G2")];
+    const v = withLog(items, [fault("FULFILLED_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OG1" }, "Н-04")]);
+    expect([statusOf(v, "CG1", "R32").status, statusOf(v, "CG2", "R32").status]).toEqual(["bad", "ok"]);
+  });
+
+  it("смешанные идентификаторы: операция одной покупки и заказ другой — решает старший уровень (операция)", () => {
+    const items = [...purchase("G3"), ...purchase("G4")];
+    const v = withLog(items, [entry("MARKED", { op_ref: "PG4", order_id: "OG3" }, { test: "Н-01" })]);
+    expect([statusOf(v, "CG3", "R46").status, statusOf(v, "CG4", "R46").status]).toEqual(["ok", "bad"]);
+    // Запрос подтверждения старше заказа.
+    const q = [event("confirmation.required", { confirmation_id: "QG6", order_id: "OG6" }, { stage: "confirmation" })];
+    const items2 = [...purchase("G5"), ...purchase("G6", { at: { start: () => q } })];
+    const v2 = withLog(items2, [entry("MARKED", { confirmation_id: "QG6", order_id: "OG5" }, { test: "Н-07" })]);
+    expect([statusOf(v2, "CG5", "R18").status, statusOf(v2, "CG6", "R18").status]).toEqual(["ok", "bad"]);
+  });
+
+  it("номер заказа с витриной: заказ этого номера был у другой витрины — запись к покупке не привязывается", () => {
+    const v = withLog(purchase("G7"), [fault("FULFILLED_BEFORE_OUTCOME", { shop_id: "SHOP-9", merchant_id: "MER-9", order_id: "OG7" }, "Н-04")]);
+    expect(statusOf(v, "CG7", "R32").status).toBe("ok");
+  });
+
+  it("несколько кандидатов (намерение с двумя корзинами) — запись ко всем, статус не выше «ждёт» с пометкой", () => {
+    // Две корзины одного намерения IGX (вторая — без своих записей намерения).
+    const items = [...purchase("G8", { intentId: "IGX" }), ...purchase("G9", { intentId: "IGX", intent: () => [] })];
+    const mark = entry("MARKED", { mandate_id: "IGX" }, { test: "Н-07" });
+    const v = withLog(items, [mark]);
+    for (const id of ["CG8", "CG9"]) expect(statusOf(v, id, "R18"), id).toMatchObject({ status: "wait", note: "link_conflict", log: [mark.seq] });
+  });
+
+  it("ревью П-3.2в № 4, Н-04: конфликт звеньев (две покупки с одним номером заказа) — сбой по номеру заказа поднимает R32 не выше «ждёт», пометка сохраняется", () => {
+    const one = purchase("K1", { skip: ["order", "start", "pay", "done"] });
+    const two = purchase("K2", { skip: ["order", "start", "pay", "done"] });
+    const tail = [
+      step("order.placed", { order_id: "OKX", mandate_id: "CK1", merchant_id: "MER-1" }),
+      step("payment.started", { order_id: "OKX" }),
+      call(PAY, { shop_id: "SHOP-1", order_id: "OKX" }, "agent_merchant"),
+      step("order.placed", { order_id: "OKX", mandate_id: "CK2", merchant_id: "MER-2" }),
+    ];
+    const items = [...one, ...two, ...tail];
+    const t = buildTxModel(items).txs.find((x) => x.linkConflict)!;
+    const n04 = fault("FULFILLED_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OKX" }, "Н-04");
+    expect(statusOf(withLog(items, [n04]), t.id, "R32")).toMatchObject({ status: "wait", note: "link_conflict", log: [n04.seq] });
+    // Повторное ревью № 1: пометка только с поручением одной из конфликтующих корзин — к той же транзакции, не выше «ждёт»;
+    // в систему без ограничения не уходит.
+    const mark = entry("MARKED", { mandate_id: "CK1" }, { test: "Н-07" });
+    const v = withLog(items, [mark]);
+    expect(statusOf(v, t.id, "R18")).toMatchObject({ status: "wait", note: "link_conflict", log: [mark.seq] });
+    expect(v.system.R18.status).not.toBe("bad");
   });
 });

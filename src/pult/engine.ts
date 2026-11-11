@@ -139,11 +139,13 @@ const LATE = new Set<StandLogWhat>(["OUTCOME_EVENT_DELAYED", "OUTCOME_EVENTS_REO
 const effectsOf = (e: StandLogEntry): readonly (readonly [CheckableCondition, CondStatus])[] =>
   e.what === "MARKED" ? (e.test !== undefined && MARK_EFFECT[e.test] ? [MARK_EFFECT[e.test]!] : []) : (FAULT_EFFECT[e.what] ?? []);
 
-/** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. */
-function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, logSeq: number): void {
+/** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. Неточная привязка записи
+ *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4). */
+function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, logSeq: number, weak = false): void {
+  const st: CondStatus = weak && RANK[status] < RANK.wait ? "wait" : status;
   const cur = out[c] ?? r("na");
-  if (RANK[status] < RANK[cur.status]) out[c] = r(status, cur.seqs, undefined, [logSeq]);
-  else if (status === cur.status) out[c] = r(cur.status, cur.seqs, cur.note, [...(cur.log ?? []), logSeq]);
+  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak ? "link_conflict" : undefined, [logSeq]);
+  else if (st === cur.status) out[c] = r(cur.status, cur.seqs, cur.note ?? (weak ? "link_conflict" : undefined), [...(cur.log ?? []), logSeq]);
 }
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
@@ -246,7 +248,14 @@ function standConds(
   return out;
 }
 
-function txConds(t: PultTx, recs: readonly Interpretation[], intentRecs: readonly Interpretation[], log: readonly StandLogEntry[] | undefined, o: EngineOptions): CondResults {
+function txConds(
+  t: PultTx,
+  recs: readonly Interpretation[],
+  intentRecs: readonly Interpretation[],
+  log: readonly StandLogEntry[] | undefined,
+  o: EngineOptions,
+  weak?: ReadonlySet<number>,
+): CondResults {
   const all = [...recs, ...intentRecs].sort((a, b) => a.seq - b.seq);
   const pays = recs.filter(isAgentPay);
   const opEvents = recs.filter((x) => x.source === "pao_event" && x.ref.startsWith("operation."));
@@ -371,8 +380,9 @@ function txConds(t: PultTx, recs: readonly Interpretation[], intentRecs: readonl
   else {
     Object.assign(out, standConds(t, recs, log, { started, paid }, o));
     if (t.linkConflict) for (const c of ["R27", "R31", "R32"] as const) out[c] = r("wait", out[c]!.seqs, "link_conflict", out[c]!.log);
-    // Сбои стенда и пометки «ПР», привязанные к транзакции, — поднимают статус (R31 — выше, по сроку).
-    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq);
+    // Сбои стенда и пометки «ПР», привязанные к транзакции, — поднимают статус (R31 — выше, по сроку). Запись с неточной
+    // привязкой (несколько кандидатов или только номер заказа у транзакции с конфликтом звеньев) — не выше «ждёт».
+    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq, weak?.has(e.seq));
   }
   return out as CondResults;
 }
@@ -389,22 +399,36 @@ function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: read
   return out as CondResults;
 }
 
-/** Объект записи журнала стенда: транзакция по операции, заказу, запросу подтверждения или поручению (корзины или
- *  намерения), иначе поручение без покупки; не нашлось — запись системы. */
-function objOfEntry(e: StandLogEntry, model: TxModel): string | undefined {
-  // `order_ref` — номер заказа в запросе реквизита (Н-02, `SECOND_CREDENTIAL_ISSUED`); старшинство полей и конфликт
-  // звеньев — П-3.2г (ревью П-3.2в № 3, 4).
-  const { op_ref: p, confirmation_id: q, mandate_id: md } = e.ids;
+/** Привязка записи журнала стенда к объектам (П-3.2г; ревью П-3.2в № 3, 4) — правило вердикта, записано в STATUS
+ *  «Открыто». Уровни по старшинству, решает первый, на котором нашёлся кандидат: операция (`op_ref`) → запрос
+ *  подтверждения (`confirmation_id`) → заказ (`order_id`, `order_ref` — номер заказа в запросе реквизита; при `shop_id` в
+ *  записи — только транзакции, где заказ с этим номером был у этой витрины) → поручение корзины → поручение-намерение →
+ *  поручение без покупки. Неточная привязка (`weak`): кандидатов несколько — запись ко всем, но статус не выше «ждёт»;
+ *  привязка только номером заказа к транзакции с конфликтом звеньев — тоже. Не нашлось — запись системы. */
+function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly string[]; readonly weak: boolean } {
+  const { op_ref: p, confirmation_id: q, mandate_id: md, shop_id: sh } = e.ids;
   const ord = e.ids.order_id ?? e.ids.order_ref;
-  const tx = model.txs.find(
-    (t) =>
-      (p !== undefined && t.opRefs.includes(p)) ||
-      (ord !== undefined && t.orderIds.includes(ord)) ||
-      (q !== undefined && t.confirmationIds.includes(q)) ||
-      (md !== undefined && (t.cartMandateId === md || t.intentId === md)),
-  );
-  if (tx) return tx.id;
-  return md !== undefined && model.mandates.some((m) => m.id === md && m.txIds.length === 0) ? md : undefined;
+  const pack = (c: readonly PultTx[], weak = c.length > 1) => ({ ids: c.map((t) => t.id), weak });
+  const levels: (readonly PultTx[])[] = [
+    p !== undefined ? model.txs.filter((t) => t.opRefs.includes(p)) : [],
+    q !== undefined ? model.txs.filter((t) => t.confirmationIds.includes(q)) : [],
+  ];
+  for (const c of levels) if (c.length > 0) return pack(c);
+  if (ord !== undefined) {
+    // Номера заказов разных витрин могут совпасть: при `shop_id` — только транзакции, где этот заказ был у этой витрины
+    // (обращений к витрине по заказу нет — судить не по чему, транзакция остаётся кандидатом).
+    const c = model.txs.filter((t) => t.orderIds.includes(ord) && (sh === undefined || !t.shopsByOrder[ord] || t.shopsByOrder[ord]!.includes(sh)));
+    if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
+  }
+  if (md !== undefined) {
+    // У транзакции с конфликтом звеньев корзина и намерение не заданы — её поручения в `linkConflict`; такая привязка неточна
+    // (иначе запись уходила бы в систему без ограничения «не выше „ждёт“»; повторное ревью П-3.2г № 1).
+    const levelCart = model.txs.filter((t) => t.cartMandateId === md || t.linkConflict?.carts.includes(md));
+    const levelIntent = model.txs.filter((t) => t.intentId === md || t.linkConflict?.intents.includes(md));
+    for (const c of [levelCart, levelIntent]) if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
+    if (model.mandates.some((m) => m.id === md && m.txIds.length === 0)) return { ids: [md], weak: false };
+  }
+  return { ids: [], weak: false };
 }
 
 function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<number, string>): GuaranteeHit[] {
@@ -428,18 +452,23 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   const mandateById = new Map(model.mandates.map((m) => [m.id, m] as const));
   // Записи журнала по объектам; без объекта — к системе.
   const logOf = new Map<string, StandLogEntry[]>();
+  // Записи с неточной привязкой — по объекту: номер записи журнала стенда.
+  const weakOf = new Map<string, Set<number>>();
   const systemLog: StandLogEntry[] = [];
   for (const e of o.standLog ?? []) {
-    const id = objOfEntry(e, model);
-    if (id === undefined) systemLog.push(e);
-    else logOf.set(id, [...(logOf.get(id) ?? []), e]);
+    const { ids, weak } = objsOfEntry(e, model);
+    if (ids.length === 0) systemLog.push(e);
+    for (const id of ids) {
+      logOf.set(id, [...(logOf.get(id) ?? []), e]);
+      if (weak) weakOf.set(id, (weakOf.get(id) ?? new Set()).add(e.seq));
+    }
   }
   const own = (id: string) => (o.standLog === undefined ? undefined : (logOf.get(id) ?? []));
   const objOf = new Map<number, string>();
   const objs: ObjCheck[] = [];
   for (const t of model.txs) {
     const intent = t.intentId !== undefined ? mandateById.get(t.intentId) : undefined;
-    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o) });
+    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id)) });
     for (const s of t.seqs) objOf.set(s, t.id);
   }
   for (const m of model.mandates) {

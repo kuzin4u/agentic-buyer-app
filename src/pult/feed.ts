@@ -1,6 +1,7 @@
 // Лента пульта DEMO-2 (П-2.1): поверх ленты интерпретатора (адаптер источника, Р-1246) — модель транзакций (`tx.ts`) и
 // доска (`board.ts`). Пересчёт — с паузой после записи, а не на каждую (шина пишет пачками); переходы карточек между
-// колонками — «скачком, по событию» (модель 1.23 v1.20): время перехода — время записи, которая его вызвала. Перезапуск
+// колонками — «скачком, по событию» (модель 1.23 v1.20): время перехода — время записи, которая его вызвала (`enteredAt`
+// карточки; переходы внутри одной паузы пересчёта схлопываются в один). Перезапуск
 // источника (`reset`) сбрасывает всё. Лента только читает.
 import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
@@ -96,8 +97,11 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       return;
     }
     const now = o.now().toISOString();
+    // Время перехода — время записи, которая перевела карточку в колонку (`enteredAt`, начало последнего отрезка — тот же
+    // код, что у «Графика»; для «Завершены» — событие итога), а не последняя запись на момент пересчёта (ревью П-2.1 № 6).
+    // Переходы внутри одной пачки (пауза пересчёта) в журнал переходов попадают одним — из прежней колонки в новую.
     const cards: PultCard[] = view.cards.map((c) => {
-      const at = c.last?.at ?? now;
+      const at = c.enteredAt ?? c.last?.at ?? now;
       const prev = column.get(c.id);
       if (!prev) {
         column.set(c.id, { column: c.column, since: at });
@@ -110,6 +114,9 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       }
       return { ...c, since: prev.since };
     });
+    // Карточки, ушедшие с доски (окно записей, перезапуск сюжета), из словаря колонок — вон (ревью П-2.1 № 7).
+    const live = new Set(view.cards.map((c) => c.id));
+    for (const id of [...column.keys()]) if (!live.has(id)) column.delete(id);
     if (jumps.length > kept) jumps = jumps.slice(-kept);
     state = { now, cards, jumps: [...jumps], graph };
     emit({ type: "board", board: state });

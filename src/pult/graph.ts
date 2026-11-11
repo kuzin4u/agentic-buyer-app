@@ -3,15 +3,11 @@
 // моделью транзакций и записями: отрезок начинается записью, которая перевела транзакцию в стадию; «Завершены» — с
 // события итога Платформы (инвариант 6). Красные метки узлов У1–У5 — с движком условий (П-3); здесь — тип записи.
 import type { Interpretation, Kind } from "../dashboards/interpret.js";
-import { STAGE_COLUMN, type BoardColumn } from "./board.js";
+import { doneOf, segments, type Segment } from "./board.js";
 import type { TxModel } from "./tx.js";
 
-export interface GraphSeg {
-  readonly col: BoardColumn;
-  readonly from: string;
-  /** Конец отрезка — начало следующего; у последнего нет (идёт до «сейчас»). */
-  readonly to?: string;
-}
+/** Отрезок стадии — тот же, что у доски (`board.ts`, `segments`): доска и «График» считают одним кодом (П-2.1 № 6). */
+export type GraphSeg = Segment;
 
 export interface GraphMark {
   readonly at: string;
@@ -34,29 +30,6 @@ export interface GraphView {
   readonly rows: readonly GraphRow[];
 }
 
-/** Отрезки по записям: смена колонки — новая ключевая запись другой стадии; итог — отрезок «Завершены» с его времени.
- *  Время монотонно: записи идут по seq, а у событий Платформы `at` — по часам Платформы; начало отрезка не раньше начала
- *  предыдущего, иначе конец вышел бы раньше начала (ревью П-2.2 № 3). */
-function segments(seqs: readonly number[], bySeq: ReadonlyMap<number, Interpretation>, done?: { at: string; seq: number }): GraphSeg[] {
-  const segs: { col: BoardColumn; from: string; to?: string }[] = [];
-  const open = (col: BoardColumn, at: string) => {
-    const last = segs[segs.length - 1];
-    if (last && last.col === col) return;
-    const from = last && Date.parse(at) < Date.parse(last.from) ? last.from : at;
-    if (last) last.to = from;
-    segs.push({ col, from });
-  };
-  for (const s of seqs) {
-    if (done && s >= done.seq) break;
-    const r = bySeq.get(s);
-    if (!r || r.level !== "key") continue;
-    const col = STAGE_COLUMN[r.stage];
-    if (col) open(col, r.at);
-  }
-  if (done) open("done", done.at);
-  return segs;
-}
-
 function marks(seqs: readonly number[], bySeq: ReadonlyMap<number, Interpretation>): GraphMark[] {
   const out: GraphMark[] = [];
   for (const s of seqs) {
@@ -74,7 +47,7 @@ export function graphView(model: TxModel, items: readonly Interpretation[], limi
     rows.push({
       id: t.id,
       kind: "tx",
-      segs: segments(t.seqs, bySeq, t.outcome ? { at: t.outcome.at, seq: t.outcome.seq } : undefined),
+      segs: segments("tx", t.seqs, bySeq, doneOf("tx", t, bySeq)),
       marks: marks(t.seqs, bySeq),
       ...(t.afterRevoke && { afterRevoke: true as const }),
       ...(t.doubleDebit && { doubleDebit: true as const }),
@@ -83,12 +56,11 @@ export function graphView(model: TxModel, items: readonly Interpretation[], limi
   }
   for (const m of model.mandates) {
     if (m.txIds.length > 0) continue;
-    // Отзыв поручения без покупки — «Завершены» с события mandate.revoked.
-    const revoked = m.status === "revoked" ? m.seqs.map((s) => bySeq.get(s)).find((r) => r?.source === "pao_event" && r.ref === "mandate.revoked") : undefined;
+    // Отзыв поручения без покупки — «Завершены» с события mandate.revoked; колонки — как у карточки поручения на доске.
     rows.push({
       id: m.id,
       kind: "mandate",
-      segs: segments(m.seqs, bySeq, revoked ? { at: revoked.at, seq: revoked.seq } : undefined),
+      segs: segments("mandate", m.seqs, bySeq, doneOf("mandate", m, bySeq)),
       marks: marks(m.seqs, bySeq),
       order: m.seqs[0]!,
     });
