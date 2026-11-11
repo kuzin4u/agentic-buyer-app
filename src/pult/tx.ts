@@ -115,8 +115,9 @@ const OP_EVENT: Readonly<Record<string, TxOpKind>> = {
 const CONFIRMATION_FINAL = new Set(["confirmation.rejected", "confirmation.expired"]);
 
 /** Шаги сюжета, которыми агент сообщает итог покупки по операции (`op_ref`): после них операция без связи с корзиной —
- *  «связь не подтверждена», до них — «ждём шаг агента» (П-3.2а). */
-const OUTCOME_STEPS = new Set(["outcome", "limit.declined", "failed"]);
+ *  «связь не подтверждена», до них — «ждём шаг агента» (П-3.2а). Это же определение «шага агента» — у «Контроля»
+ *  (`control.ts`, ревью П-4.1 № 17). */
+export const OUTCOME_STEPS: ReadonlySet<string> = new Set(["outcome", "limit.declined", "failed"]);
 
 /** Объединение множеств со сжатием пути. */
 class Links {
