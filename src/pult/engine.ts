@@ -59,7 +59,44 @@ export interface CondResult {
   readonly note?: Note;
   /** Номера записей журнала сбоев стенда (свой счёт стенда, не seq шины) — доказательства из журнала (П-3.2в). */
   readonly log?: readonly number[];
+  /** Причина «нарушено» или «сработало» — закрытый перечень (П-3.3): по ней субъект вердикта (`verdict.ts`). */
+  readonly cause?: Cause;
 }
+
+/** Причины по записям шины (П-3.3) — закрытый перечень. */
+export const RULE_CAUSES = [
+  "card_number_agent", // R41: похожее на номер карты в записи агента (журнал агента, обращение его ключом)
+  "card_number_other", // R41: то же в записи не агента (шаг сюжета, сеть, событие) — субъект не определён
+  "sign_by_agent", // R08, R18: подпись поручения обращением агента
+  "sign_by_other", // R08, R18: подпись поручения не эмулятором банка и не агентом (сеть) — субъект не определён
+  "no_signature", // R08: покупка без подписи поручения
+  "pay_before_consent", // R18: оплата раньше подписи корзины клиентом
+  "paid_after_revoke", // R09: «оплачено» после события отзыва (гонка С-28 — В5)
+  "revoked_agent_stop", // R09: поручение отозвано (MANDATE_REVOKED или событие отзыва) — агент остановился сам
+  "revoked_platform_decline", // R09: поручение отозвано — отказала Платформа
+  "expired_agent_stop", // R09: срок поручения истёк (MANDATE_EXPIRED) — агент остановился сам
+  "expired_platform_decline", // R09: срок поручения истёк — отказала Платформа
+  "inactive_agent_stop", // R09: MANDATE_NOT_ACTIVE без признака отзыва или срока — агент остановился сам
+  "inactive_platform_decline", // R09: то же — отказала Платформа
+  "mandate_scope", // R17: Платформа отказала — вне пределов поручения
+  "agent_pay_after_expiry", // R21: агент начал оплату после истечения срока подтверждения
+  "operation_after_expiry", // R21: операция Платформы после истечения срока подтверждения
+  "confirmation_expired", // R21: срок подтверждения истёк без оплаты
+  "wrong_shop", // R26: оплата заказа у другой витрины
+  "agent_after_revoke", // R37: агент начал оплату, узнав об отзыве
+  "double_debit", // R46: два «оплачено» по связанным операциям
+  "double_pay", // R46: две успешные оплаты одного заказа
+  "idempotency", // R23, R25: повтор отклонён (IDEMPOTENCY_CONFLICT)
+  "late_lost", // R31: поздний итог потерян после срока
+  "instruction_excluded", // R47: агент исключил предложение с инструкцией
+] as const;
+export type RuleCause = (typeof RULE_CAUSES)[number];
+export type Cause =
+  | { readonly kind: "rule"; readonly rule: RuleCause }
+  | { readonly kind: "fault"; readonly what: StandLogWhat }
+  // Пометка «ПР» доказывает попытку нарушения; `bus` — причина по шине того же условия, если была (Н-08: защитник
+  // «Платформа» — только при отказе MANDATE_SCOPE на шине; решение владельца по П-3.3, 1).
+  | { readonly kind: "mark"; readonly test: StandTest; readonly bus?: RuleCause };
 
 export interface EngineOptions {
   /** Журнал сбоев стенда (на шину — П-11.2). Нет — условия журнала «на стенде не проверяется»; есть (даже пустой) —
@@ -104,19 +141,30 @@ export interface EngineView {
 const PAY_CALL = "POST /v1/shops/{shop_id}/orders/{order_id}/payment";
 const SIGN_CALL = "POST /participants/v1/mandates/{mandate_id}/sign";
 const STAND_LOG: readonly CheckableCondition[] = ["R20", "R23", "R25", "R27", "R31", "R32", "R47"];
-const NOT_ACTIVE = new Set(["MANDATE_NOT_ACTIVE", "MANDATE_REVOKED"]);
+const NOT_ACTIVE = new Set(["MANDATE_NOT_ACTIVE", "MANDATE_REVOKED", "MANDATE_EXPIRED"]);
+/** Запись нашего агента: журнал агента или обращение его ключом. */
+const byOurAgent = (x: Interpretation) =>
+  x.stream === "console" || x.source === "agent_platform" || x.source === "agent_platform_open" || x.source === "agent_merchant";
+/** Подпись поручения не клиентом: обращением агента — агент; иначе (сеть) — субъект не определён (ревью П-3.3 № 6). */
+const signCause = (xs: readonly Interpretation[]): RuleCause => (xs.some(byOurAgent) ? "sign_by_agent" : "sign_by_other");
 /** Оплата заказа нашим агентом: обращение к витрине с его ключом (`agent_merchant`, шина); чужой клиент — `network_merchant`
  *  (ревью П-3.2б № 8). */
 const isAgentPay = (x: Interpretation) => x.ref === PAY_CALL && x.source === "agent_merchant";
 /** Подпись поручения клиентом на стенде — обращение эмулятора банка (`stand`); любой другой источник — не клиент (№ 6). */
 const notByClient = (x: Interpretation, mandate: string) => x.ref === SIGN_CALL && mid(x) === mandate && x.source !== "stand";
 
-const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note, log?: readonly number[]): CondResult => ({
+const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note, log?: readonly number[], cause?: Cause): CondResult => ({
   status,
   seqs,
   ...(note && { note }),
   ...(log && log.length > 0 && { log }),
+  ...(cause && { cause }),
 });
+/** «Нарушено» или «сработало» с причиной по записям шины. */
+const rc = (status: "bad" | "fired", rule: RuleCause, seqs: readonly number[] = [], log?: readonly number[]): CondResult =>
+  r(status, seqs, undefined, log, { kind: "rule", rule });
+const causeOf = (e: StandLogEntry): Cause | undefined =>
+  e.what === "MARKED" ? (e.test !== undefined ? { kind: "mark", test: e.test } : undefined) : { kind: "fault", what: e.what };
 
 /** Сбой стенда или пометка «ПР» → условия и статус. Срок R31 — отдельно (`r31`): «итог есть» — «соблюдено». */
 const FAULT_EFFECT: Partial<Record<StandLogWhat, readonly (readonly [CheckableCondition, CondStatus])[]>> = {
@@ -131,8 +179,9 @@ const MARK_EFFECT: Partial<Record<StandTest, readonly [CheckableCondition, CondS
   "Н-05": ["R47", "bad"],
   "Н-06": ["R37", "bad"],
   "Н-07": ["R18", "bad"],
-  // В8: сумма не та — первой ловит Платформа (MANDATE_SCOPE), R17 «сработало».
-  "Н-08": ["R17", "fired"],
+  // В8 и решение по П-3.3, 1: сумма не та — Платформа отказала (MANDATE_SCOPE на шине) — R17 остаётся «сработало»
+  // (`raise`); не отказала (операция прошла) — «нарушено», защитника нет.
+  "Н-08": ["R17", "bad"],
   "Н-09": ["R26", "bad"],
 };
 const LATE = new Set<StandLogWhat>(["OUTCOME_EVENT_DELAYED", "OUTCOME_EVENTS_REORDERED"]);
@@ -141,11 +190,22 @@ const effectsOf = (e: StandLogEntry): readonly (readonly [CheckableCondition, Co
 
 /** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. Неточная привязка записи
  *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4). */
-function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, logSeq: number, weak = false): void {
-  const st: CondStatus = weak && RANK[status] < RANK.wait ? "wait" : status;
+function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, e: StandLogEntry, weak = false): void {
   const cur = out[c] ?? r("na");
-  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak ? "link_conflict" : undefined, [logSeq]);
-  else if (st === cur.status) out[c] = r(cur.status, cur.seqs, cur.note ?? (weak ? "link_conflict" : undefined), [...(cur.log ?? []), logSeq]);
+  // Н-08 при отказе Платформы MANDATE_SCOPE на шине: защита сработала — статус остаётся «сработало», пометка хранится
+  // вместе с причиной по шине (решение владельца по П-3.3, 1).
+  // Причина по шине — и у уже стоящей пометки (вторая пометка Н-08 не теряет отказ Платформы; повторное ревью П-3.3 № 1).
+  const bus = cur.cause?.kind === "rule" ? cur.cause.rule : cur.cause?.kind === "mark" ? cur.cause.bus : undefined;
+  const stopped = e.what === "MARKED" && e.test === "Н-08" && c === "R17" && cur.status === "fired" && bus === "mandate_scope";
+  const want: CondStatus = stopped ? "fired" : status;
+  const st: CondStatus = weak && RANK[want] < RANK.wait ? "wait" : want;
+  const own = st === "bad" || st === "fired" ? causeOf(e) : undefined;
+  const cause: Cause | undefined = own?.kind === "mark" && bus !== undefined ? { ...own, bus } : own;
+  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak ? "link_conflict" : undefined, [e.seq], cause);
+  // При равном статусе пометка «ПР» главнее причины по шине: это явное заявление приложения о нарушении (Н-08 при уже
+  // «сработавшем» MANDATE_SCOPE — нарушил агент; без пометки — П-06, нарушения нет).
+  else if (st === cur.status)
+    out[c] = r(cur.status, cur.seqs, cur.note ?? (weak ? "link_conflict" : undefined), [...(cur.log ?? []), e.seq], cause?.kind === "mark" ? cause : (cur.cause ?? cause));
 }
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
@@ -182,18 +242,21 @@ const leaks = (x: Interpretation) => [x.phrase.ru, x.phrase.en, ...Object.values
 /** R41 по записям: есть похожее на номер карты — «нарушено»; записи есть — «соблюдено». */
 function r41(recs: readonly Interpretation[]): CondResult {
   const bad = recs.filter(leaks).map((x) => x.seq);
-  return bad.length > 0 ? r("bad", bad) : recs.length > 0 ? r("ok") : r("na");
+  if (bad.length === 0) return recs.length > 0 ? r("ok") : r("na");
+  // Субъект — по источнику записи: запись нашего агента — агент; иначе — не определён (ревью П-3.3 № 6).
+  const agentOwn = recs.filter((x) => leaks(x) && byOurAgent(x)).length > 0;
+  return rc("bad", agentOwn ? "card_number_agent" : "card_number_other", bad);
 }
 
 /** R08: поручение-намерение подписывает клиент — событие Платформы `mandate.signed`; подпись обращением агента — нарушение. */
 function r08(intent: string | undefined, recs: readonly Interpretation[], started: boolean): CondResult {
   if (intent === undefined) return r("na");
   const byAgent = recs.filter((x) => notByClient(x, intent));
-  if (byAgent.length > 0) return r("bad", byAgent.map((x) => x.seq));
+  if (byAgent.length > 0) return rc("bad", signCause(byAgent), byAgent.map((x) => x.seq));
   const signed = recs.find((x) => isEvent(x, "mandate.signed") && mid(x) === intent);
   if (signed) return r("ok", [signed.seq]);
   // Покупка пошла, а подписи поручения нет — нарушение; иначе ещё ждём подписи (У-01 — «Идёт к нарушению», П-4.1).
-  return started ? r("bad") : r("wait");
+  return started ? rc("bad", "no_signature") : r("wait");
 }
 
 /** R37 по поручениям `ids`: агент, узнавший об отзыве, не начинает оплату. Время действия — шаг `payment.started`
@@ -210,7 +273,7 @@ function r37(ids: readonly string[], recs: readonly Interpretation[], afterRevok
   const starts = recs.filter((x) => x.stream === "scenario" && x.ref === "payment.started");
   const acts = starts.length > 0 ? starts : recs.filter(isAgentPay);
   const bad = learned ? acts.filter((x) => x.seq > learned.seq).map((x) => x.seq) : [];
-  if (bad.length > 0) return r("bad", [rv.seq, learned!.seq, ...bad]);
+  if (bad.length > 0) return rc("bad", "agent_after_revoke", [rv.seq, learned!.seq, ...bad]);
   if (afterRevoke || acts.some((x) => x.seq > rv.seq)) return r("wait", [rv.seq], "race_c28");
   return r("ok", [rv.seq, ...(learned ? [learned.seq] : [])]);
 }
@@ -230,7 +293,7 @@ function standConds(
   out.R20 = asked.length > 0 ? r("ok", asked) : r("na");
   // R23, R25: повтор отклонён Платформой (IDEMPOTENCY_CONFLICT) — защита сработала; иначе — по ходу покупки.
   const idem = recs.filter((x) => x.who?.code === "IDEMPOTENCY_CONFLICT").map((x) => x.seq);
-  out.R23 = idem.length > 0 ? r("fired", idem) : progress(t.outcome?.seq);
+  out.R23 = idem.length > 0 ? rc("fired", "idempotency", idem) : progress(t.outcome?.seq);
   out.R25 = out.R23;
   out.R27 = progress(t.outcome?.seq);
   out.R32 = s.paid ? r("ok", [t.outcome!.seq]) : done ? r("na") : progress();
@@ -243,7 +306,7 @@ function standConds(
     const ls = late.map((e) => e.seq);
     const first = Math.min(...late.map((e) => Date.parse(e.at)));
     const overdue = o.now !== undefined && Date.parse(o.now) - first > (o.lateMs ?? LATE_MS);
-    out.R31 = done ? r("ok", [t.outcome!.seq], undefined, ls) : overdue ? r("bad", [], undefined, ls) : r("wait", [], undefined, ls);
+    out.R31 = done ? r("ok", [t.outcome!.seq], undefined, ls) : overdue ? rc("bad", "late_lost", [], ls) : r("wait", [], undefined, ls);
   }
   return out;
 }
@@ -272,11 +335,22 @@ function txConds(
   // R09: «оплачено» после отзыва — нарушено (В5); отказ Платформы «поручение не действует» — защита сработала. Операция
   // прошла или отказана по другой причине (лимит) — поручение действовало; итог без операции (отзыв, отклонённое
   // подтверждение) — не применяется.
-  const notActive = recs.filter((x) => x.who?.code !== undefined && NOT_ACTIVE.has(x.who.code)).map((x) => x.seq);
+  const notActiveRecs = recs.filter((x) => x.who?.code !== undefined && NOT_ACTIVE.has(x.who.code));
+  const notActive = notActiveRecs.map((x) => x.seq);
+  // Почему поручение не действует — по положительному признаку (ревью П-3.3 № 1): отзыв — код MANDATE_REVOKED или событие
+  // отзыва корзины или намерения; срок — MANDATE_EXPIRED; иначе (один MANDATE_NOT_ACTIVE) — не определён. Кто остановил —
+  // по источнику: запись агента — агент сам, ответ Платформы — Платформа.
+  const stopCause = (): RuleCause => {
+    const codes = new Set(notActiveRecs.map((x) => x.who!.code));
+    const revokedEv = all.some((x) => isEvent(x, "mandate.revoked") && [t.cartMandateId, t.intentId].includes(mid(x)));
+    const by = notActiveRecs.some((x) => x.stream !== "monitor") ? "agent_stop" : "platform_decline";
+    const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : "inactive";
+    return `${why}_${by}` as RuleCause;
+  };
   out.R09 = t.afterRevoke
-    ? r("bad", t.outcome ? [t.outcome.seq] : [])
+    ? rc("bad", "paid_after_revoke", t.outcome ? [t.outcome.seq] : [])
     : notActive.length > 0
-      ? r("fired", notActive)
+      ? rc("fired", stopCause(), notActive)
       : paid || t.outcome?.kind === "declined"
         ? r("ok", [t.outcome!.seq])
         : t.outcome
@@ -287,7 +361,7 @@ function txConds(
 
   // R17 (В8): до MVP — только «сработало» по MANDATE_SCOPE; сравнение сумм — после MVP.
   const scope = codes("MANDATE_SCOPE");
-  out.R17 = scope.length > 0 ? r("fired", scope) : r("none", [], "amounts_after_mvp");
+  out.R17 = scope.length > 0 ? rc("fired", "mandate_scope", scope) : r("none", [], "amounts_after_mvp");
 
   // R18: согласие клиента с корзиной на стенде — подпись поручения корзины клиентом в банке. Доказательство — только
   // событие Платформы `mandate.signed` корзины; шаг агента «корзина подписана» даёт только время (событие ленты может прийти
@@ -303,15 +377,15 @@ function txConds(
     const refused = all.some((x) => isEvent(x, "mandate.rejected") && mid(x) === cart);
     out.R18 =
       byAgent.length > 0
-        ? r("bad", byAgent.map((x) => x.seq))
+        ? rc("bad", signCause(byAgent), byAgent.map((x) => x.seq))
         : consentSeq !== undefined
           ? first !== undefined && consentSeq > first.seq
-            ? r("bad", [first.seq])
+            ? rc("bad", "pay_before_consent", [first.seq])
             : r("ok", [signedEv!.seq, ...(signedStep ? [signedStep.seq] : [])])
           : signedStep && (first === undefined || signedStep.seq < first.seq)
             ? r("wait", [signedStep.seq], "event_pending")
             : first !== undefined
-              ? r("bad", [first.seq])
+              ? rc("bad", "pay_before_consent", [first.seq])
               : refused
                 ? r("na")
                 : r("wait");
@@ -320,11 +394,13 @@ function txConds(
   // R21: срок подтверждения — истёк без оплаты: защита сработала; оплата после срока — нарушено; одобрено — соблюдено.
   const conf = recs.filter((x) => x.source === "pao_event" && x.ref.startsWith("confirmation."));
   const expired = conf.find((x) => x.ref === "confirmation.expired");
-  const payAfter = expired ? [...pays, ...opEvents.filter((x) => x.ref !== "operation.declined")].filter((x) => x.seq > expired.seq) : [];
+  const payAfter = expired ? [...payStarts, ...pays, ...opEvents.filter((x) => x.ref !== "operation.declined")].filter((x) => x.seq > expired.seq) : [];
+  // Кто после срока: операция Платформы — Платформа должна была отказать; только оплата агента — агент (ревью П-3.3 № 5).
+  const opAfter = payAfter.some((x) => x.source === "pao_event");
   out.R21 = expired
     ? payAfter.length > 0
-      ? r("bad", [expired.seq, ...payAfter.map((x) => x.seq)])
-      : r("fired", [expired.seq])
+      ? rc("bad", opAfter ? "operation_after_expiry" : "agent_pay_after_expiry", [expired.seq, ...payAfter.map((x) => x.seq)])
+      : rc("fired", "confirmation_expired", [expired.seq])
     : conf.some((x) => x.ref === "confirmation.approved")
       ? r("ok", conf.filter((x) => x.ref === "confirmation.approved").map((x) => x.seq))
       : conf.some((x) => x.ref === "confirmation.required") && !conf.some((x) => x.ref === "confirmation.rejected")
@@ -343,7 +419,7 @@ function txConds(
       if (o !== undefined && s !== undefined && x.source === "agent_merchant") byOrder.set(o, (byOrder.get(o) ?? new Set()).add(s));
     }
     const split = [...byOrder.values()].some((s) => s.size > 1);
-    out.R26 = split ? r("bad", pays.map((x) => x.seq)) : r("ok", pays.map((x) => x.seq));
+    out.R26 = split ? rc("bad", "wrong_shop", pays.map((x) => x.seq)) : r("ok", pays.map((x) => x.seq));
   }
 
   // R28, R30: итог и «оплачено» на пульте — только по событию Платформы (модель транзакций, инвариант 6).
@@ -361,9 +437,9 @@ function txConds(
   const loose = new Set([...(t.unconfirmedOps ?? []), ...(t.pendingOps ?? [])]);
   const loosePaid = opEvents.filter((x) => (x.ref === "operation.authorized" || x.ref === "operation.settled") && loose.has(x.ids?.op_ref ?? ""));
   out.R46 = t.doubleDebit
-    ? r("bad", t.ops.filter((o) => o.kind === "paid" || o.kind === "settled").map((o) => o.seq!))
+    ? rc("bad", "double_debit", t.ops.filter((o) => o.kind === "paid" || o.kind === "settled").map((o) => o.seq!))
     : dupPays.length > 0
-      ? r("bad", dupPays)
+      ? rc("bad", "double_pay", dupPays)
       : paid && loosePaid.length > 0
         ? r("wait", loosePaid.map((x) => x.seq), "unconfirmed_paid")
         : paid
@@ -382,7 +458,7 @@ function txConds(
     if (t.linkConflict) for (const c of ["R27", "R31", "R32"] as const) out[c] = r("wait", out[c]!.seqs, "link_conflict", out[c]!.log);
     // Сбои стенда и пометки «ПР», привязанные к транзакции, — поднимают статус (R31 — выше, по сроку). Запись с неточной
     // привязкой (несколько кандидатов или только номер заказа у транзакции с конфликтом звеньев) — не выше «ждёт».
-    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq, weak?.has(e.seq));
+    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e, weak?.has(e.seq));
   }
   return out as CondResults;
 }
@@ -395,7 +471,7 @@ function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: read
   out.R41 = r41(recs);
   out.R17 = r("none", [], "amounts_after_mvp");
   if (log === undefined) for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
-  else for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e.seq);
+  else for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e);
   return out as CondResults;
 }
 
@@ -496,7 +572,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     const served = (o.standLog ?? []).filter((e) => e.what === "INSTRUCTION_SERVED").map((e) => e.seq);
     if (served.length > 0) {
       const excluded = items.filter((x) => x.who?.code === "A5_INSTRUCTION").map((x) => x.seq);
-      const st = excluded.length > 0 ? r("fired", excluded, undefined, served) : r("wait", [], undefined, served);
+      const st = excluded.length > 0 ? rc("fired", "instruction_excluded", excluded, served) : r("wait", [], undefined, served);
       if (RANK[st.status] < RANK[system.R47!.status]) system.R47 = st;
     }
     // Записи журнала без объекта — к системе: сбои и пометки. Поздний итог без объекта (ревью П-3.2в № 1): стенд пишет
@@ -507,11 +583,14 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     // транзакция могла уйти из окна, «нет на шине» тогда ложно (повторное ревью П-3.2в № A).
     const windowFrom = items.length > 0 ? Math.min(...items.map((x) => Date.parse(x.at))) : undefined;
     for (const e of systemLog) {
-      for (const [c, st] of effectsOf(e)) raise(system, c, st, e.seq);
+      for (const [c, st] of effectsOf(e)) raise(system, c, st, e);
       if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
       const p = e.ids.op_ref;
       const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
-      raise(system, "R31", p !== undefined && overdue && !seenOps.has(p) ? "bad" : "wait", e.seq);
+      const lost = p !== undefined && overdue && !seenOps.has(p);
+      raise(system, "R31", lost ? "bad" : "wait", e);
+      // Причина R31 «нарушено» — потерянный итог (пульт), а не сам сбой задержки стенда.
+      if (lost && system.R31!.status === "bad") system.R31 = { ...system.R31!, cause: { kind: "rule", rule: "late_lost" } };
     }
   }
   return { objs, system: system as CondResults, guarantees: guaranteesOf(items, objOf) };
