@@ -20,11 +20,12 @@ import { signRequest, type Signer } from "@kuzin4u/agentic-core";
 import { PaoCallError, PaoClient } from "@kuzin4u/agentic-core/pao";
 import type { DemoIds } from "agentic-ps-platform/stand";
 import { listKeys, loadKey } from "agentic-buyer-ref/src/agent/signer/index.js";
-import type { FaultStart, FaultTest } from "./fault-tests.js";
-import type { ScenarioStep, StepSink } from "./scenarios.js";
+import { FAULT_PLAN, matchesOp, type FaultPlanEntry, type FaultStart, type FaultTest } from "./fault-tests.js";
+import { DEMO_PRINCIPAL, EXPIRY_SEC, type ScenarioStep, type StepSink } from "./scenarios.js";
+import { MASSA_MADRE } from "./shops.js";
 import type { DemoStand } from "./stand.js";
 
-export { FAULT_TESTS, isFaultTest, type FaultStart, type FaultTest } from "./fault-tests.js";
+export { FAULT_PLAN, FAULT_TESTS, isFaultTest, type FaultPlanEntry, type FaultStart, type FaultTest, type Guard } from "./fault-tests.js";
 
 type Pao = PaoClient<{ baseUrl: string; agentCode: string; signer: Signer; maxAttempts: number }>;
 
@@ -38,14 +39,19 @@ void ID_FIELDS_COMPLETE;
  *  ошибка: драйвер останавливает ветку, её запросы больше не уходят, итог — BAD_STEP (инвариант 6: ни `outcome`, ни
  *  `run.*`, ни итоговых `fault.*`). «Запрос отправлен» (`fault.sent`) выпускает сам драйвер — по факту запроса. Ветки
  *  П-11.3б–д дописывают свои имена сюда и в словари. */
-export const BRANCH_STEPS = ["fault.note.prepared"] as const;
+export const BRANCH_STEPS = [
+  "fault.note.prepared",
+  // П-11.3б: подготовка Н-07 и Н-06 — поручение нарушителя, подпись и отзыв — клиентом в банке.
+  "fault.note.intent_requested",
+  "fault.note.intent_signed",
+  "fault.note.cart_created",
+  "fault.note.cart_keep_unsigned",
+  "fault.note.cart_sign_ask",
+  "fault.note.cart_signed",
+  "fault.note.revoke_ask",
+  "fault.note.revoked",
+] as const;
 export type BranchStep = (typeof BRANCH_STEPS)[number];
-
-/** Ожидаемая защита: код и HTTP-статус ответа (таблица п. 4 ответа #112). */
-export interface Guard {
-  readonly code: string;
-  readonly status: number;
-}
 
 /** Ответ витрины на запрос ветки (тело — только в памяти ветки: на шину не идёт). */
 export interface ShopReply {
@@ -70,16 +76,104 @@ export interface FaultContext {
   readonly signal: AbortSignal;
   /** Пометка «ПР» на стенде — **до** нарушающего запроса (П7 п. 4). Отказ стенда — исключение, ветка остановлена. */
   readonly mark: (ids: DemoIds) => void;
+  /** Ждать действия **клиента** над мандатом (подпись — ACTIVE, отзыв — REVOKED) по `GET` мандата, не дольше срока
+   *  (`clientWaitMs`). Драйвер за клиента ничего не делает (инвариант 3, П5): подписывает и отзывает человек на экране банка
+   *  или эмулятор клиента «Авто» при `DEMO_FAULTS=1`; в автотестах — эмулятор банка. Срок истёк — ветка остановлена с
+   *  конкретной причиной (CLIENT_SIGN_TIMEOUT / CLIENT_REVOKE_TIMEOUT); клиент отклонил — CLIENT_DECLINED. */
+  readonly waitClient: (mandateId: string, want: "ACTIVE" | "REVOKED") => Promise<void>;
 }
 
-/** Ветка нарушения: ожидаемые защиты и ход. Итог ветка не сообщает — его выносит драйвер по журналу её запросов. */
+/** Ветка нарушения: только ход. Роль нарушения и ожидаемую защиту ветка не объявляет — драйвер берёт их из закрытой
+ *  таблицы FAULT_PLAN (ревью П-11.3а-3 № 3); итог выносит по журналу её запросов. */
 export interface FaultBranch {
-  readonly expect: readonly Guard[];
   readonly run: (c: FaultContext) => Promise<void>;
 }
 
-/** Ветки по тестам — кирпичами П-11.3б–д. Нет ветки — запуск NOT_READY. */
-const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {};
+/** Поручение нарушителя (подготовка Н-07, Н-06): как у агента в сюжете 1 — «хлеб», до 1 000 ₽, на «Массу Мадре»; подписывает
+ *  клиент. Корзина под ним — один товар витрины по её цене. Данные мандата, не строки интерфейса. */
+const VIOLATOR_SHOP = MASSA_MADRE;
+const VIOLATOR_ITEM = MASSA_MADRE.items[0]!;
+const VIOLATOR_PRICE: number = (() => {
+  const p = VIOLATOR_ITEM.price;
+  if (typeof p !== "number") throw new Error("у товара витрины нарушителя нет цены");
+  return p;
+})();
+/** Срок корзины — не позже срока поручения: тот же, что у поручения (иначе Платформа отказывает MANDATE_SCOPE). */
+const mandateBody = (type: "INTENT" | "CART", parent: string | null, validTo: string) => {
+  const price = VIOLATOR_PRICE;
+  return {
+    type,
+    parent_id: parent,
+    subject: "хлеб",
+    amount_limit: type === "INTENT" ? 100000 : price,
+    currency: "RUB",
+    valid_to: validTo,
+    merchant_scope: [VIOLATOR_SHOP.merchant_id],
+    principal_ref: DEMO_PRINCIPAL,
+    mode: "IMMEDIATE" as const,
+    key_terms_shown: true,
+    cart: type === "CART" ? { merchant_id: VIOLATOR_SHOP.merchant_id, items: [{ sku: VIOLATOR_ITEM.sku, qty: 1, price }], total: price } : null,
+  };
+};
+
+/** Подготовка Н-07 и Н-06: пометка по продавцу, поручение нарушителя, подпись клиента, корзина под ним. */
+async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
+  c.mark({ merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
+  const validTo = new Date(Date.now() + 86_400_000).toISOString();
+  const intent = await c.call("POST /pao/v1/mandates", { body: mandateBody("INTENT", null, validTo), idempotencyKey: `${key}-intent` });
+  const intentId = String(intent.id);
+  c.step("fault.note.intent_requested", { mandate_id: intentId });
+  await c.waitClient(intentId, "ACTIVE");
+  c.step("fault.note.intent_signed", { mandate_id: intentId });
+  const cart = await c.call("POST /pao/v1/mandates", { body: mandateBody("CART", intentId, String(intent.valid_to ?? validTo)), idempotencyKey: `${key}-cart` });
+  const cartId = String(cart.id);
+  c.step("fault.note.cart_created", { mandate_id: cartId });
+  // Вторая пометка — по корзине, до нарушения (решение владельца, чат 11.11, вариант (а)): «ПР» несёт идентификатор корзины,
+  // а не только продавца (у честного сюжета 1 тот же продавец; ревью П-11.3б № 6). Пульт пока корзину нарушителя в модель не
+  // берёт (её шаги — `fault.note.*`) и относит пометку к системе — привязка «ПР» к транзакции нарушителя — в «Открыто»
+  // (повторное ревью П-11.3б C).
+  c.mark({ mandate_id: cartId, merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
+  return { intentId, cartId };
+}
+
+/** Реквизит по корзине нарушителя — нарушение Н-07 и Н-06 (операция таблицы FAULT_PLAN). */
+const credentialFor = (c: FaultContext, cartId: string, key: string) =>
+  c.violate.call("POST /pao/v1/credentials", {
+    body: { mandate_id: cartId, order_ref: `fault-${key}`, merchant_id: VIOLATOR_SHOP.merchant_id, amount_max: VIOLATOR_PRICE, currency: "RUB", kind: "CARD" },
+    idempotencyKey: `${key}-credential`,
+  });
+
+/** Ветки по тестам (П-11.3б–д). Нет ветки — запуск NOT_READY. */
+const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
+  // Н-07 «транзакция без согласия клиента» (R18): реквизит по корзине, которую клиент не подписывал → 409
+  // PRINCIPAL_SIGNATURE_PENDING.
+  "Н-07": {
+    run: async (c) => {
+      const key = `n07-${randomUUID()}`;
+      const { cartId } = await intentAndCart(c, key);
+      c.step("fault.note.cart_keep_unsigned", { mandate_id: cartId });
+      await credentialFor(c, cartId, key);
+    },
+  },
+  // Н-06 «агент не видит отзыв» (R37 / R09 / R18): полномочие **действовало** — клиент подписал и поручение, и корзину —
+  // и было отозвано: клиент отзывает поручение в банке (корзина — каскадом, как сюжет 5); нарушитель всё равно просит
+  // реквизит по корзине → 409 MANDATE_REVOKED (решение владельца 1, чат 11.11; ревью П-11.3б № 5).
+  "Н-06": {
+    run: async (c) => {
+      const key = `n06-${randomUUID()}`;
+      const { intentId, cartId } = await intentAndCart(c, key);
+      c.step("fault.note.cart_sign_ask", { mandate_id: cartId });
+      await c.waitClient(cartId, "ACTIVE");
+      c.step("fault.note.cart_signed", { mandate_id: cartId });
+      c.step("fault.note.revoke_ask", { mandate_id: intentId });
+      // Отозвано должно быть поручение — действием клиента (отказ агента от полномочий подготовке запрещён, BAD_PREP).
+      await c.waitClient(intentId, "REVOKED");
+      await c.waitClient(cartId, "REVOKED");
+      c.step("fault.note.revoked", { mandate_id: cartId });
+      await credentialFor(c, cartId, key);
+    },
+  },
+};
 
 /** Сколько закрытие ждёт идущую ветку (как у сюжетов): ответ стенда без таймаута не вешает остановку демо. */
 const CLOSE_WAIT_MS = 3000;
@@ -98,10 +192,31 @@ export interface FaultyOptions {
   readonly fetch?: typeof fetch;
   /** Срок ответа на запрос ветки, мс (по умолчанию REQUEST_TIMEOUT_MS). */
   readonly timeoutMs?: number;
+  /** Срок ожидания действия клиента (подпись, отзыв), мс. По умолчанию — 180 с, как срок поручения сюжета 10 (EXPIRY_SEC):
+   *  человек успевает подписать в банке (решение владельца, чат 11.11). В автотестах — короче. */
+  readonly clientWaitMs?: number;
+  /** Только для автотестов: таблица нарушений вместо FAULT_PLAN (как `branches`). Сборка демо-стенда её не передаёт. */
+  readonly plan?: Partial<Record<FaultTest, FaultPlanEntry>>;
 }
 
+/** Срок ожидания действия клиента по умолчанию, мс — срок поручения сюжета 10. */
+const CLIENT_WAIT_MS = EXPIRY_SEC * 1000;
+/** Как часто драйвер перечитывает мандат, ожидая действия клиента, мс. */
+const CLIENT_POLL_MS = 300;
+
 /** Причина остановки ветки драйвером. */
-type StopCode = "NOT_MARKED" | "MARK_REJECTED" | "BAD_STEP" | "BAD_TARGET";
+type StopCode =
+  | "NOT_MARKED"
+  | "MARK_REJECTED"
+  | "MARK_AFTER_VIOLATION"
+  | "BAD_STEP"
+  | "BAD_TARGET"
+  | "BAD_VIOLATION"
+  | "BAD_PREP"
+  | "CLIENT_SIGN_TIMEOUT"
+  | "CLIENT_REVOKE_TIMEOUT"
+  | "CLIENT_DECLINED"
+  | "ABORTED";
 
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
@@ -150,8 +265,12 @@ export class FaultyDriver {
   readonly #branches: Partial<Record<FaultTest, FaultBranch>>;
   readonly #otherBusy: () => boolean;
   readonly #closeWaitMs: number;
+  readonly #clientWaitMs: number;
+  readonly #plan: Readonly<Record<FaultTest, FaultPlanEntry>>;
   readonly #ac = new AbortController();
   #running: Promise<void> | null = null;
+  /** Прервать идущую ветку (кнопка «прервать»): итог — «не разыграно» ABORTED. */
+  #abortRun: (() => void) | null = null;
 
   constructor(d: DemoStand, emit: StepSink, o: FaultyOptions = {}) {
     // Без режима сбоев драйвера нет (П7 п. 2): ни ключа, ни клиента.
@@ -173,6 +292,8 @@ export class FaultyDriver {
     this.#branches = o.branches ?? BRANCHES;
     this.#otherBusy = o.otherBusy ?? (() => false);
     this.#closeWaitMs = o.closeWaitMs ?? CLOSE_WAIT_MS;
+    this.#clientWaitMs = o.clientWaitMs ?? CLIENT_WAIT_MS;
+    this.#plan = { ...FAULT_PLAN, ...o.plan };
   }
 
   /** Занят — пока идёт ветка и пока не пришли ответы на все её запросы. */
@@ -202,6 +323,14 @@ export class FaultyDriver {
     return { ok: true };
   }
 
+  /** Прервать идущее нарушение по кнопке «прервать» (решение владельца 3, чат 11.11: срок ожидания клиента — с отменой):
+   *  запросы ветки больше не уходят, ожидание клиента снимается, итог — «не разыграно» ABORTED; драйвер не закрывается. */
+  abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } {
+    if (!this.#abortRun) return { ok: false, code: "NOT_AWAITING" };
+    this.#abortRun();
+    return { ok: true };
+  }
+
   /** Дождаться текущего нарушения (для тестов). */
   async settled(): Promise<void> {
     await this.#running;
@@ -222,6 +351,7 @@ export class FaultyDriver {
     // доходят до ответа (их ждёт итог); новые не уходят.
     const run = new AbortController();
     const signal = AbortSignal.any([this.#ac.signal, run.signal]);
+    const plan = this.#plan[test];
     const journal: Promise<Entry>[] = [];
     let marked: DemoIds | undefined;
     let stop: StopCode | undefined;
@@ -256,8 +386,12 @@ export class FaultyDriver {
       return p;
     };
 
+    this.#abortRun = () => void halt("ABORTED");
     const mark = (ids: DemoIds): void => {
       if (signal.aborted) throw new FaultStop("CLOSED");
+      // Пометки — до нарушения (решение владельца, чат 11.11, вариант (а)): вторая пометка по корзине — можно, после
+      // нарушающего запроса — нет.
+      if (violated) throw halt("MARK_AFTER_VIOLATION");
       // Форма до стенда (повторное № 6): хотя бы один идентификатор, все — по форме; иначе пометка на стенде и итог на
       // шине разошлись бы, а пустая пометка открыла бы защёлку.
       const entries = Object.entries(ids).filter(([, v]) => v !== undefined);
@@ -275,6 +409,11 @@ export class FaultyDriver {
       ((op: Parameters<Pao["call"]>[0], args: Parameters<Pao["call"]>[1]) => {
         const g = gate(violation);
         if (g) return rejected(g);
+        // Нарушение — только операцией из закрытой таблицы (иное — ошибка, не предупреждение; решение владельца, чат 11.11).
+        if (violation && !plan.violations.includes(op)) return rejected(halt("BAD_VIOLATION"));
+        // Отказ агента от полномочий — не подготовка: он даёт тот же REVOKED, что и отзыв клиентом, и подменил бы действие
+        // клиента в Н-06 (ревью П-11.3б № 2).
+        if (!violation && op === "POST /pao/v1/mandates/{id}/relinquish") return rejected(halt("BAD_PREP"));
         if (violation) {
           violated = true;
           this.#step("fault.sent", { test });
@@ -292,6 +431,7 @@ export class FaultyDriver {
         if (g) return rejected(g);
         const url = shopUrl(this.#d.urls.merchants, target);
         if (!url) return rejected(halt("BAD_TARGET"));
+        if (violation && !plan.violations.some((v) => matchesOp(v, method, url.pathname))) return rejected(halt("BAD_VIOLATION"));
         if (violation) {
           violated = true;
           this.#step("fault.sent", { test });
@@ -314,6 +454,26 @@ export class FaultyDriver {
       this.#step(s, { test, ...safeParams(p) });
     };
 
+    /** Ожидание действия клиента над мандатом: перечитывание `GET` мандата ключом агента (чтение — не нарушение и не
+     *  подготовка в журнале; правила отправки — те же), не дольше clientWaitMs. Клиентское драйвер не делает (инвариант 3). */
+    const waitClient = async (mandateId: string, want: "ACTIVE" | "REVOKED"): Promise<void> => {
+      const end = Date.now() + this.#clientWaitMs;
+      for (;;) {
+        const g = gate(false);
+        if (g) throw g;
+        const m = await this.#pao.call("GET /pao/v1/mandates/{id}", { path: { id: mandateId } }).catch(() => undefined);
+        const status = (m as { status?: unknown } | undefined)?.status;
+        if (status === want) return;
+        // Клиент отклонил (ждали подписи) или поручение кончилось иначе — ждать нечего.
+        if (want === "ACTIVE" && (status === "REJECTED" || status === "REVOKED" || status === "EXPIRED")) throw halt("CLIENT_DECLINED");
+        if (Date.now() >= end) throw halt(want === "ACTIVE" ? "CLIENT_SIGN_TIMEOUT" : "CLIENT_REVOKE_TIMEOUT");
+        await new Promise<void>((ok) => {
+          const t = setTimeout(ok, CLIENT_POLL_MS);
+          signal.addEventListener("abort", () => (clearTimeout(t), ok()), { once: true });
+        });
+      }
+    };
+
     const ctx: FaultContext = {
       call,
       shop,
@@ -322,6 +482,7 @@ export class FaultyDriver {
       step,
       signal,
       mark,
+      waitClient,
     };
     let threw = false;
     try {
@@ -330,11 +491,12 @@ export class FaultyDriver {
       threw = true; // что ветка бросила, итог не решает — решает журнал; учитывается только «ветка сломалась»
     } finally {
       run.abort(); // ветка кончилась — новые запросы, пометки и шаги из неё не уходят
+      this.#abortRun = null;
     }
     // Итог — только когда пришли ответы на все ушедшие запросы (или не пришли — тогда сбой).
     const entries = await Promise.all(journal);
     if (this.#ac.signal.aborted) return;
-    this.#settle(test, branch, marked, stop, threw, entries);
+    this.#settle(test, plan, marked, stop, threw, entries);
   }
 
   /** Подписанный запрос к витрине ключом агента — как у ядра: x-agent-code, x-timestamp, x-nonce, подпись; без повторов
@@ -378,7 +540,7 @@ export class FaultyDriver {
    *  7. ветка сломалась сама — `BRANCH_ERROR`; нарушение не отправлено — `NOT_SENT`.
    *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
    *  разыграно» с причиной и идентификаторами. */
-  #settle(test: FaultTest, branch: FaultBranch, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
+  #settle(test: FaultTest, plan: FaultPlanEntry, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
     const ids = marked ? pick(marked) : {};
     const unplayed = (code: string, status?: number) =>
       this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
@@ -390,7 +552,7 @@ export class FaultyDriver {
     // П-11.3а-4 № 1; исключение из решения о последнем кирпиче каркаса — ложный зелёный, видимый до прогона).
     const prep = entries.find((e) => !e.violation && e.kind !== "ok");
     if (prep && prep.kind !== "ok") return unplayed(`PREP_FAILED,${prep.code}`, prep.status);
-    if (v?.kind === "refused" && branch.expect.some((g) => g.code === v.code && g.status === v.status)) return this.#step("fault.refused", { test, code: v.code, status: v.status, ...ids });
+    if (v?.kind === "refused" && plan.expect.some((g) => g.code === v.code && g.status === v.status)) return this.#step("fault.refused", { test, code: v.code, status: v.status, ...ids });
     if (v?.kind === "fail") return unplayed(v.code, v.status);
     if (v?.kind === "refused") return unplayed(`UNEXPECTED_${v.code}`, v.status);
     return unplayed(threw ? "BRANCH_ERROR" : "NOT_SENT");
@@ -431,13 +593,16 @@ function shopEntry(r: ShopReply): Outcome {
  *  управляющих знаков, и после разбора источник тот же, что у витрин стенда. Иначе — нет адреса. */
 function shopUrl(base: string, target: string): URL | undefined {
   const control = [...target].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
-  if (!target.startsWith("/") || target.startsWith("//") || /[#\\@\s]/.test(target) || control) return undefined;
+  // Только протокол витрин `/v1/…` — после разбора адреса и без переходов вверх (`..`, `%2e`): ни шлюза банка с подписью и
+  // подтверждением клиента (инвариант 3), ни прочих путей (ревью П-11.3б № 3).
+  if (!target.startsWith("/v1/") || /[#\\@\s]/.test(target) || /(^|\/)\.\.?(\/|$)|%2e/i.test(target.split("?")[0]!) || control) return undefined;
   let url: URL;
   try {
     url = new URL(target, base);
   } catch {
     return undefined;
   }
+  if (!url.pathname.startsWith("/v1/")) return undefined;
   return url.origin === new URL(base).origin && url.hash === "" && url.username === "" && url.password === "" ? url : undefined;
 }
 

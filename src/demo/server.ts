@@ -71,7 +71,7 @@ export interface MonitorServerOptions {
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
   /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
-  faulty?: { start(test: FaultTest): FaultStart };
+  faulty?: { start(test: FaultTest): FaultStart; abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -304,9 +304,17 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;
       // Ответ на карточку корзины — действие человека на этой странице (Р-1248 п. 1); сюжет его только ждёт.
+      // «Прервать» — и сюжет, и нарушение «ПР» (драйвер ждёт клиента до 180 с; решение владельца 3, чат 11.11): сюжета нет —
+      // прерывается нарушение.
+      const abortBoth = (): ScenarioStart => {
+        const s = o.scenarios!.abort();
+        if (s.ok || !o.faulty) return s;
+        const f = o.faulty.abort();
+        return f.ok ? f : s;
+      };
       const r =
         what === "abort"
-          ? o.scenarios.abort()
+          ? abortBoth()
           : what.startsWith("cart/")
             ? o.scenarios.answerCart(what === "cart/accept")
             : o.scenarios.start(what as ScenarioName);

@@ -168,6 +168,15 @@ const ru = {
   "step.fault.failed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} не разыграно — {code}; на стенде не помечено.",
   "step.fault.unplayed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} помечено на стенде, но не разыграно — {code}.",
   "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
+  "step.fault.note.intent_requested": "Нарушитель (ПР) — драйвер приложения ({test}): запрошено поручение {mandate_id} — подпишите его на экране мандатов банка.",
+  "step.fault.note.intent_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал поручение {mandate_id}.",
+  "step.fault.note.cart_created": "Нарушитель (ПР) — драйвер приложения ({test}): запрошена корзина {mandate_id}.",
+  "step.fault.note.cart_keep_unsigned": "Нарушитель (ПР) — драйвер приложения ({test}): корзину {mandate_id} не подписывайте — нарушитель попросит реквизит без согласия клиента.",
+  "step.fault.note.cart_sign_ask":
+    "Нарушитель (ПР) — драйвер приложения ({test}): второе действие — подпишите корзину {mandate_id} на экране мандатов банка: тест проверяет отзыв полномочия, которое действовало.",
+  "step.fault.note.cart_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал корзину {mandate_id}.",
+  "step.fault.note.revoke_ask": "Нарушитель (ПР) — драйвер приложения ({test}): третье действие — отзовите поручение {mandate_id} на экране мандатов банка; корзина отзовётся вместе с ним.",
+  "step.fault.note.revoked": "Нарушитель (ПР) — драйвер приложения ({test}): корзина {mandate_id} отозвана вместе с поручением.",
   "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
@@ -401,6 +410,15 @@ const en: Record<MessageKey, string> = {
   "step.fault.failed": "Violator (ПР) — app driver: violation {test} not played — {code}; not marked on the stand.",
   "step.fault.unplayed": "Violator (ПР) — app driver: violation {test} marked on the stand but not played — {code}.",
   "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
+  "step.fault.note.intent_requested": "Violator (ПР) — app driver ({test}): mandate {mandate_id} requested — sign it on the bank mandates screen.",
+  "step.fault.note.intent_signed": "Violator (ПР) — app driver ({test}): the client signed mandate {mandate_id}.",
+  "step.fault.note.cart_created": "Violator (ПР) — app driver ({test}): cart {mandate_id} requested.",
+  "step.fault.note.cart_keep_unsigned": "Violator (ПР) — app driver ({test}): do not sign cart {mandate_id} — the violator will ask for a credential without the client's consent.",
+  "step.fault.note.cart_sign_ask":
+    "Violator (ПР) — app driver ({test}): second action — sign cart {mandate_id} on the bank mandates screen: the test checks revocation of an authority that was in force.",
+  "step.fault.note.cart_signed": "Violator (ПР) — app driver ({test}): the client signed cart {mandate_id}.",
+  "step.fault.note.revoke_ask": "Violator (ПР) — app driver ({test}): third action — revoke mandate {mandate_id} on the bank mandates screen; the cart is revoked with it.",
+  "step.fault.note.revoked": "Violator (ПР) — app driver ({test}): cart {mandate_id} revoked together with the mandate.",
   "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":

@@ -14,11 +14,11 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv } from "../../src/da
 import { parseDiagSnapshot, parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { ScenarioLine } from "../../src/demo/bus.js";
 import { FAULT_TESTS, type FaultTest } from "../../src/demo/fault-tests.js";
-import { BRANCH_STEPS, FaultyDriver, ID_FIELDS, type BranchStep, type FaultBranch, type FaultContext } from "../../src/demo/faulty.js";
+import { BRANCH_STEPS, FAULT_PLAN, FaultyDriver, ID_FIELDS, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { DemoScenarios } from "../../src/demo/scenarios.js";
-import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { DYNAMIC, filesUnder, specifiers } from "../support/imports.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -60,18 +60,29 @@ describe("драйвер нарушителя «ПР» — при режиме �
     replies.push(body);
     return { status: r.status, body };
   };
-  type Opts = { closeWaitMs?: number; fetch?: typeof fetch; timeoutMs?: number };
-  const driver = (branches: Partial<Record<FaultTest, FaultBranch>>, o: Opts = {}) =>
-    new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches, otherBusy: () => demo.scenarios.busy, ...o });
+  type Opts = { closeWaitMs?: number; fetch?: typeof fetch; timeoutMs?: number; clientWaitMs?: number };
+  /** Ветка каркасных тестов: ход и ожидаемые пары — тестовой таблицей (как FAULT_PLAN в сборке стенда, опция `plan`).
+   *  Операции нарушения в каркасных тестах — служебные запросы стенда (TEST_OPS). */
+  type TestBranch = { readonly expect: readonly Guard[]; readonly run: FaultBranch["run"] };
+  const TEST_OPS = ["GET /pao/v1/agent", "POST /pao/v1/credentials", "GET /v1/shops", "GET /v1/shops/{shop_id}", "GET /v1/shops/{shop_id}/catalog", "POST /v1/shops/{shop_id}"];
+  const driver = (branches: Partial<Record<FaultTest, TestBranch>>, o: Opts = {}) => {
+    const entries = Object.entries(branches) as [FaultTest, TestBranch][];
+    return new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+      branches: Object.fromEntries(entries.map(([t, b]) => [t, { run: b.run }])),
+      plan: Object.fromEntries(entries.map(([t, b]) => [t, { violations: TEST_OPS, expect: b.expect }])),
+      otherBusy: () => demo.scenarios.busy,
+      ...o,
+    });
+  };
   /** Один прогон ветки — шаги этого прогона. */
-  async function once(test: FaultTest, branch: FaultBranch, o: Opts = {}): Promise<ScenarioLine[]> {
+  async function once(test: FaultTest, branch: TestBranch, o: Opts = {}): Promise<ScenarioLine[]> {
     const n = steps().length;
     const d = driver({ [test]: branch }, o);
     expect(d.start(test)).toEqual({ ok: true });
     await d.settled();
     return steps().slice(n);
   }
-  const last = async (test: FaultTest, branch: FaultBranch, o: Opts = {}) => (await once(test, branch, o)).at(-1)!;
+  const last = async (test: FaultTest, branch: TestBranch, o: Opts = {}) => (await once(test, branch, o)).at(-1)!;
   const marked = (test: string, mandateId: string) => demo.stand.stand.demo!.log().some((e) => e.what === "MARKED" && e.test === test && e.ids?.mandate_id === mandateId);
   /** Настоящий запрос к ПАО, на который Платформа отвечает отказом: тело не по форме. */
   const badCredential = (c: FaultContext, key: string) => c.violate.call("POST /pao/v1/credentials", { body: {} as never, idempotencyKey: key });
@@ -99,7 +110,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
     expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
-    const r = await post(`/fault/${enc("Н-07")}`);
+    const r = await post(`/fault/${enc("Н-08")}`); // ветки Н-08 пока нет (П-11.3в)
     expect(r.status).toBe(409);
     expect(JSON.parse(r.body)).toEqual({ ok: false, code: "NOT_READY" });
   });
@@ -625,6 +636,175 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect(h.busy).toBe(false);
   });
 
+  describe("П-11.3б: ветки Н-07, Н-06 и закрытая таблица нарушений", { timeout: 60_000 }, () => {
+    /** Драйвер с настоящими ветками и таблицей FAULT_PLAN (без тестовых подмен), срок ожидания клиента — короче. */
+    const real = (clientWaitMs = 15_000) => new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { otherBusy: () => demo.scenarios.busy, clientWaitMs });
+    const untilStep = async (from: number, name: string) => {
+      for (const end = Date.now() + 15_000; Date.now() < end; await pause(50)) {
+        const s = steps().slice(from).find((x) => x.step === name);
+        if (s) return s;
+      }
+      throw new Error(`не дождались шага ${name}`);
+    };
+    const signCalls = (from: number) => demo.stand.stand.calls().slice(from).filter((c) => c.method === "POST" && /^\/participants\/v1\/mandates\/[^/]+\/sign$/.test(c.path));
+
+    it("таблица FAULT_PLAN — по всем тестам «ПР», коды и операции по п. 4 ответа Платформы по #112; ветка роль и коды не объявляет", () => {
+      expect(Object.keys(FAULT_PLAN).sort()).toEqual([...FAULT_TESTS].sort());
+      expect(FAULT_PLAN["Н-07"]).toEqual({ violations: ["POST /pao/v1/credentials"], expect: [{ code: "PRINCIPAL_SIGNATURE_PENDING", status: 409 }] });
+      expect(FAULT_PLAN["Н-06"]).toEqual({ violations: ["POST /pao/v1/credentials"], expect: [{ code: "MANDATE_REVOKED", status: 409 }] });
+      expect(FAULT_PLAN["Н-01"].expect).toEqual([{ code: "ORDER_NOT_PAYABLE", status: 409 }]);
+      expect(FAULT_PLAN["Н-08"].expect).toEqual([{ code: "MANDATE_SCOPE", status: 409 }]);
+      expect(FAULT_PLAN["Н-09"].expect).toEqual([{ code: "MANDATE_SCOPE", status: 409 }]);
+      expect(FAULT_PLAN["Н-05"].expect).toEqual([]);
+    });
+
+    it("нарушение не той операцией, что в таблице, — ошибка BAD_VIOLATION, запрос не уходит", async () => {
+      const callsFrom = demo.stand.stand.calls().length;
+      const n = steps().length;
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+        branches: { "Н-07": { run: async (c) => (c.mark({ mandate_id: "mnd_badv" }), void (await c.violate.call("GET /pao/v1/agent", {}).catch(() => undefined))) } },
+      });
+      d.start("Н-07");
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { code: "BAD_VIOLATION" } });
+      expect(demo.stand.stand.calls().slice(callsFrom).some((c) => c.path === "/pao/v1/agent")).toBe(false);
+    });
+
+    it("Н-07: поручение нарушителя подписал клиент (эмулятор банка), корзину — нет; реквизит по неподписанной корзине → 409 PRINCIPAL_SIGNATURE_PENDING, реквизит не выдан", async () => {
+      const n = steps().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      const d = real();
+      expect(d.start("Н-07")).toEqual({ ok: true });
+      const req = await untilStep(n, "fault.note.intent_requested");
+      expect((await demo.stand.stand.issuer.sign(String(req.params.mandate_id))).statusCode).toBe(200); // клиент — в банке
+      await d.settled();
+      const s = steps().slice(n);
+      expect(s.map((x) => x.step)).toEqual(["run.fault", "fault.note.intent_requested", "fault.note.intent_signed", "fault.note.cart_created", "fault.note.cart_keep_unsigned", "fault.sent", "fault.refused"]);
+      const cartId = String(s.find((x) => x.step === "fault.note.cart_created")!.params.mandate_id);
+      // Итог и вторая пометка несут корзину (ревью П-11.3б № 6); привязка «ПР» к транзакции на пульте — в «Открыто».
+      expect(s.at(-1)!.params).toMatchObject({ test: "Н-07", code: "PRINCIPAL_SIGNATURE_PENDING", status: 409, mandate_id: cartId, merchant_id: MASSA_MADRE.merchant_id });
+      expect(demo.stand.stand.demo!.log().some((e) => e.what === "MARKED" && e.test === "Н-07" && e.ids?.mandate_id === cartId)).toBe(true);
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+      expect(demo.stand.stand.demo!.log().some((e) => e.what === "MARKED" && e.test === "Н-07" && e.ids?.merchant_id === MASSA_MADRE.merchant_id)).toBe(true);
+    });
+
+    it("Н-06: полномочие действовало — клиент подписал поручение и корзину, затем отозвал поручение (корзина — каскадом); реквизит по отозванной корзине → 409 MANDATE_REVOKED, реквизит не выдан", async () => {
+      const n = steps().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      const d = real();
+      expect(d.start("Н-06")).toEqual({ ok: true });
+      const req = await untilStep(n, "fault.note.intent_requested");
+      const intentId = String(req.params.mandate_id);
+      expect((await demo.stand.stand.issuer.sign(intentId)).statusCode).toBe(200);
+      const cartAsk = await untilStep(n, "fault.note.cart_sign_ask");
+      const cartId = String(cartAsk.params.mandate_id);
+      expect((await demo.stand.stand.issuer.sign(cartId)).statusCode).toBe(200); // второе действие клиента — корзина действует
+      await untilStep(n, "fault.note.revoke_ask");
+      expect((await demo.stand.stand.issuer.revoke(intentId)).statusCode).toBe(200); // третье — отзыв поручения в банке
+      await d.settled();
+      const s = steps().slice(n);
+      expect(s.map((x) => x.step)).toEqual([
+        "run.fault",
+        "fault.note.intent_requested",
+        "fault.note.intent_signed",
+        "fault.note.cart_created",
+        "fault.note.cart_sign_ask",
+        "fault.note.cart_signed",
+        "fault.note.revoke_ask",
+        "fault.note.revoked",
+        "fault.sent",
+        "fault.refused",
+      ]);
+      expect(s.at(-1)!.params).toMatchObject({ test: "Н-06", code: "MANDATE_REVOKED", status: 409, mandate_id: cartId });
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+    });
+
+    it("отказ агента от полномочий (relinquish) в подготовке запрещён — BAD_PREP, запрос не уходит; пометка после нарушения — ошибка", async () => {
+      const callsFrom = demo.stand.stand.calls().length;
+      const n = steps().length;
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+        branches: {
+          "Н-06": {
+            run: async (c) => {
+              c.mark({ mandate_id: "mnd_relq" });
+              await c.call("POST /pao/v1/mandates/{id}/relinquish", { path: { id: "mnd_relq" }, idempotencyKey: "fault-relq" }).catch(() => undefined);
+            },
+          },
+        },
+      });
+      d.start("Н-06");
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { code: "BAD_PREP" } });
+      expect(demo.stand.stand.calls().slice(callsFrom).some((c) => c.path.endsWith("/relinquish"))).toBe(false);
+      // Пометка после нарушающего запроса — ошибка; прошедшее нарушение при этом остаётся «совершено» (старше всего).
+      expect(
+        await last("Н-07", {
+          expect: [],
+          run: async (c) => {
+            c.mark({ mandate_id: "mnd_mav1" });
+            await c.violate.call("GET /pao/v1/agent", {});
+            expect(() => c.mark({ mandate_id: "mnd_mav2" })).toThrow("MARK_AFTER_VIOLATION");
+          },
+        }),
+      ).toMatchObject({ step: "fault.marked", params: { mandate_id: "mnd_mav1" } });
+      // На стенде пометки после нарушения нет (повторное B: «ни одна — после нарушающего запроса»).
+      expect(marked("Н-07", "mnd_mav2")).toBe(false);
+    });
+
+    it("«прервать» (кнопка монитора) останавливает ожидание клиента в нарушении — «не разыграно» ABORTED, сюжеты снова свободны (решение 3)", async () => {
+      const n = steps().length;
+      expect((await post(`/fault/${enc("Н-07")}`)).status).toBe(202); // драйвер сборки — срок 180 с
+      await untilStep(n, "fault.note.intent_requested");
+      expect(demo.scenarios.start("intent")).toEqual({ ok: false, code: "BUSY" }); // пока ждёт клиента — сюжеты заняты
+      const t0 = Date.now();
+      expect((await post("/scenario/abort")).status).toBe(202);
+      await demo.faulty!.settled();
+      expect(Date.now() - t0).toBeLessThan(3000);
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-07", code: "ABORTED" } });
+      expect(demo.faulty!.busy).toBe(false);
+      expect(demo.faulty!.abort()).toEqual({ ok: false, code: "NOT_AWAITING" });
+    });
+
+    it("клиент не подписал за срок — «помечено, но не разыграно» с конкретной причиной CLIENT_SIGN_TIMEOUT; драйвер за клиента не подписывал", async () => {
+      const n = steps().length;
+      const callsFrom = demo.stand.stand.calls().length;
+      const d = real(400);
+      d.start("Н-07");
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { code: "CLIENT_SIGN_TIMEOUT" } });
+      expect(signCalls(callsFrom)).toEqual([]); // подписи не было ни от кого — драйвер за клиента не подписывает
+    });
+
+    it("инвариант 3: у ветки нет средств подписать за клиента — путь шлюза участников закрыт (BAD_TARGET), в контексте нет эмулятора банка", async () => {
+      const callsFrom = demo.stand.stand.calls().length;
+      const merchantsFrom = demo.stand.merchantCalls().length;
+      let keys: string[] = [];
+      const n = steps().length;
+      // Прямой путь шлюза и обходы через «..» после «/v1/» (ревью П-11.3б № 3).
+      for (const target of ["/participants/v1/mandates/mnd_sign_try/sign", "/v1/../participants/v1/mandates/mnd_sign_try/sign", "/v1/%2e%2e/participants/v1/mandates/mnd_sign_try/sign", "/v1/%2E%2E/x", "/v1/./../x"]) {
+        const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+          branches: {
+            "Н-07": {
+              run: async (c) => {
+                keys = Object.keys(c).sort();
+                c.mark({ mandate_id: "mnd_sign_try" });
+                await c.shop("POST", target, { decision: "APPROVE" }).catch(() => undefined);
+              },
+            },
+          },
+        });
+        const n = steps().length;
+        d.start("Н-07");
+        await d.settled();
+        expect(steps().slice(n).at(-1), target).toMatchObject({ step: "fault.unplayed", params: { code: "BAD_TARGET" } });
+      }
+      void n;
+      expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient"]);
+      expect(signCalls(callsFrom)).toEqual([]);
+      expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
+    });
+  });
+
   it("тексты итоговых шагов — с пометкой «нарушитель (ПР)», ru и en; «не помечено» — только у fault.failed", () => {
     for (const step of ["run.fault", "fault.sent", "fault.refused", "fault.marked", "fault.unplayed", "fault.failed"])
       for (const lang of ["ru", "en"] as const) expect((MESSAGES[lang] as Record<string, string>)[`step.${step}`], `${lang} ${step}`).toMatch(/\(ПР\)/);
@@ -644,6 +824,56 @@ const ALLOWED_DYNAMIC: Readonly<Record<string, string>> = {
   "src/demo/stand.ts": `createRequire(import.meta.url).resolve("agentic-buyer-ref/config/params.stand.json")`,
 };
 
+/** Опции каждого `new FaultyDriver(…)` в тексте: объект третьим аргументом — только ключи otherBusy и closeWaitMs (полной
+ *  или краткой записью), без `...`; нет объекта — тоже норма. Разбор — по парным скобкам верхнего уровня. */
+function driverOptionsOk(text: string): boolean {
+  const ALLOWED = new Set(["otherBusy", "closeWaitMs"]);
+  for (let at = text.indexOf("new FaultyDriver("); at >= 0; at = text.indexOf("new FaultyDriver(", at + 1)) {
+    // Аргументы вызова до парной скобки.
+    let depth = 0;
+    let end = -1;
+    for (let i = at + "new FaultyDriver".length; i < text.length; i++) {
+      const ch = text[i]!;
+      if (ch === "(" || ch === "{" || ch === "[") depth++;
+      else if (ch === ")" || ch === "}" || ch === "]") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end < 0) return false;
+    const args = text.slice(at + "new FaultyDriver(".length, end);
+    // Части верхнего уровня, разделённые запятыми.
+    const split = (s: string): string[] => {
+      const out: string[] = [];
+      let d = 0;
+      let cur = "";
+      for (const ch of s) {
+        if (ch === "(" || ch === "{" || ch === "[") d++;
+        else if (ch === ")" || ch === "}" || ch === "]") d--;
+        if (ch === "," && d === 0) {
+          out.push(cur.trim());
+          cur = "";
+        } else cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parts = split(args);
+    const opts = parts[2];
+    if (opts === undefined) continue;
+    if (!opts.startsWith("{") || !opts.endsWith("}")) return false; // опции не литералом — не проверить
+    for (const p of split(opts.slice(1, -1))) {
+      if (p.startsWith("...")) return false;
+      const key = /^([A-Za-z_$][\w$]*)/.exec(p)?.[1];
+      if (key === undefined || !ALLOWED.has(key)) return false;
+    }
+  }
+  return true;
+}
+
 /** Нарушения границы драйвера (П7 п. 6, дополнение 1) в дереве `root/src`. */
 function driverBoundary(root: string): string[] {
   const src = filesUnder(join(root, "src"));
@@ -654,6 +884,12 @@ function driverBoundary(root: string): string[] {
     const text = readFileSync(f, "utf8");
     const specs = specifiers(text);
     if (specs.some((s) => /(^|\/)faulty\.js$/.test(s)) && name !== "src/demo/run.ts") bad.push(`${name} → faulty`);
+    // Средства действия за клиента — подписи, подтверждения, отзыва — в драйвере не упоминаются вовсе (инвариант 3, П5 п. 5;
+    // ревью П-11.3б № 4).
+    if (name === "src/demo/faulty.ts" && /\bissuer\b|bankApp|\bupk\b|participants|revokeMandate|remindClient|stopPurchase|\.inject\s*\(/.test(text)) bad.push(`${name} → средство действия за клиента`);
+    // Опции драйвера только для автотестов — сборка стенда их не передаёт: у `new FaultyDriver(` в объекте опций — только
+    // otherBusy и closeWaitMs, без краткой записи других ключей и без разворота `...` (ревью П-11.3б № 1, повторное A).
+    if (name === "src/demo/run.ts" && !driverOptionsOk(text)) bad.push(`${name} → опции драйвера для автотестов`);
     if (name === "src/demo/faulty.ts") continue;
     if (specs.some((s) => /^@kuzin4u\/agentic-core(\/|$)/.test(s))) bad.push(`${name} → @kuzin4u/agentic-core`);
     if (specs.some((s) => s.startsWith("agentic-buyer-ref/src/agent/adapters/"))) bad.push(`${name} → адаптер ядра`);
@@ -676,13 +912,8 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
     const driverText = readFileSync(join(ROOT, "src/demo/faulty.ts"), "utf8");
     expect(specifiers(driverText)).toContain("@kuzin4u/agentic-core/pao");
     expect(driverText).toMatch(/\bloadKey\b/);
-    expect(driverText).not.toMatch(/\bissuer\b|bankApp|\bupk\b/); // П5 п. 5: ни эмулятора банка, ни страницы УПК
     for (const [file, expr] of Object.entries(ALLOWED_DYNAMIC)) expect(readFileSync(join(ROOT, file), "utf8"), file).toContain(expr);
-    // Сборка демо-стенда создаёт драйвер без подменного fetch и срока (они — только для автотестов, мелочь № 6).
-    const runText = readFileSync(join(ROOT, "src/demo/run.ts"), "utf8");
-    const ctor = runText.slice(runText.indexOf("new FaultyDriver("), runText.indexOf(")", runText.indexOf("{ otherBusy", runText.indexOf("new FaultyDriver("))) + 1);
-    expect(ctor).toContain("new FaultyDriver(");
-    expect(ctor).not.toMatch(/\bfetch\b|timeoutMs|branches/);
+    expect(readFileSync(join(ROOT, "src/demo/run.ts"), "utf8")).toContain("new FaultyDriver(");
   });
 
   it("поломки ловятся на временном дереве: клиент ПАО, адаптер ядра, динамическая ссылка (и в разрешённых файлах — вне точных строк), fetch на адреса стенда, импорт драйвера", () => {
@@ -725,6 +956,21 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
         ]),
       );
       expect(v.some((x) => x.startsWith("src/demo/faulty.ts") || x.startsWith("src/demo/run.ts") || x.startsWith("src/demo/stand.ts"))).toBe(false);
+      // Опция для автотестов после otherBusy в run.ts и средство действия за клиента в драйвере (ревью П-11.3б № 1, № 4).
+      writeFileSync(
+        join(root, "src/demo/run.ts"),
+        `import { x } from "./faulty.js";\nexport const y = new FaultyDriver(stand, (s) => b.scenario(s), { otherBusy: () => sc.busy, plan: {} });\n`,
+      );
+      writeFileSync(join(root, "src/demo/faulty.ts"), `import { PaoClient } from "@kuzin4u/agentic-core/pao";\nexport const x = (d: any) => d.stand.demo.revokeMandate("m");\n`);
+      expect(driverBoundary(root)).toEqual(expect.arrayContaining(["src/demo/run.ts → опции драйвера для автотестов", "src/demo/faulty.ts → средство действия за клиента"]));
+      // Краткая запись и разворот (повторное A).
+      for (const opts of ["{ otherBusy: () => sc.busy, plan }", "{ branches, otherBusy: () => sc.busy }", "{ otherBusy: () => sc.busy, ...testOpts }"]) {
+        writeFileSync(join(root, "src/demo/run.ts"), `import { x } from "./faulty.js";\nexport const y = new FaultyDriver(stand, (s) => b.scenario(s), ${opts});\n`);
+        expect(driverBoundary(root), opts).toContain("src/demo/run.ts → опции драйвера для автотестов");
+      }
+      // Разрешённые опции — не нарушение.
+      writeFileSync(join(root, "src/demo/run.ts"), `import { x } from "./faulty.js";\nexport const y = new FaultyDriver(stand, (s) => b.scenario(s), { otherBusy: () => sc.busy, closeWaitMs: 100 });\n`);
+      expect(driverBoundary(root)).not.toContain("src/demo/run.ts → опции драйвера для автотестов");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
