@@ -4,6 +4,7 @@
 // в ответе, «совершено» — только при пришедшем ответе, что ветка бросила или поймала — не решает; закрытый перечень шагов
 // ветки; на шину — только тест, код, статус и идентификаторы по форме; метка прогона, взаимная блокировка, закрытие;
 // маршрут; граница импортов.
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -110,7 +111,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
     expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
-    const r = await post(`/fault/${enc("Н-01")}`); // ветки Н-01 пока нет (П-11.3г)
+    const r = await post(`/fault/${enc("Н-05")}`); // ветки Н-05 пока нет (П-11.3д)
     expect(r.status).toBe(409);
     expect(JSON.parse(r.body)).toEqual({ ok: false, code: "NOT_READY" });
   });
@@ -799,30 +800,33 @@ describe("драйвер нарушителя «ПР» — при режиме �
         expect(steps().slice(n).at(-1), target).toMatchObject({ step: "fault.unplayed", params: { code: "BAD_TARGET" } });
       }
       void n;
-      expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient"]);
+      // wakeEvents (П-11.3г) — только сигнал ленте событий ядра: ни ядра, ни эмулятора банка ветка не получает.
+      expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient", "wakeEvents"]);
       expect(signCalls(callsFrom)).toEqual([]);
       expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
     });
   });
 
+  // Ветки по подписанной корзине (П-11.3в, П-11.3г): настоящая таблица и настоящие ветки; клиент — эмулятор банка.
+  const real = (o: Opts = {}) => new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { otherBusy: () => demo.scenarios.busy, clientWaitMs: 15_000, ...o });
+  const untilStepFrom = async (from: number, name: string) => {
+    for (const end = Date.now() + 15_000; Date.now() < end; await pause(50)) {
+      const s = steps().slice(from).find((x) => x.step === name);
+      if (s) return s;
+    }
+    throw new Error(`не дождались шага ${name}`);
+  };
+  /** Клиент (эмулятор банка, автотест) подписывает поручение и корзину нарушителя. */
+  const clientSignsBoth = async (from: number): Promise<string> => {
+    const req = await untilStepFrom(from, "fault.note.intent_requested");
+    expect((await demo.stand.stand.issuer.sign(String(req.params.mandate_id))).statusCode).toBe(200);
+    const ask = await untilStepFrom(from, "fault.note.cart_sign_ask_scope");
+    const cartId = String(ask.params.mandate_id);
+    expect((await demo.stand.stand.issuer.sign(cartId)).statusCode).toBe(200);
+    return cartId;
+  };
+
   describe("П-11.3в: ветка MANDATE_SCOPE — Н-08, Н-09 (по подписанной корзине)", { timeout: 60_000 }, () => {
-    const real = () => new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { otherBusy: () => demo.scenarios.busy, clientWaitMs: 15_000 });
-    const untilStep = async (from: number, name: string) => {
-      for (const end = Date.now() + 15_000; Date.now() < end; await pause(50)) {
-        const s = steps().slice(from).find((x) => x.step === name);
-        if (s) return s;
-      }
-      throw new Error(`не дождались шага ${name}`);
-    };
-    /** Клиент (эмулятор банка, автотест) подписывает поручение и корзину нарушителя. */
-    const clientSignsBoth = async (from: number): Promise<string> => {
-      const req = await untilStep(from, "fault.note.intent_requested");
-      expect((await demo.stand.stand.issuer.sign(String(req.params.mandate_id))).statusCode).toBe(200);
-      const ask = await untilStep(from, "fault.note.cart_sign_ask_scope");
-      const cartId = String(ask.params.mandate_id);
-      expect((await demo.stand.stand.issuer.sign(cartId)).statusCode).toBe(200);
-      return cartId;
-    };
     const price = MASSA_MADRE.items[0]!.price!;
 
     it("Н-08: реквизит по подписанной корзине на сумму на одну единицу больше её предела → 409 MANDATE_SCOPE, реквизит не выдан", async () => {
@@ -848,7 +852,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
         branches: {
           "Н-08": {
             run: async (c) => {
-              const key = `n08r-${Date.now()}`;
+              // Ключ — с UUID, как у веток: метка времени Date.now() — 13 цифр в order_ref; с верной суммой Луна Платформа
+              // принимает её за номер карты и отвечает CREDENTIALS_FORBIDDEN (плавающий отказ, П-11.3г).
+              const key = `n08r-${randomUUID()}`;
               const { cartId } = await signedCart(c, key);
               const cred = await credentialFor(c, cartId, key, { amountMax: price });
               // Без фильтра: каждое поле — явно (ревью П-11.3в № 1 — исключение: отсутствующее поле не проверялось бы молча).
@@ -860,7 +866,8 @@ describe("драйвер нарушителя «ПР» — при режиме �
       d.start("Н-08");
       await clientSignsBoth(n);
       await d.settled();
-      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.marked", params: { test: "Н-08" } });
+      const end = steps().slice(n).at(-1);
+      expect(end, JSON.stringify(end?.params)).toMatchObject({ step: "fault.marked", params: { test: "Н-08" } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1); // MANDATE_SCOPE в прямом тесте — из-за суммы
       const [cryptogram, tokenRef, credentialRef] = secrets;
       for (const [name, v] of [["cryptogram", cryptogram], ["token_ref", tokenRef], ["credential_ref", credentialRef]] as const) {
@@ -898,6 +905,117 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.failed", params: { test: "Н-09", code: "NO_SECOND_MERCHANT" } });
       expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.path.startsWith("/pao/"))).toEqual([]);
       expect(demo.stand.stand.demo!.log().slice(logFrom).some((e) => e.what === "MARKED")).toBe(false);
+    });
+  });
+
+  describe("П-11.3г: ветка Н-01 — повторная оплата оплаченного заказа", { timeout: 60_000 }, () => {
+    /** Авторизации заказа на мониторе — события Платформы, которые получило ядро (инвариант 6). */
+    const authorized = (opRef: string) =>
+      demo.bus.history().filter((i) => i.stream === "monitor" && i.event.source === "pao_event" && i.event.what === "operation.authorized" && i.event.ids.op_ref === opRef);
+    /** Подглядывающий fetch (только автотест): настоящий ответ, из ответа на реквизит — три значения для проверки «нигде нет». */
+    const spying = (secrets: string[]): typeof fetch =>
+      (async (input: string | URL | Request, init?: RequestInit) => {
+        const r = await fetch(input, init);
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.pathname === "/pao/v1/credentials" && (init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST" && r.ok) {
+          const b = (await r.clone().json()) as { credential_ref?: unknown; payload?: { cryptogram?: unknown; token_ref?: unknown } };
+          // Без фильтра: каждое поле — явно (как обратный тест Н-08, ревью П-11.3в № 1).
+          secrets.push(...([b.credential_ref, b.payload?.cryptogram, b.payload?.token_ref] as string[]));
+        }
+        return r;
+      }) as typeof fetch;
+
+    it("Н-01: заказ, реквизит, первая оплата — авторизация Платформы (одна operation.authorized); повтор тем же пакетом → 409 ORDER_NOT_PAYABLE; реквизит и пакет — только в памяти ветки", async () => {
+      const n = steps().length;
+      const histFrom = demo.bus.history().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      const secrets: string[] = [];
+      const d = real({ fetch: spying(secrets) });
+      expect(d.start("Н-01")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      const s = steps().slice(n);
+      const orderId = String(s.find((x) => x.step === "fault.note.order_placed")?.params.order_id);
+      expect(orderId).toMatch(/^ORD-/);
+      expect(s.find((x) => x.step === "fault.note.first_payment")?.params).toMatchObject({ test: "Н-01", order_id: orderId });
+      // Порядок: первая оплата прошла раньше, чем ушёл нарушающий запрос.
+      expect(s.findIndex((x) => x.step === "fault.note.first_payment")).toBeLessThan(s.findIndex((x) => x.step === "fault.sent"));
+      expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-01", code: "ORDER_NOT_PAYABLE", status: 409, mandate_id: cartId } });
+      // Первое списание — по событию Платформы; второе не ушло: событие одно и после отказа не прибавилось.
+      // Событие — по op_ref операции первой оплаты (номера заказа в событии нет: операцию нарушителя ядро не читает — это не
+      // его покупка). Лента ядра читает по сигналу: до отказа её будит только ветка (wakeEvents); после нарушения тест
+      // дочитывает её сам (ревью № 3).
+      const rawOpRef = s.find((x) => x.step === "fault.note.first_payment")?.params.op_ref;
+      expect(typeof rawOpRef === "string" && /^[A-Za-z0-9_.:-]+$/.test(rawOpRef), "op_ref первой оплаты — по форме").toBe(true);
+      const opRef = rawOpRef as string;
+      for (const end = Date.now() + 10_000; authorized(opRef).length === 0 && Date.now() < end; await pause(50));
+      expect(authorized(opRef)).toHaveLength(1);
+      // После нарушения ленту ядра ветка уже не будит — дочитать её здесь, иначе второе событие и не пришло бы (ревью
+      // П-11.3г № 3).
+      await demo.stand.agent.events.signal();
+      const otherAuth = demo.bus.history().slice(histFrom).filter((i) => i.stream === "monitor" && i.event.source === "pao_event" && i.event.what === "operation.authorized" && i.event.ids.op_ref !== opRef);
+      expect(otherAuth).toEqual([]);
+      // Витрина получила две оплаты заказа: первую — 200, повтор — 409 ORDER_NOT_PAYABLE до авторизации.
+      const payments = demo.stand.merchantCalls().filter((c) => c.path === `/v1/shops/${MASSA_MADRE.id}/orders/${orderId}/payment`);
+      expect(payments.map((c) => [c.status, c.code ?? null])).toEqual([
+        [200, null],
+        [409, "ORDER_NOT_PAYABLE"],
+      ]);
+      // Реквизит выдан ровно один (по заказу) — и по ответу, и по стенду; значения — явно непустые, затем «нигде нет».
+      expect(secrets).toHaveLength(3);
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1);
+      for (const [i, name] of ["credential_ref", "cryptogram", "token_ref"].entries()) expect(typeof secrets[i] === "string" && secrets[i]!.length > 0, `${name} — непустая строка`).toBe(true);
+      // Ни на шине, ни в журнале агента, ни в журнале стенда. Ответы маршрута не проверяются: прогон — через d.start, а
+      // маршрут отдаёт только {ok, code} (ревью П-11.3г № 11).
+      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log())].join("\n");
+      for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
+    });
+
+    it("Н-01: первая оплата не авторизована Платформой — повтор не уходит, «помечено, но не разыграно» FIRST_PAYMENT_NOT_AUTHORIZED, а не ложная «защита»", async () => {
+      // Платформа «не знает» операции по корзине — отказ повтора тогда ничего бы не доказывал; операция есть, но номер не по
+      // форме — пульт не свяжет событие с шагом (ревью П-11.3г № 9).
+      const noOps = fake((u) => (u.pathname === "/pao/v1/operations" ? json(200, []) : undefined));
+      // Сколько настоящих авторизованных операций подмена переписала: случай «op_ref не по форме» проверяет op_ref, только
+      // если операция была и авторизована (иначе тот же код пришёл бы по другой причине; повторное ревью П-11.3г № 1).
+      let rewritten = 0;
+      const badOpRef = (async (input: string | URL | Request, init?: RequestInit) => {
+        const r = await fetch(input, init);
+        if (new URL(input instanceof Request ? input.url : String(input)).pathname !== "/pao/v1/operations") return r;
+        const ops = (await r.json()) as Record<string, unknown>[];
+        rewritten += ops.filter((o) => typeof o.order_ref === "string" && o.order_ref.startsWith("ORD-") && (o.status === "AUTHORIZED" || o.status === "SETTLED")).length;
+        return json(r.status, ops.map((o) => ({ ...o, op_ref: "op ref!" })));
+      }) as typeof fetch;
+      for (const [name, f] of [["нет операции", noOps], ["op_ref не по форме", badOpRef]] as const) {
+        const n = steps().length;
+        const d = real({ fetch: f });
+        expect(d.start("Н-01")).toEqual({ ok: true });
+        const cartId = await clientSignsBoth(n);
+        await d.settled();
+        if (f === badOpRef) expect(rewritten, name).toBe(1);
+        const s = steps().slice(n);
+        expect(s.some((x) => x.step === "fault.sent"), name).toBe(false);
+        expect(s.some((x) => x.step === "fault.note.first_payment"), name).toBe(false);
+        expect(s.at(-1), name).toMatchObject({ step: "fault.unplayed", params: { test: "Н-01", code: "FIRST_PAYMENT_NOT_AUTHORIZED", mandate_id: cartId } });
+      }
+    });
+
+    it("Н-01: номер заказа из ответа витрины — только по форме (инвариант 4): иначе ни реквизита, ни оплаты, на шину не идёт — ORDER_ID_MALFORMED (ревью П-11.3г № 4)", async () => {
+      for (const bad of ["../x", "..", ".", "<b>x</b>", 42]) {
+        const n = steps().length;
+        const credsFrom = demo.stand.stand.issuedCredentials().length;
+        const paysFrom = demo.stand.merchantCalls().length;
+        // Подменный ответ витрины на заказ; остальное — настоящий стенд.
+        const d = real({ fetch: fake((u) => (u.pathname === `/v1/shops/${MASSA_MADRE.id}/orders` ? json(201, { id: bad }) : undefined)) });
+        expect(d.start("Н-01")).toEqual({ ok: true });
+        const cartId = await clientSignsBoth(n);
+        await d.settled();
+        const s = steps().slice(n);
+        expect(s.at(-1), String(bad)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-01", code: "ORDER_ID_MALFORMED", mandate_id: cartId } });
+        expect(s.some((x) => x.step === "fault.note.order_placed" || x.step === "fault.sent")).toBe(false);
+        expect(s.filter((x) => "order_id" in x.params)).toEqual([]);
+        expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+        expect(demo.stand.merchantCalls().slice(paysFrom).filter((c) => c.path.endsWith("/payment"))).toEqual([]);
+      }
     });
   });
 

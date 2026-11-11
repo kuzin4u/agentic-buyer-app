@@ -180,6 +180,9 @@ const ru = {
   "step.fault.note.other_merchant": "Нарушитель (ПР) — драйвер приложения ({test}): просит реквизит по корзине на другого продавца — {merchant_id}.",
   "step.fault.note.revoke_ask": "Нарушитель (ПР) — драйвер приложения ({test}): третье действие — отзовите поручение {mandate_id} на экране мандатов банка; корзина отзовётся вместе с ним.",
   "step.fault.note.revoked": "Нарушитель (ПР) — драйвер приложения ({test}): корзина {mandate_id} отозвана вместе с поручением.",
+  "step.fault.note.order_placed": "Нарушитель (ПР) — драйвер приложения ({test}): заказ {order_id} у витрины по корзине {mandate_id}.",
+  "step.fault.note.first_payment":
+    "Нарушитель (ПР) — драйвер приложения ({test}): Платформа записала операцию {op_ref} по заказу {order_id} — итог первой оплаты на мониторе по событию; первая оплата законна и входит в тест, нарушение — её повтор.",
   "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
@@ -425,6 +428,9 @@ const en: Record<MessageKey, string> = {
   "step.fault.note.other_merchant": "Violator (ПР) — app driver ({test}): asks for a credential on the cart for another merchant — {merchant_id}.",
   "step.fault.note.revoke_ask": "Violator (ПР) — app driver ({test}): third action — revoke mandate {mandate_id} on the bank mandates screen; the cart is revoked with it.",
   "step.fault.note.revoked": "Violator (ПР) — app driver ({test}): cart {mandate_id} revoked together with the mandate.",
+  "step.fault.note.order_placed": "Violator (ПР) — app driver ({test}): order {order_id} placed at the shop under cart {mandate_id}.",
+  "step.fault.note.first_payment":
+    "Violator (ПР) — app driver ({test}): the Platform recorded operation {op_ref} for order {order_id} — the first payment outcome is on the monitor from the event; the first payment is legitimate and part of the test, the violation is its repeat.",
   "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":

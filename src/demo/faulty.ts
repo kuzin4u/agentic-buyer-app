@@ -52,6 +52,9 @@ export const BRANCH_STEPS = [
   "fault.note.other_merchant",
   "fault.note.revoke_ask",
   "fault.note.revoked",
+  // П-11.3г: подготовка Н-01 — настоящая покупка: заказ у витрины и первая (законная) оплата.
+  "fault.note.order_placed",
+  "fault.note.first_payment",
 ] as const;
 export type BranchStep = (typeof BRANCH_STEPS)[number];
 
@@ -83,6 +86,10 @@ export interface FaultContext {
    *  или эмулятор клиента «Авто» при `DEMO_FAULTS=1`; в автотестах — эмулятор банка. Срок истёк — ветка остановлена с
    *  конкретной причиной (CLIENT_SIGN_TIMEOUT / CLIENT_REVOKE_TIMEOUT); клиент отклонил — CLIENT_DECLINED. */
   readonly waitClient: (mandateId: string, want: "ACTIVE" | "REVOKED") => Promise<void>;
+  /** Разбудить ленту событий ядра (только чтение ленты ПАО ядром, как опрос сюжетов): лента читает лишь по сигналу, а
+   *  push в демо-стенде нет — без сигнала событие Платформы по запросам ветки (Н-01: `operation.authorized` первой оплаты)
+   *  дошло бы до монитора только со следующим сюжетом. Итог на мониторе — по событию (инвариант 6), драйвер его не пишет. */
+  readonly wakeEvents: () => void;
 }
 
 /** Ветка нарушения: только ход. Роль нарушения и ожидаемую защиту ветка не объявляет — драйвер берёт их из закрытой
@@ -142,18 +149,20 @@ export async function intentAndCart(c: FaultContext, key: string): Promise<{ int
 /** Реквизит по корзине нарушителя — нарушение Н-06…Н-09 (операция таблицы FAULT_PLAN). Сумма — минимальные единицы и
  *  валюта корзины (правило совместимости 2); по умолчанию — цена корзины и продавец корзины. Тело ответа (реквизит) — только
  *  в памяти вызывающего: в журнал нарушения идёт лишь исход (ответ / отказ / сбой), на шину — код и статус (инвариант 1). */
-export const credentialFor = (c: FaultContext, cartId: string, key: string, o: { amountMax?: number; merchantId?: string } = {}) =>
-  c.violate.call("POST /pao/v1/credentials", {
-    body: {
-      mandate_id: cartId,
-      order_ref: `fault-${key}`,
-      merchant_id: o.merchantId ?? VIOLATOR_SHOP.merchant_id,
-      amount_max: o.amountMax ?? VIOLATOR_PRICE,
-      currency: "RUB",
-      kind: "CARD",
-    },
-    idempotencyKey: `${key}-credential`,
-  });
+export const credentialFor = (c: FaultContext, cartId: string, key: string, o: CredentialOptions = {}) =>
+  c.violate.call("POST /pao/v1/credentials", { body: credentialBody(cartId, key, o), idempotencyKey: `${key}-credential` });
+
+type CredentialOptions = { amountMax?: number; merchantId?: string; orderRef?: string };
+/** Тело запроса реквизита: по умолчанию — цена и продавец корзины, номер заказа — условный (у Н-06…Н-09 заказа нет);
+ *  у Н-01 — номер настоящего заказа витрины (витрина сверяет его с `order_ref` пакета). */
+const credentialBody = (cartId: string, key: string, o: CredentialOptions) => ({
+  mandate_id: cartId,
+  order_ref: o.orderRef ?? `fault-${key}`,
+  merchant_id: o.merchantId ?? VIOLATOR_SHOP.merchant_id,
+  amount_max: o.amountMax ?? VIOLATOR_PRICE,
+  currency: "RUB",
+  kind: "CARD" as const,
+});
 
 /** Подпись корзины клиентом перед нарушением Н-08, Н-09: в ПАО проверка «не подписан» стоит раньше «вне области» — по
  *  неподписанной корзине защита MANDATE_SCOPE не проверяется (план П-11.3в). */
@@ -167,7 +176,7 @@ export async function signedCart(c: FaultContext, key: string): Promise<{ intent
 
 /** Остановка ветки ею самой с конкретной причиной (до пометки — «не помечено», после — «помечено, но не разыграно»). */
 export class BranchStop extends Error {
-  constructor(readonly code: "NO_SECOND_MERCHANT") {
+  constructor(readonly code: "NO_SECOND_MERCHANT" | "ORDER_ID_MALFORMED" | "FIRST_PAYMENT_NOT_AUTHORIZED") {
     super(code);
   }
 }
@@ -189,8 +198,47 @@ export const n09Branch = (shops: readonly { readonly merchant_id: string; readon
   },
 });
 
+/** Ветка Н-01 «повторная оплата заказа» (R46 «два списания»; ответ Платформы по #112 п. 4; решения владельца, чат 11.11).
+ *  Подготовка — настоящая покупка: подписанная клиентом корзина, заказ у витрины, реквизит по этому заказу, первая оплата
+ *  пакетом агентской оплаты — законная, с авторизацией на Платформе (событие `operation.authorized` на шине). Нарушение —
+ *  тот же пакет ещё раз на тот же заказ → витрина 409 ORDER_NOT_PAYABLE, вторая авторизация не уходит.
+ *  - Пакет — ровно ПАО §4 (как у ядра): поля ответа Платформы на реквизит без изменений + корзина и номер заказа. Пакет и
+ *    реквизит — только в памяти ветки (инвариант 1): `#shop` пишет в журнал лишь исход, на шину — только идентификаторы.
+ *  - Первая оплата прошла — по записи операции Платформы (`GET /pao/v1/operations` по корзине), не по ответу витрины
+ *    (инвариант 6): витрина отвечает ORDER_NOT_PAYABLE на любой заказ не в состоянии CREATED — и на отклонённый, и на
+ *    ждущий подтверждения; без этой проверки отказ повтора мог бы прийти без первого списания (ложная «защита»).
+ *    Не прошла — «помечено, но не разыграно» FIRST_PAYMENT_NOT_AUTHORIZED, нарушение не уходит. */
+const n01Branch: FaultBranch = {
+  run: async (c) => {
+    const key = `n01-${randomUUID()}`;
+    const { cartId } = await signedCart(c, key);
+    const placed = await c.shop("POST", `/v1/shops/${VIOLATOR_SHOP.id}/orders`, { items: [{ sku: VIOLATOR_ITEM.sku, qty: 1 }], cart_mandate_id: cartId });
+    // Номер заказа — из ответа витрины (данные витрины): только по форме идентификатора, иначе в путь и на шину не идёт.
+    const orderId = (placed.body as { id?: unknown } | null | undefined)?.id;
+    // Номер — ещё и сегмент пути оплаты: первый знак — буква или цифра (ни «.», ни «..»), иначе реквизит выдавался бы впустую
+    // до отказа адреса BAD_TARGET (повторное ревью П-11.3г № 5).
+    if (typeof orderId !== "string" || !ID_FORM.test(orderId) || !/^[A-Za-z0-9]/.test(orderId)) throw new BranchStop("ORDER_ID_MALFORMED");
+    c.step("fault.note.order_placed", { order_id: orderId, mandate_id: cartId });
+    const cred = await c.call("POST /pao/v1/credentials", { body: credentialBody(cartId, key, { orderRef: orderId }), idempotencyKey: `${key}-credential` });
+    const pkg = { credential_ref: cred.credential_ref, kind: cred.kind, payload: cred.payload, aoi: cred.aoi, cart_mandate_id: cartId, order_ref: orderId };
+    const payment = `/v1/shops/${VIOLATOR_SHOP.id}/orders/${orderId}/payment`;
+    await c.shop("POST", payment, pkg);
+    const ops = await c.call("GET /pao/v1/operations", { query: { mandate_id: cartId } });
+    const first = ops.filter((o) => o.order_ref === orderId);
+    const opRef = first[0]?.op_ref;
+    // Условие хода, а не итог: «авторизовано» на монитор выпускает только событие Платформы, которое получило ядро (ревью
+    // П-11.3г № 1). Номер операции — по форме: по нему пульт свяжет событие с шагом (№ 9).
+    if (first.length !== 1 || (first[0]!.status !== "AUTHORIZED" && first[0]!.status !== "SETTLED") || typeof opRef !== "string" || !ID_FORM.test(opRef))
+      throw new BranchStop("FIRST_PAYMENT_NOT_AUTHORIZED");
+    c.step("fault.note.first_payment", { order_id: orderId, op_ref: opRef });
+    c.wakeEvents(); // итог первой оплаты — на монитор событием Платформы, не словами драйвера
+    await c.violate.shop("POST", payment, pkg);
+  },
+};
+
 /** Ветки по тестам (П-11.3б–д). Нет ветки — запуск NOT_READY. */
 const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
+  "Н-01": n01Branch,
   // Н-07 «транзакция без согласия клиента» (R18): реквизит по корзине, которую клиент не подписывал → 409
   // PRINCIPAL_SIGNATURE_PENDING.
   "Н-07": {
@@ -275,7 +323,7 @@ type StopCode =
   | "CLIENT_REVOKE_TIMEOUT"
   | "CLIENT_DECLINED"
   | "ABORTED"
-  | "NO_SECOND_MERCHANT";
+  | BranchStop["code"];
 
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
@@ -542,6 +590,11 @@ export class FaultyDriver {
       signal,
       mark,
       waitClient,
+      // Лента остановлена (агент остановлен) — не ошибка ветки: событие не придёт, итог ветки — по её журналу.
+      // Как у шагов: после конца ветки, её остановки и закрытия драйвера — ничего (ревью П-11.3г № 7).
+      wakeEvents: () => {
+        if (!signal.aborted) void this.#d.agent.events.signal().catch(() => undefined);
+      },
     };
     let threw = false;
     try {

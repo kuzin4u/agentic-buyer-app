@@ -69,6 +69,11 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "fault.note.other_merchant": p("Нарушитель (ПР): просит реквизит на другого продавца[ {merchant_id}]", "Violator (ПР): asks for a credential for another merchant[ {merchant_id}]"),
   "fault.note.revoke_ask": p("Нарушитель (ПР): просит клиента отозвать поручение[ {mandate_id}]", "Violator (ПР): asks the client to revoke mandate[ {mandate_id}]"),
   "fault.note.revoked": p("Нарушитель (ПР): корзина[ {mandate_id}] отозвана вместе с поручением", "Violator (ПР): cart[ {mandate_id}] revoked with the mandate"),
+  "fault.note.order_placed": p("Нарушитель (ПР): заказ[ {order_id}] у витрины по корзине[ {mandate_id}]", "Violator (ПР): order[ {order_id}] at the shop under cart[ {mandate_id}]"),
+  "fault.note.first_payment": p(
+    "Нарушитель (ПР): Платформа записала операцию первой оплаты заказа[ {order_id}] — итог по событию; первая оплата законна и входит в тест, нарушение — её повтор",
+    "Violator (ПР): the Platform recorded the first payment operation for order[ {order_id}] — outcome from the event; the first payment is legitimate and part of the test, the violation is its repeat",
+  ),
   "fault.note.prepared": p("Нарушитель (ПР): подготовка к нарушению {test}", "Violator (ПР): preparing violation {test}"),
   "fault.sent": p("Нарушитель (ПР): нарушающий запрос {test} отправлен", "Violator (ПР): violating request {test} sent"),
   "fault.failed": p("Нарушитель (ПР): нарушение {test} не разыграно — {code}", "Violator (ПР): violation {test} not played — {code}"),
@@ -184,6 +189,11 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   MARK_AFTER_VIOLATION: p("пометка после нарушающего запроса", "a mark after the violating request"),
   ABORTED: p("прервано человеком", "aborted by a human"),
   NO_SECOND_MERCHANT: p("нет второго продавца на стенде", "no second merchant on the stand"),
+  ORDER_ID_MALFORMED: p("номер заказа в ответе витрины не по форме", "the order number in the shop reply is malformed"),
+  FIRST_PAYMENT_NOT_AUTHORIZED: p(
+    "у Платформы нет авторизованной первой оплаты заказа с номером операции по форме — повторять нечего",
+    "the Platform has no authorized first payment for the order with a well-formed operation number — nothing to repeat",
+  ),
   BRANCH_ERROR: p("сбой в сценарии нарушения, не ответ защиты", "a fault in the violation script, not a safeguard response"),
   BAD_STEP: p("сценарий нарушения выпустил недопустимый шаг", "the violation script emitted a forbidden step"),
   CLOSED: p("драйвер нарушителя остановлен", "the violator driver was stopped"),
