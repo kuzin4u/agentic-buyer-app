@@ -65,8 +65,27 @@
   // Шаг сюжета: текст из словаря, {параметр} → значение; сумма — готовый текст на языке страницы. Всё — textContent.
   const param = (v) => (v && typeof v === "object" && v.text ? v.text[lang] : String(v));
   const fill = (tpl, params) => String(tpl).replace(/\{([a-z_]+)\}/g, (_, k) => (params && params[k] !== undefined ? param(params[k]) : m["value.none"]));
+  // Момент времени шага ({iso, text}, П-11.1д-а): текст — на языке страницы, машинное значение — в datetime элемента <time>.
+  const isTime = (v) => v && typeof v === "object" && typeof v.iso === "string" && v.text;
+  function fillNodes(tpl, params) {
+    const out = [];
+    let last = 0;
+    String(tpl).replace(/\{([a-z_]+)\}/g, (whole, k, at) => {
+      out.push(document.createTextNode(String(tpl).slice(last, at)));
+      const v = params ? params[k] : undefined;
+      if (isTime(v)) {
+        const t = document.createElement("time");
+        t.dateTime = v.iso;
+        t.textContent = v.text[lang];
+        out.push(t);
+      } else out.push(document.createTextNode(v !== undefined ? param(v) : m["value.none"]));
+      last = at + whole.length;
+      return whole;
+    });
+    out.push(document.createTextNode(String(tpl).slice(last)));
+    return out;
+  }
   function addStep(l) {
-    const text = fill(m["step." + l.step] || l.step, l.params);
     const li = document.createElement("li");
     // Остановка покупки — с пометкой: сбой сюжета, отказ корзины в банке (сюжет 6 и сюжеты 2–4; ревью П-11.1а № 4) и
     // покупка не подтверждена (сюжет 7 и сюжет 4), продавец вне поручения (сюжет 8), агент приостановлен и сбой снятия
@@ -82,7 +101,8 @@
       l.step === "operator.reinstate_failed" ||
       l.step === "suspend.resume_failed";
     li.className = stop ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
-    li.textContent = time(l.at) + "  " + text;
+    li.textContent = time(l.at) + "  ";
+    for (const node of fillNodes(m["step." + l.step] || l.step, l.params)) li.appendChild(node);
     consoleList.insertBefore(li, consoleList.firstChild);
     while (consoleList.childElementCount > MAX_ROWS) consoleList.removeChild(consoleList.lastChild);
     document.getElementById("console-empty").hidden = true;

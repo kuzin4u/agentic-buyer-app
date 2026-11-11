@@ -9,6 +9,7 @@ import { matches, type Passport } from "../../src/dashboards/passports.js";
 import { parseDiagSnapshot, parseWireItem } from "../../src/dashboards/wire.js";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
+import { timeView } from "../../src/demo/money.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { EXPIRY_SEC, INTENT_CARD_SCOPE, MORE_SCENARIOS } from "../../src/demo/scenarios.js";
 import { MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
@@ -416,14 +417,23 @@ describe("сюжет 10 «Срок поручения истёк» (П-09)", { t
     expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.method === "GET" && /^\/pao\/v1\/mandates\/[^/]+\/verify$/.test(c.path)).length).toBeGreaterThan(0);
     // Срок — из карточки: поручение действует EXPIRY секунд от запроса; попытка — после срока по часам стенда.
     const created = steps.find((s) => s.step === "intent.created")!;
-    expect(Date.parse(String(wait.params.valid_to)) - Date.parse(created.at)).toBeLessThanOrEqual(EXPIRY * 1000 + 1000);
-    expect(Date.parse(steps.find((s) => s.step === "expiry.attempt")!.at)).toBeGreaterThan(Date.parse(String(wait.params.valid_to)));
+    const validTo = Date.parse(String(Object(wait.params.valid_to).iso));
+    expect(validTo - Date.parse(created.at)).toBeLessThanOrEqual(EXPIRY * 1000 + 1000);
+    expect(Date.parse(steps.find((s) => s.step === "expiry.attempt")!.at)).toBeGreaterThan(validTo);
     // Код защиты: до витрин не дошло — ни выдачи, ни корзины, ни заказа, ни реквизита.
     expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
     const calls = demo.stand.stand.calls().slice(callsFrom);
     expect(calls.filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates")).toHaveLength(1); // только поручение
     expect(calls.some((c) => c.path === "/pao/v1/credentials")).toBe(false);
     expect(items.find((r) => r.ref === "expiry.refused")?.stage).toBe("outcome");
+    // Конец срока — по языку страницы, не сырым ISO в UTC (П-11.1д-а): в шаге шины — момент, во фразе — его текст.
+    const view = timeView(String(Object(wait.params.valid_to).iso));
+    expect(wait.params.valid_to).toEqual(view);
+    const phrase = items.find((r) => r.ref === "expiry.wait")!.phrase;
+    for (const lang of ["ru", "en"] as const) {
+      expect(phrase[lang]).toContain(view.text[lang]);
+      expect(phrase[lang]).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    }
     const runs = segments(items);
     expect(runs.map((s) => s.passport.name)).toEqual(["expired"]);
     for (const s of runs) expectAccepted(s);
