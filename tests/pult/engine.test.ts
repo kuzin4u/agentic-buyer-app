@@ -3,9 +3,11 @@
 // записях той же формы. Номер seq выдаётся при создании записи — записи создаются в порядке шины.
 import { describe, expect, it } from "vitest";
 import type { Interpretation, TxIds, Who } from "../../src/dashboards/interpret.js";
-import { evaluate, GUARANTEE_INFO, hasCardNumber, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
+import { evaluate, GUARANTEE_INFO, hasCardNumber, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
 import { CHECKABLE_CONDITIONS, isCheckable, RULES89 } from "../../src/pult/rules89.js";
+import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
 import { buildTxModel } from "../../src/pult/tx.js";
+import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
 
 let seq = 0;
 const at = (n: number) => new Date(Date.UTC(2026, 10, 11, 12, 0, 0, n)).toISOString();
@@ -313,5 +315,130 @@ describe("движок условий пульта (П-3.2б)", () => {
       expect(x.ru.length).toBeGreaterThan(0);
       expect(x.en).not.toMatch(/[А-Яа-яЁё]/);
     }
+  });
+});
+
+// П-3.2в (В7, В8, В9; решение владельца — PR #9 #pullrequestreview-5861020062): журнал сбоев стенда в форме
+// `stand.demo.log()` и пометки «ПР». Контракт записи — тип стенда v0.48.0: равенство проверяет tsc (тесты — в tsconfig).
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const contractWhat: Same<StandLogWhat, DemoLogEntry["what"]> = true;
+const contractIds: Same<keyof StandLogEntry["ids"], keyof DemoLogEntry["ids"]> = true;
+const fromStand = (e: DemoLogEntry): StandLogEntry => e;
+
+let logSeq = 0;
+const T0 = Date.UTC(2026, 10, 11, 15, 0, 0);
+const entry = (what: StandLogEntry["what"], ids: StandLogEntry["ids"], o: { test?: StandTest; atMs?: number } = {}): StandLogEntry => ({
+  seq: ++logSeq,
+  at: new Date(o.atMs ?? T0).toISOString(),
+  kind: what === "MARKED" || what.startsWith("CLIENT_") ? "action" : "fault",
+  ...(o.test !== undefined && { test: o.test }),
+  what,
+  ids,
+});
+/** Сбой «П» в точной форме записи стенда v0.48.0 (`StandFaultForm`): лишний или недостающий идентификатор — ошибка tsc. */
+const fault = <W extends keyof StandFaultForm>(what: W, ids: StandFaultIds<W>, test: StandTest, atMs?: number): StandLogEntry =>
+  entry(what, ids, { test, ...(atMs !== undefined && { atMs }) });
+const withLog = (items: Interpretation[], standLog: StandLogEntry[], o: { now?: number } = {}) =>
+  evaluate(buildTxModel(items), items, { standLog, ...(o.now !== undefined && { now: new Date(o.now).toISOString() }) });
+const txOf = (v: ReturnType<typeof withLog>) => v.objs.find((x) => x.kind === "tx")!.conds;
+
+describe("журнал сбоев стенда и пометки «ПР» (П-3.2в)", () => {
+  it("контракт записи — как у стенда v0.48.0: перечень тестов, коды и идентификаторы", () => {
+    expect([...STAND_TESTS]).toEqual([...DEMO_TESTS]);
+    expect([contractWhat, contractIds, typeof fromStand]).toEqual([true, true, "function"]);
+  });
+
+  it("журнал подключён и пуст — условия журнала считаются: обычная покупка — R23, R25, R27, R31, R32 соблюдены, R20 и R47 не применяются; без журнала — «на стенде не проверяется»", () => {
+    const items = purchase("L1");
+    expect(statuses(withLog(items, []).objs[0]!.conds)).toMatchObject({ R20: "na", R23: "ok", R25: "ok", R27: "ok", R31: "ok", R32: "ok", R47: "na" });
+    expect(withLog(items, []).system.R47.status).toBe("na");
+    expect(run(items).objs[0]!.conds.R31).toMatchObject({ status: "none", note: "stand_log" });
+  });
+
+  it("сбои «П»: утечка кода УПК — R20; второй реквизит — R23 и R25; витрина исполнила заказ до итога — R32 «нарушено»; запись журнала — в доказательствах", () => {
+    const q = (n: string) => [
+      event("confirmation.required", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" }),
+      event("confirmation.approved", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" }),
+    ];
+    const leak = fault("UPK_CODE_LEAKED", { confirmation_id: "QL2" }, "Н-11");
+    expect(txOf(withLog(purchase("L2", { at: { start: () => q("L2") } }), [leak])).R20).toMatchObject({ status: "bad", log: [leak.seq] });
+    expect(txOf(withLog(purchase("L2b", { at: { start: () => q("L2b") } }), [])).R20.status).toBe("ok");
+    // Н-02 — форма стенда: поручение корзины, продавец, номер заказа в запросе реквизита (`order_ref`).
+    const second = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CL3", merchant_id: "MER-1", order_ref: "OL3" }, "Н-02");
+    const c3 = txOf(withLog(purchase("L3"), [second]));
+    expect([c3.R23.status, c3.R25.status]).toEqual(["bad", "bad"]);
+    // Привязка по `order_ref` — и без поручения корзины в записи.
+    const byRef = entry("SECOND_CREDENTIAL_ISSUED", { merchant_id: "MER-1", order_ref: "OL3b" }, { test: "Н-02" });
+    expect(txOf(withLog(purchase("L3b"), [byRef])).R23.status).toBe("bad");
+    const fulfilled = fault("FULFILLED_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OL4" }, "Н-04");
+    expect(txOf(withLog(purchase("L4"), [fulfilled])).R32).toMatchObject({ status: "bad", log: [fulfilled.seq] });
+  });
+
+  it("повтор запроса отклонён Платформой (IDEMPOTENCY_CONFLICT) — R23 и R25 «сработало»", () => {
+    const items = purchase("L5", { at: { done: () => [step("failed", { order_id: "OL5", mandate_id: "CL5" }, { code: "IDEMPOTENCY_CONFLICT" })] } });
+    const c = txOf(withLog(items, []));
+    expect([c.R23.status, c.R25.status]).toEqual(["fired", "fired"]);
+  });
+
+  it("В7, Н-03: витрина ответила «оплачено» до итога — R27 «сработало» (нарушила витрина, защитил пульт), R28 и R30 «соблюдено»", () => {
+    const paid = fault("PAID_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OL6" }, "Н-03");
+    const c = txOf(withLog(purchase("L6"), [paid]));
+    expect([c.R27.status, c.R28.status, c.R30.status]).toEqual(["fired", "ok", "ok"]);
+    expect(c.R27.log).toEqual([paid.seq]);
+  });
+
+  it("В7, Н-12: поздний итог пришёл — R31 «соблюдено»; итога нет — «ждёт» до срока (75 с: задержка стенда до 60 с + запас), после — «нарушено»; «сейчас» — аргументом", () => {
+    const late = fault("OUTCOME_EVENT_DELAYED", { op_ref: "PL7" }, "Н-12", T0);
+    expect(txOf(withLog(purchase("L7"), [late], { now: T0 + 120_000 })).R31).toMatchObject({ status: "ok", log: [late.seq] });
+    expect(LATE_MS).toBe(STAND_DELAY_MAX_MS + 15_000);
+    // Живая форма (ревью П-3.2в № 1): событие задержано — операции на шине ещё нет, запись стенда несёт только op_ref и
+    // остаётся без объекта; судить — сводно по шине.
+    const pending = purchase("L8", { skip: ["done"] });
+    const late8 = fault("OUTCOME_EVENTS_REORDERED", { op_ref: "PL8" }, "Н-12", T0);
+    // Законная задержка 30 с — не «нарушено» (ревью П-3.2в № 2: срок контролёра 15 с дал бы ложное).
+    expect(withLog(pending, [late8], { now: T0 + 30_000 }).system.R31).toMatchObject({ status: "wait", log: [late8.seq] });
+    expect(withLog(pending, [late8], { now: T0 + LATE_MS + 1 }).system.R31).toMatchObject({ status: "bad", log: [late8.seq] });
+    // Без «сейчас» срок не считается — «ждёт», не «нарушено»; без op_ref в записи (стенд пишет пустые ids) — тоже «ждёт».
+    expect(withLog(pending, [late8]).system.R31.status).toBe("wait");
+    expect(withLog(pending, [entry("OUTCOME_EVENT_DELAYED", {}, { test: "Н-12", atMs: T0 })], { now: T0 + LATE_MS + 1 }).system.R31.status).toBe("wait");
+    // Долгий прогон (повторное ревью № A): запись стенда старше первой записи в окне — её покупка ушла из окна, «нет на
+    // шине» ложно: не судится.
+    const old = fault("OUTCOME_EVENT_DELAYED", { op_ref: "PGONE" }, "Н-12", Date.parse(pending[0]!.at) - 1);
+    const aged = withLog(pending, [old], { now: T0 + 10 * LATE_MS }).system.R31;
+    expect(aged).toEqual(withLog(pending, [], { now: T0 + 10 * LATE_MS }).system.R31);
+    expect(aged.status).not.toBe("bad");
+    // Событие пришло — запись привязывается к транзакции по op_ref: «соблюдено» и после срока.
+    const arrived = [...pending, event("operation.authorized", { op_ref: "PL8", order_id: "OL8" }), step("outcome", { op_ref: "PL8", order_id: "OL8", mandate_id: "CL8" })];
+    const v = withLog(arrived, [late8], { now: T0 + LATE_MS + 1 });
+    expect([txOf(v).R31.status, v.system.R31.status]).toEqual(["ok", "ok"]);
+  });
+
+  it("R47: каталог с инструкцией агенту отдан, агент исключил предложение (A5_INSTRUCTION) — «сработало»; не исключил — «ждёт»; Н-05 — «нарушено»", () => {
+    const served = fault("INSTRUCTION_SERVED", { shop_id: "SHOP-6", merchant_id: "MER-6" }, "Н-05");
+    const excluded = rec("console", "offer.excluded", { merchant_id: "MER-6" }, { stage: "search", code: "A5_INSTRUCTION" });
+    const items = purchase("L9");
+    expect(withLog([excluded, ...items], [served]).system.R47).toMatchObject({ status: "fired", seqs: [excluded.seq], log: [served.seq] });
+    expect(withLog(items, [served]).system.R47.status).toBe("wait");
+    const mark = entry("MARKED", { order_id: "OL9" }, { test: "Н-05" });
+    const v = withLog(items, [served, mark]);
+    expect(txOf(v).R47).toMatchObject({ status: "bad", log: [mark.seq] });
+    expect(v.system.R47.status).toBe("bad");
+  });
+
+  it("пометки «ПР»: Н-08 → R17 «сработало»; Н-06 → R37, Н-01 → R46, Н-07 → R18, Н-09 → R26 «нарушено»; пометка без объекта — к системе", () => {
+    const mk = (test: StandTest, n: string) => entry("MARKED", { order_id: `O${n}` }, { test });
+    expect(txOf(withLog(purchase("M8"), [mk("Н-08", "M8")])).R17.status).toBe("fired");
+    // Н-06: агент не записал «узнал об отзыве» — по шине гонка С-28 («ждёт»); пометка приложения — «нарушено».
+    const ignore = purchase("M6", { at: { start: () => [event("mandate.revoked", { mandate_id: "CM6" }, { stage: "revoke" })] } });
+    expect(txOf(withLog(ignore, [])).R37.status).toBe("wait");
+    expect(txOf(withLog(ignore, [mk("Н-06", "M6")])).R37.status).toBe("bad");
+    expect(txOf(withLog(purchase("M1"), [mk("Н-01", "M1")])).R46.status).toBe("bad");
+    expect(txOf(withLog(purchase("M7"), [mk("Н-07", "M7")])).R18.status).toBe("bad");
+    expect(txOf(withLog(purchase("M9"), [mk("Н-09", "M9")])).R26.status).toBe("bad");
+    // Пометка по поручению без покупки — у поручения; без объекта — сводно.
+    const intentOnly = [step("intent.awaiting_signature", { mandate_id: "IMX" }, { stage: "mandate" }), event("mandate.signed", { mandate_id: "IMX" })];
+    const v = withLog(intentOnly, [entry("MARKED", { mandate_id: "IMX" }, { test: "Н-06" }), entry("UPK_CODE_LEAKED", { confirmation_id: "Q-нет" })]);
+    expect(v.objs[0]!.conds.R37.status).toBe("bad");
+    expect(v.system.R20.status).toBe("bad");
   });
 });
