@@ -4,13 +4,19 @@
 // Платформа и витрины кодами из таблицы п. 4 ответа #112.
 //  - Только при `DEMO_FAULTS=1`: без флага экземпляр не создаётся и ключ не загружается (конструктор отказывает).
 //  - Ключ агента загружается функцией ядра `loadKey` из каталога ключей демо-стенда и живёт только в памяти экземпляра:
-//    на шину, в журнал, в ответы маршрута и на диск не попадает (П7 п. 5).
-//  - Свой подписанный клиент ПАО, не порт ядра — исключение из правила совместимости 1 (П7, дополнение 1).
+//    на шину, в журнал, в ответы маршрута и на диск не попадает; запросы с ним уходят только на адреса стенда (П7 п. 5).
+//  - Свой подписанный клиент ПАО и витрин, не порт ядра — исключение из правила совместимости 1 (П7, дополнение 1).
 //  - Импортирует драйвер только сборка демо-стенда (`run.ts`) и автотесты; пульт и дашборды — нет (тест графа импортов).
-// Договор ветки (ревью П-11.3а-1 № 2, 3, 7): запрос ключом агента уходит только после пометки «ПР» и до закрытия
-// (`c.call`); «защита сработала» — только объявленный веткой код защиты; на шину — только тест, код, статус и
-// идентификаторы стенда.
-import type { Signer } from "@kuzin4u/agentic-core";
+// Договор ветки (повторное ревью П-11.3а-1, ревью П-11.3а-2; решения владельца, чат 11.11):
+//  - запрос ключом агента (`c.call` — ПАО, `c.shop` — витрины) уходит только после пометки «ПР», пока ветка идёт и драйвер
+//    её не остановил; запрет — на стороне клиента, а не на дисциплине ветки;
+//  - драйвер ведёт журнал запросов ветки (ответ / отказ с кодом и статусом / сбой), дожидается всех ушедших запросов и
+//    выносит итог только по журналу: «защита сработала» — объявленная пара «код + статус» в ответе; «совершено» — только
+//    при пришедшем ответе 2xx; что ветка бросила или поймала, итог не меняет;
+//  - на шину из ветки — только шаги закрытого перечня и только тест, код, статус и идентификаторы стенда по форме; коды из
+//    ответов — тоже только по форме.
+import { randomUUID } from "node:crypto";
+import { signRequest, type Signer } from "@kuzin4u/agentic-core";
 import { PaoCallError, PaoClient } from "@kuzin4u/agentic-core/pao";
 import type { DemoIds } from "agentic-ps-platform/stand";
 import { listKeys, loadKey } from "agentic-buyer-ref/src/agent/signer/index.js";
@@ -22,34 +28,51 @@ export { FAULT_TESTS, isFaultTest, type FaultStart, type FaultTest } from "./fau
 
 type Pao = PaoClient<{ baseUrl: string; agentCode: string; signer: Signer; maxAttempts: number }>;
 
-/** Идентификаторы пометки стенда (`DEMO_ID_FIELDS` Платформы, РП75 п. 4; в пакете не экспортируются — список сверяется
- *  с типом `DemoIds`: лишнее поле — ошибка компиляции, недостающее — тест). Только они идут на шину из ветки. */
+/** Идентификаторы пометки стенда (`DEMO_ID_FIELDS` Платформы, РП75 п. 4; в пакете не экспортируются). Список сверяется с
+ *  типом `DemoIds` при компиляции в обе стороны: лишнее поле и недостающее — ошибка. */
 export const ID_FIELDS = ["mandate_id", "confirmation_id", "op_ref", "merchant_id", "shop_id", "order_id", "order_ref"] as const satisfies readonly (keyof DemoIds)[];
+const ID_FIELDS_COMPLETE: Exclude<keyof DemoIds, (typeof ID_FIELDS)[number]> extends never ? true : never = true;
+void ID_FIELDS_COMPLETE;
 
-/** Чем ветка закончилась без исключения: код защиты витрины (ответ не через клиент ПАО) или ничего — нарушение совершено,
- *  защиты в таблице нет (Н-05 ПР). Отказ Платформы ветка не ловит: `PaoCallError` разбирает драйвер. */
-export interface FaultOutcome {
-  readonly code?: string;
-  readonly status?: number;
+/** Шаги, которые ветка может выпустить на шину, — закрытый перечень; у каждого — текст ru/en в словарях. Чужое имя —
+ *  ошибка: драйвер останавливает ветку, её запросы больше не уходят, итог — BAD_STEP (инвариант 6: ни `outcome`, ни
+ *  `run.*`, ни итоговых `fault.*`). «Запрос отправлен» (`fault.sent`) выпускает сам драйвер — по факту запроса. Ветки
+ *  П-11.3б–д дописывают свои имена сюда и в словари. */
+export const BRANCH_STEPS = ["fault.note.prepared"] as const;
+export type BranchStep = (typeof BRANCH_STEPS)[number];
+
+/** Ожидаемая защита: код и HTTP-статус ответа (таблица п. 4 ответа #112). */
+export interface Guard {
+  readonly code: string;
+  readonly status: number;
 }
 
-/** Что ветка получает. Стенд — только адреса и проверка ключа: ни эмулятора банка (подпись и подтверждение за клиента —
- *  только эмулятор клиента, П5 п. 5), ни каталога ключей (ревью П-11.3а № 10). */
+/** Ответ витрины на запрос ветки (тело — только в памяти ветки: на шину не идёт). */
+export interface ShopReply {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/** Что ветка получает. Стенд — только адреса ПАО и витрин: ни эмулятора банка и страницы УПК (подпись и подтверждение за
+ *  клиента — только эмулятор клиента, П5 п. 5), ни каталога ключей. */
 export interface FaultContext {
-  /** Запрос к ПАО ключом агента — только после `mark` и до закрытия; иначе — исключение, запрос не уходит. */
+  /** Запрос к ПАО ключом агента — только после `mark`, пока ветка идёт; иначе не уходит (отказ промиса). */
   readonly call: Pao["call"];
-  readonly stand: Pick<DemoStand, "urls" | "agentCode" | "isAgentKid">;
-  /** Шаг на шину: параметры — только `code`, `status` и идентификаторы стенда; прочее отбрасывается (инвариант 1). */
-  readonly step: (step: string, params?: ScenarioStep["params"]) => void;
+  /** Запрос к витрине ключом агента (подпись, как у ядра) — по тем же правилам и только на адрес витрин стенда: путь —
+   *  с `/`, без `#`; иначе не уходит. Ответ не 2xx — отказ промиса. */
+  readonly shop: (method: "GET" | "POST", target: string, body?: unknown) => Promise<ShopReply>;
+  readonly urls: Readonly<{ pao: string; merchants: string }>;
+  /** Шаг на шину: имя — из BRANCH_STEPS, параметры — только `code`, `status` и идентификаторы стенда по форме. */
+  readonly step: (step: BranchStep, params?: ScenarioStep["params"]) => void;
   readonly signal: AbortSignal;
-  /** Пометка «ПР» на стенде — **до** нарушающего запроса (П7 п. 4). Отказ стенда — исключение, ветка дальше не идёт. */
+  /** Пометка «ПР» на стенде — **до** нарушающего запроса (П7 п. 4). Отказ стенда — исключение, ветка остановлена. */
   readonly mark: (ids: DemoIds) => void;
 }
 
-/** Ветка нарушения: ожидаемые коды защиты (таблица п. 4 ответа #112) и ход. Иной отказ — не «защита сработала». */
+/** Ветка нарушения: ожидаемые защиты и ход. Итог ветка не сообщает — его выносит драйвер по журналу её запросов. */
 export interface FaultBranch {
-  readonly expect: readonly string[];
-  readonly run: (c: FaultContext) => Promise<FaultOutcome>;
+  readonly expect: readonly Guard[];
+  readonly run: (c: FaultContext) => Promise<void>;
 }
 
 /** Ветки по тестам — кирпичами П-11.3б–д. Нет ветки — запуск NOT_READY. */
@@ -57,26 +80,64 @@ const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {};
 
 /** Сколько закрытие ждёт идущую ветку (как у сюжетов): ответ стенда без таймаута не вешает остановку демо. */
 const CLOSE_WAIT_MS = 3000;
+/** Срок ответа витрины на запрос ветки, мс. */
+const SHOP_TIMEOUT_MS = 10_000;
 
 export interface FaultyOptions {
   readonly branches?: Partial<Record<FaultTest, FaultBranch>>;
-  /** Идёт ли сюжет: нарушитель ходит тем же ключом агента — одновременно с сюжетом не стартует (ревью П-11.3а № 4). */
+  /** Идёт ли сюжет: нарушитель ходит тем же ключом агента — одновременно с сюжетом не стартует. */
   readonly otherBusy?: () => boolean;
   /** Срок ожидания ветки при закрытии, мс (по умолчанию CLOSE_WAIT_MS). */
   readonly closeWaitMs?: number;
+  /** Подменный fetch для ПАО и витрин (тесты: «нет ответа», 5xx, перенаправление, код не по форме). */
+  readonly fetch?: typeof fetch;
 }
 
-/** Остановка ветки до запроса: без пометки или после закрытия. */
+/** Причина остановки ветки драйвером. */
+type StopCode = "NOT_MARKED" | "MARK_REJECTED" | "BAD_STEP" | "BAD_TARGET";
+
+/** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
-  constructor(readonly code: "NOT_MARKED" | "CLOSED" | "MARK_REJECTED", options?: { cause?: unknown }) {
+  constructor(
+    readonly code: StopCode | "CLOSED",
+    options?: { cause?: unknown },
+  ) {
     super(code, options);
   }
+}
+
+/** Отказ витрины на запрос ветки: ответ не 2xx или нет ответа (status 0). */
+class ShopCallError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+  ) {
+    super(`витрина: ${status}${code ? ` ${code}` : ""}`);
+  }
+}
+
+/** Запись журнала запросов ветки: ответ 2xx, отказ (код по форме и статус — кандидат в «защиту»), сбой (не защита). */
+type Entry = { readonly kind: "ok" } | { readonly kind: "refused"; readonly code: string; readonly status: number } | { readonly kind: "fail"; readonly code: string; readonly status?: number };
+
+const CODE_FORM = /^[A-Z][A-Z0-9_]{0,63}$/;
+const ID_FORM = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** Код из ответа — только по форме; иначе сбой формы, а не код (инварианты 1, 4). */
+const formCode = (code: unknown): string | undefined => (typeof code === "string" && CODE_FORM.test(code) ? code : undefined);
+
+/** Отказ промиса, помеченный обработанным: ветка, не дождавшаяся запроса, не роняет процесс. */
+function rejected<T>(e: unknown): Promise<T> {
+  const p = Promise.reject(e) as Promise<T>;
+  p.catch(() => undefined);
+  return p;
 }
 
 export class FaultyDriver {
   readonly #d: DemoStand;
   readonly #emit: StepSink;
   readonly #pao: Pao;
+  readonly #signer: Signer;
+  readonly #fetch: typeof fetch;
   readonly #branches: Partial<Record<FaultTest, FaultBranch>>;
   readonly #otherBusy: () => boolean;
   readonly #closeWaitMs: number;
@@ -89,8 +150,10 @@ export class FaultyDriver {
     const active = listKeys(d.keysDir).filter((k) => k.state === "active" && d.isAgentKid(k.kid));
     if (active.length !== 1) throw new Error(`ключ агента приложения: действующих ${active.length}, нужен один (П7)`);
     const { signer } = loadKey(d.keysDir, active[0]!.kid);
+    this.#signer = signer;
     // Одна попытка: нарушитель не повторяет — код защиты нужен как есть.
-    this.#pao = new PaoClient({ baseUrl: d.urls.pao, agentCode: d.agentCode, signer, maxAttempts: 1 });
+    this.#fetch = o.fetch ?? fetch;
+    this.#pao = new PaoClient({ baseUrl: d.urls.pao, agentCode: d.agentCode, signer, maxAttempts: 1, ...(o.fetch && { fetch: o.fetch }) });
     this.#d = d;
     this.#emit = emit;
     this.#branches = o.branches ?? BRANCHES;
@@ -98,6 +161,7 @@ export class FaultyDriver {
     this.#closeWaitMs = o.closeWaitMs ?? CLOSE_WAIT_MS;
   }
 
+  /** Занят — пока идёт ветка и пока не пришли ответы на все её запросы. */
   get busy(): boolean {
     return this.#running !== null;
   }
@@ -113,10 +177,8 @@ export class FaultyDriver {
     if (this.#running || this.#otherBusy()) return { ok: false, code: "BUSY" };
     const branch = Object.hasOwn(this.#branches, test) ? this.#branches[test] : undefined;
     if (!branch) return { ok: false, code: "NOT_READY" };
-    // Своя метка прогона (ревью П-11.3а № 3): «Контроль» режет ленту по `run.*` — нарушение не приклеится к прогону
-    // последнего сюжета; паспорта у прогона нет — показывается, не сверяется.
+    // Своя метка прогона: «Контроль» режет ленту по `run.*` — нарушение не приклеится к прогону последнего сюжета.
     this.#step("run.fault", { test });
-    // Отклонение не уходит наружу необработанным: ветка и шаги — внутри #run, здесь — страховка (ревью № 1).
     const running: Promise<void> = this.#run(test, branch)
       .catch(() => undefined)
       .finally(() => {
@@ -132,7 +194,7 @@ export class FaultyDriver {
   }
 
   /** Остановить драйвер: новых нарушений нет (CLOSED), запросы ветки после закрытия не уходят, идущее — не дольше
-   *  срока; после срока драйвер свободен (ревью П-11.3а № 6, № 11; П-11.3а-1 № 8). */
+   *  срока; после срока драйвер свободен. */
   async close(): Promise<void> {
     this.#ac.abort();
     let timer: NodeJS.Timeout | undefined;
@@ -142,52 +204,130 @@ export class FaultyDriver {
   }
 
   async #run(test: FaultTest, branch: FaultBranch): Promise<void> {
-    const signal = this.#ac.signal;
+    // Сигнал ветки: закрывается закрытием драйвера, остановкой ветки драйвером и её концом. Запросы, уже ушедшие,
+    // доходят до ответа (их ждёт итог); новые не уходят.
+    const run = new AbortController();
+    const signal = AbortSignal.any([this.#ac.signal, run.signal]);
+    const journal: Promise<Entry>[] = [];
     let marked: DemoIds | undefined;
+    let stop: StopCode | undefined;
+    const halt = (code: StopCode): FaultStop => {
+      stop ??= code;
+      run.abort();
+      return new FaultStop(code);
+    };
+    /** Можно ли отправить запрос: ветка идёт, драйвер не закрыт, пометка стоит. Иначе — причина, запрос не уходит. */
+    const gate = (): FaultStop | undefined => (signal.aborted ? new FaultStop("CLOSED") : !marked ? halt("NOT_MARKED") : undefined);
+
     const mark = (ids: DemoIds): void => {
       if (signal.aborted) throw new FaultStop("CLOSED");
       try {
         this.#d.stand.demo!.mark(test, ids);
       } catch (e) {
-        // Стенд не принял пометку (ids вне перечня или пустые) — нарушение не разыгрывается: ветка дальше не идёт.
-        throw new FaultStop("MARK_REJECTED", { cause: e });
+        throw Object.assign(halt("MARK_REJECTED"), { cause: e });
       }
-      marked = ids;
+      marked = { ...ids }; // копия: изменение объекта веткой после пометки не расходится с записью MARKED
     };
-    // Защёлка (ревью П-11.3а-1 № 2, № 8): без пометки или после закрытия запрос ключом агента не уходит.
+
     const call = ((op: Parameters<Pao["call"]>[0], args: Parameters<Pao["call"]>[1]) => {
-      if (signal.aborted) return Promise.reject(new FaultStop("CLOSED"));
-      if (!marked) return Promise.reject(new FaultStop("NOT_MARKED"));
-      return this.#pao.call(op, args);
+      const g = gate();
+      if (g) return rejected(g);
+      this.#step("fault.sent", { test });
+      const req = this.#pao.call(op, args);
+      journal.push(req.then((): Entry => ({ kind: "ok" }), paoEntry));
+      return req;
     }) as Pao["call"];
-    const { urls, agentCode, isAgentKid } = this.#d;
-    const ctx: FaultContext = {
-      call,
-      stand: { urls, agentCode, isAgentKid: (kid) => isAgentKid.call(this.#d, kid) },
-      step: (s, p = {}) => this.#step(s, { test, ...safeParams(p) }),
-      signal,
-      mark,
+
+    const shop = (method: "GET" | "POST", target: string, body?: unknown): Promise<ShopReply> => {
+      const g = gate();
+      if (g) return rejected(g);
+      const url = shopUrl(this.#d.urls.merchants, target);
+      if (!url) return rejected(halt("BAD_TARGET"));
+      this.#step("fault.sent", { test });
+      const req = this.#shop(method, url, body);
+      const entry = req.then(shopEntry, (): Entry => ({ kind: "fail", code: "NO_RESPONSE" }));
+      journal.push(entry);
+      const out = req.then((r) => {
+        if (r.status >= 200 && r.status < 300) return r;
+        throw new ShopCallError(r.status, formCode((r.body as { code?: unknown } | null)?.code));
+      });
+      out.catch(() => undefined); // ветка может не дождаться — отказ не уходит необработанным
+      return out;
     };
-    let out: FaultOutcome;
+
+    const step = (s: BranchStep, p: ScenarioStep["params"] = {}): void => {
+      if (signal.aborted) return; // после конца ветки, её остановки и закрытия шагов нет
+      if (!(BRANCH_STEPS as readonly string[]).includes(s)) throw halt("BAD_STEP");
+      this.#step(s, { test, ...safeParams(p) });
+    };
+
+    const ctx: FaultContext = { call, shop, urls: { pao: this.#d.urls.pao, merchants: this.#d.urls.merchants }, step, signal, mark };
+    let threw = false;
     try {
-      out = await branch.run(ctx);
-    } catch (e) {
-      if (signal.aborted) return;
-      this.#settle(test, branch, marked, refusalOf(e));
-      return;
+      await branch.run(ctx);
+    } catch {
+      threw = true; // что ветка бросила, итог не решает — решает журнал; учитывается только «ветка сломалась»
+    } finally {
+      run.abort(); // ветка кончилась — новые запросы, пометки и шаги из неё не уходят
     }
-    if (signal.aborted) return;
-    this.#settle(test, branch, marked, out.code !== undefined ? { code: out.code, ...(out.status !== undefined && { status: out.status }) } : undefined);
+    // Итог — только когда пришли ответы на все ушедшие запросы (или не пришли — тогда сбой).
+    const entries = await Promise.all(journal);
+    if (this.#ac.signal.aborted) return;
+    this.#settle(test, branch, marked, stop, threw, entries);
   }
 
-  /** Итог ветки. «Защита сработала» — только объявленный веткой код при поставленной пометке (ревью П-11.3а-1 № 3);
-   *  иной код — «не разыграно» `UNEXPECTED_<код>`; без пометки — `NOT_MARKED`; без кода — «совершено и помечено». */
-  #settle(test: FaultTest, branch: FaultBranch, marked: DemoIds | undefined, r: Refusal | undefined): void {
-    if (r?.failed) return this.#step("fault.failed", { test, code: r.code });
-    if (!marked) return this.#step("fault.failed", { test, code: "NOT_MARKED" });
-    if (r === undefined) return this.#step("fault.marked", { test, ...pick(marked) });
-    if (!branch.expect.includes(r.code)) return this.#step("fault.failed", { test, code: `UNEXPECTED_${r.code}`, ...(r.status !== undefined && { status: r.status }) });
-    this.#step("fault.refused", { test, code: r.code, ...(r.status !== undefined && { status: r.status }), ...pick(marked) });
+  /** Подписанный запрос к витрине ключом агента — как у ядра: x-agent-code, x-timestamp, x-nonce, подпись; без повторов
+   *  и перенаправлений; срок — SHOP_TIMEOUT_MS. Нет ответа — исключение. */
+  async #shop(method: "GET" | "POST", url: URL, body: unknown): Promise<ShopReply> {
+    const text = body === undefined ? undefined : JSON.stringify(body);
+    const headers = {
+      ...(text !== undefined && { "content-type": "application/json" }),
+      "x-agent-code": this.#d.agentCode,
+      "x-timestamp": new Date().toISOString().slice(0, 19) + "Z",
+      "x-nonce": randomUUID(),
+    };
+    const signed = signRequest({ method, path: url.pathname, query: url.search.slice(1), headers, body: text ?? "" }, this.#signer);
+    const res = await this.#fetch(url, {
+      method,
+      headers: signed.headers,
+      redirect: "manual",
+      signal: AbortSignal.any([this.#ac.signal, AbortSignal.timeout(SHOP_TIMEOUT_MS)]),
+      ...(text !== undefined && { body: text }),
+    });
+    const raw = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = raw === "" ? undefined : (JSON.parse(raw) as unknown);
+    } catch {
+      parsed = undefined;
+    }
+    return { status: res.status, body: parsed };
+  }
+
+  /** Итог по журналу (решения владельца, чат 11.11), по старшинству:
+   *  1. ветку остановил драйвер (чужой шаг, адрес вне стенда, запрос без пометки, пометка отклонена) — эта причина;
+   *  2. в журнале — объявленная пара «код + статус» — `fault.refused` «защита сработала»;
+   *  3. сбой запроса (нет ответа, 5xx, перенаправление, отказ клиента ПАО, код не по форме, отказ без кода) — причина;
+   *  4. отказ с необъявленной парой — `UNEXPECTED_<код>`;
+   *  5. ветка сломалась сама — `BRANCH_ERROR`;
+   *  6. пришёл ответ 2xx — `fault.marked` «совершено и помечено»; ни одного ответа — `NOT_SENT`.
+   *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
+   *  разыграно» с причиной и идентификаторами. */
+  #settle(test: FaultTest, branch: FaultBranch, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
+    const ids = marked ? pick(marked) : {};
+    const unplayed = (code: string, status?: number) =>
+      this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
+    if (stop) return unplayed(stop);
+    if (!marked) return unplayed(threw ? "BRANCH_ERROR" : "NOT_MARKED");
+    const hit = entries.find((e) => e.kind === "refused" && branch.expect.some((g) => g.code === e.code && g.status === e.status));
+    if (hit && hit.kind === "refused") return this.#step("fault.refused", { test, code: hit.code, status: hit.status, ...ids });
+    const fail = entries.find((e) => e.kind === "fail");
+    if (fail && fail.kind === "fail") return unplayed(fail.code, fail.status);
+    const other = entries.find((e) => e.kind === "refused");
+    if (other && other.kind === "refused") return unplayed(`UNEXPECTED_${other.code}`, other.status);
+    if (threw) return unplayed("BRANCH_ERROR");
+    if (entries.some((e) => e.kind === "ok")) return this.#step("fault.marked", { test, ...ids });
+    return unplayed("NOT_SENT");
   }
 
   #step(step: string, params: ScenarioStep["params"] = {}): void {
@@ -195,42 +335,60 @@ export class FaultyDriver {
   }
 }
 
-/** Отказ: `failed` — запрос не ушёл, сломался или ответ — не защита (клиент ПАО отказал сам, 5xx, нет ответа). */
-interface Refusal {
-  readonly code: string;
-  readonly status?: number;
-  readonly failed?: true;
+/** Запись журнала по отказу клиента ПАО: отказ клиента до сети, нет ответа, 5xx — сбой; 4xx — отказ с кодом по форме. */
+function paoEntry(e: unknown): Entry {
+  if (!(e instanceof PaoCallError)) return { kind: "fail", code: "NO_RESPONSE" };
+  if (e.clientCode !== undefined) return { kind: "fail", code: e.clientCode };
+  if (e.status === 0) return { kind: "fail", code: "NO_RESPONSE" };
+  const code = formCode(e.code);
+  if (e.status >= 500) return { kind: "fail", code: code ?? "SERVER_ERROR", status: e.status };
+  if (code === undefined) return { kind: "fail", code: e.code === undefined ? "NO_CODE" : "MALFORMED_CODE", status: e.status };
+  return { kind: "refused", code, status: e.status };
 }
 
-function refusalOf(e: unknown): Refusal {
-  if (e instanceof FaultStop) return { code: e.code, failed: true };
-  if (e instanceof PaoCallError) {
-    if (e.clientCode !== undefined) return { code: e.clientCode, failed: true };
-    if (e.status === 0) return { code: "NO_RESPONSE", failed: true };
-    if (e.status >= 500) return { code: e.code ?? `HTTP_${e.status}`, status: e.status, failed: true };
-    return { code: e.code ?? `HTTP_${e.status}`, status: e.status };
+/** Запись журнала по ответу витрины: 2xx — ответ; 3xx — перенаправление (сбой, как у клиента ПАО); 5xx — сбой; 4xx — отказ
+ *  с кодом по форме (без кода или не по форме — сбой). */
+function shopEntry(r: ShopReply): Entry {
+  if (r.status >= 200 && r.status < 300) return { kind: "ok" };
+  if (r.status >= 300 && r.status < 400) return { kind: "fail", code: "REDIRECT", status: r.status };
+  const raw = (r.body as { code?: unknown } | null)?.code;
+  const code = formCode(raw);
+  if (r.status >= 500) return { kind: "fail", code: code ?? "SERVER_ERROR", status: r.status };
+  if (code === undefined) return { kind: "fail", code: raw === undefined ? "NO_CODE" : "MALFORMED_CODE", status: r.status };
+  return { kind: "refused", code, status: r.status };
+}
+
+/** Адрес запроса к витрине — только на витрины стенда (П7 п. 5): путь начинается с одного `/`, без `#`, `\`, `@` и
+ *  управляющих знаков, и после разбора источник тот же, что у витрин стенда. Иначе — нет адреса. */
+function shopUrl(base: string, target: string): URL | undefined {
+  const control = [...target].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
+  if (!target.startsWith("/") || target.startsWith("//") || /[#\\@\s]/.test(target) || control) return undefined;
+  let url: URL;
+  try {
+    url = new URL(target, base);
+  } catch {
+    return undefined;
   }
-  const code = (e as { code?: unknown } | null)?.code;
-  return { code: typeof code === "string" ? code : "UNKNOWN", failed: true };
+  return url.origin === new URL(base).origin && url.hash === "" && url.username === "" && url.password === "" ? url : undefined;
 }
 
-/** Параметры шага ветки: только код, статус и идентификаторы стенда (ревью П-11.3а-1 № 7; инвариант 1). */
+/** Параметры шага ветки: только код, статус и идентификаторы стенда — и только по форме (инвариант 1). */
 function safeParams(p: ScenarioStep["params"]): ScenarioStep["params"] {
   const out: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(p)) {
-    if (k === "code" && typeof v === "string") out.code = v;
-    else if (k === "status" && typeof v === "number") out.status = v;
-    else if ((ID_FIELDS as readonly string[]).includes(k) && typeof v === "string") out[k] = v;
+    if (k === "code" && typeof v === "string" && CODE_FORM.test(v)) out.code = v;
+    else if (k === "status" && typeof v === "number" && Number.isInteger(v) && v >= 100 && v <= 599) out.status = v;
+    else if ((ID_FIELDS as readonly string[]).includes(k) && typeof v === "string" && ID_FORM.test(v)) out[k] = v;
   }
   return out;
 }
 
-/** Идентификаторы пометки — в шаг шины (ревью П-11.3а-1 № 10: все поля стенда). */
+/** Идентификаторы пометки — в шаг шины (все поля стенда), по форме. */
 function pick(ids: DemoIds): Record<string, string> {
   const out: Record<string, string> = {};
   for (const k of ID_FIELDS) {
     const v = ids[k];
-    if (typeof v === "string") out[k] = v;
+    if (typeof v === "string" && ID_FORM.test(v)) out[k] = v;
   }
   return out;
 }

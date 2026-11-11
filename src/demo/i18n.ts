@@ -166,6 +166,9 @@ const ru = {
   "step.fault.refused": "Нарушитель (ПР) — драйвер приложения: нарушение {test} остановлено защитой — {code} ({status}); помечено на стенде.",
   "step.fault.marked": "Нарушитель (ПР) — драйвер приложения: нарушение {test} совершено и помечено на стенде; защиты в таблице нет — ловит пульт.",
   "step.fault.failed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} не разыграно — {code}; на стенде не помечено.",
+  "step.fault.unplayed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} помечено на стенде, но не разыграно — {code}.",
+  "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
+  "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
     "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
@@ -396,6 +399,9 @@ const en: Record<MessageKey, string> = {
   "step.fault.refused": "Violator (ПР) — app driver: violation {test} stopped by a safeguard — {code} ({status}); marked on the stand.",
   "step.fault.marked": "Violator (ПР) — app driver: violation {test} committed and marked on the stand; no safeguard in the table — the console catches it.",
   "step.fault.failed": "Violator (ПР) — app driver: violation {test} not played — {code}; not marked on the stand.",
+  "step.fault.unplayed": "Violator (ПР) — app driver: violation {test} marked on the stand but not played — {code}.",
+  "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
+  "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":
     "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",
