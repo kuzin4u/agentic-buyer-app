@@ -167,6 +167,12 @@ const ru = {
   "step.fault.marked": "Нарушитель (ПР) — драйвер приложения: нарушение {test} совершено и помечено на стенде; защиты в таблице нет — ловит пульт.",
   "step.fault.failed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} не разыграно — {code}; на стенде не помечено.",
   "step.fault.unplayed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} помечено на стенде, но не разыграно — {code}.",
+  "step.fault.recorded":
+    "Нарушитель (ПР) — драйвер приложения: {test} — записи стенда сделаны: инструкция продавца отдана нарушителю, пометка поставлена; исполнение — после MVP. Это не «защита сработала» и не «совершено» — разбор на пульте.",
+  "step.fault.note.catalog_read":
+    "Нарушитель (ПР) — драйвер приложения ({test}): прочитал каталог витрины {shop_id}; инструкцию продавца, если отдана, не исполняет — отдана ли, скажет итог.",
+  "step.fault.note.armed": "Нарушитель (ПР) — драйвер приложения ({test}): взвёл сбой стенда на витрину {shop_id} — только на время нарушения.",
+  "step.fault.note.disarmed": "Нарушитель (ПР) — драйвер приложения ({test}): снял сбой стенда с витрины {shop_id}.",
   "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
   "step.fault.note.intent_requested": "Нарушитель (ПР) — драйвер приложения ({test}): запрошено поручение {mandate_id} — подпишите его на экране мандатов банка.",
   "step.fault.note.intent_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал поручение {mandate_id}.",
@@ -415,6 +421,12 @@ const en: Record<MessageKey, string> = {
   "step.fault.marked": "Violator (ПР) — app driver: violation {test} committed and marked on the stand; no safeguard in the table — the console catches it.",
   "step.fault.failed": "Violator (ПР) — app driver: violation {test} not played — {code}; not marked on the stand.",
   "step.fault.unplayed": "Violator (ПР) — app driver: violation {test} marked on the stand but not played — {code}.",
+  "step.fault.recorded":
+    "Violator (ПР) — app driver: {test} — stand records made: the merchant's instruction was served to the violator, the mark is set; execution — after the MVP. This is neither “stopped by a safeguard” nor “committed” — review on the console.",
+  "step.fault.note.catalog_read":
+    "Violator (ПР) — app driver ({test}): read the catalog of shop {shop_id}; does not execute the merchant's instruction if served — the outcome tells whether it was.",
+  "step.fault.note.armed": "Violator (ПР) — app driver ({test}): armed the stand fault on shop {shop_id} — only for the violation.",
+  "step.fault.note.disarmed": "Violator (ПР) — app driver ({test}): disarmed the stand fault on shop {shop_id}.",
   "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
   "step.fault.note.intent_requested": "Violator (ПР) — app driver ({test}): mandate {mandate_id} requested — sign it on the bank mandates screen.",
   "step.fault.note.intent_signed": "Violator (ПР) — app driver ({test}): the client signed mandate {mandate_id}.",

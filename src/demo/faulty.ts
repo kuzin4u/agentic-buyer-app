@@ -55,6 +55,8 @@ export const BRANCH_STEPS = [
   // П-11.3г: подготовка Н-01 — настоящая покупка: заказ у витрины и первая (законная) оплата.
   "fault.note.order_placed",
   "fault.note.first_payment",
+  // П-11.3д: Н-05 — нарушитель прочитал каталог (только записи стенда, Р-1483).
+  "fault.note.catalog_read",
 ] as const;
 export type BranchStep = (typeof BRANCH_STEPS)[number];
 
@@ -242,9 +244,23 @@ const n01Branch: FaultBranch = {
   },
 };
 
+/** Ветка Н-05 «ПР» «инструкция продавца агенту» (R47; Р-1483; решения владельца по В1–В2 П-11.3д, чат 12.11): к MVP —
+ *  только записи стенда. Сбой Н-05 на витрину нарушителя взводит и снимает драйвер (таблица: `arm`); ветка помечает
+ *  продавца и читает каталог ключом агента — витрина подмешивает в первую карточку инструкцию и пишет INSTRUCTION_SERVED.
+ *  Ответ каталога ветка не читает: инструкция — данные витрины, не команда, на шину и в итог не идёт (инвариант 4).
+ *  Итог «записи стенда сделаны» выносит драйвер по журналу стенда (таблица: `recordOnly`). */
+const n05Branch: FaultBranch = {
+  run: async (c) => {
+    c.mark({ merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
+    await c.shop("GET", `/v1/shops/${VIOLATOR_SHOP.id}/catalog`);
+    c.step("fault.note.catalog_read", { shop_id: VIOLATOR_SHOP.id });
+  },
+};
+
 /** Ветки по тестам (П-11.3б–д). Нет ветки — запуск NOT_READY. */
 const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
   "Н-01": n01Branch,
+  "Н-05": n05Branch,
   // Н-07 «транзакция без согласия клиента» (R18): реквизит по корзине, которую клиент не подписывал → 409
   // PRINCIPAL_SIGNATURE_PENDING.
   "Н-07": {
@@ -329,6 +345,7 @@ type StopCode =
   | "CLIENT_REVOKE_TIMEOUT"
   | "CLIENT_DECLINED"
   | "ABORTED"
+  | "ARM_REJECTED"
   | BranchStop["code"];
 
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
@@ -353,8 +370,8 @@ class ShopCallError extends Error {
 
 /** Исход запроса ветки: ответ 2xx, отказ (код по форме и статус — кандидат в «защиту»), сбой (не защита). */
 type Outcome = { readonly kind: "ok" } | { readonly kind: "refused"; readonly code: string; readonly status: number } | { readonly kind: "fail"; readonly code: string; readonly status?: number };
-/** Запись журнала: исход и роль — подготовка или нарушение. */
-type Entry = Outcome & { readonly violation: boolean };
+/** Запись журнала: исход, роль — подготовка или нарушение — и у запроса к витрине его метод и путь (для `recordOnly.via`). */
+type Entry = Outcome & { readonly violation: boolean; readonly op?: { readonly method: string; readonly path: string } };
 
 const CODE_FORM = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ID_FORM = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -384,6 +401,9 @@ export class FaultyDriver {
   #running: Promise<void> | null = null;
   /** Прервать идущую ветку (кнопка «прервать»): итог — «не разыграно» ABORTED. */
   #abortRun: (() => void) | null = null;
+  /** Снять сбой стенда, взведённый драйвером на время ветки (`arm` таблицы); null — снимать нечего. Вызывается при любом
+   *  исходе: конец ветки, «прервать», закрытие драйвера — и только один раз. */
+  #disarm: (() => void) | null = null;
 
   constructor(d: DemoStand, emit: StepSink, o: FaultyOptions = {}) {
     // Без режима сбоев драйвера нет (П7 п. 2): ни ключа, ни клиента.
@@ -441,6 +461,7 @@ export class FaultyDriver {
   abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } {
     if (!this.#abortRun) return { ok: false, code: "NOT_AWAITING" };
     this.#abortRun();
+    this.#disarm?.(); // не ждать конца ветки: сбой стенда снят сразу
     return { ok: true };
   }
 
@@ -453,6 +474,7 @@ export class FaultyDriver {
    *  срока; после срока драйвер свободен. */
   async close(): Promise<void> {
     this.#ac.abort();
+    this.#disarm?.(); // зависшая ветка не держит сбой стенда взведённым после закрытия
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([this.#running, new Promise<void>((ok) => (timer = setTimeout(ok, this.#closeWaitMs)))]);
     clearTimeout(timer);
@@ -550,7 +572,7 @@ export class FaultyDriver {
           this.#step("fault.sent", { test });
         }
         const req = track(violation, this.#shop(method, url, body));
-        journal.push(req.then(shopEntry, (): Outcome => ({ kind: "fail", code: "NO_RESPONSE" })).then((o) => ({ ...o, violation })));
+        journal.push(req.then(shopEntry, (): Outcome => ({ kind: "fail", code: "NO_RESPONSE" })).then((o) => ({ ...o, violation, op: { method, path: url.pathname } })));
         const out = req.then((r) => {
           if (r.status >= 200 && r.status < 300) return r;
           throw new ShopCallError(r.status, formCode((r.body as { code?: unknown } | null)?.code));
@@ -602,9 +624,45 @@ export class FaultyDriver {
         if (!signal.aborted) void this.#d.agent.events.signal().catch(() => undefined);
       },
     };
+    const standDemo = this.#d.stand.demo!;
+    const logFrom = standDemo.log().length;
     let threw = false;
     try {
-      await branch.run(ctx);
+      // Сбой стенда этого теста (таблица: `arm`) — на витрину нарушителя, только на время ветки. Взведён до прогона
+      // (человеком) — не трогаем: ни перезаписи его настроек, ни снятия. Стенд не взвёл — ветка не идёт.
+      // Снятие — замыкание этого прогона: в поле экземпляра для abort() и close() лежит оно же, и обнуляется поле, только
+      // если там именно оно (ревью П-11.3д-1 № 5: снятие старой ветки не снимет сбой новой). Взвод и снятие — на шину с
+      // пометкой (ПР): сбой взвёл драйвер, а не человек (№ 2).
+      if (plan.arm && !armedNow(standDemo.log(), test)) {
+        let armed = false;
+        try {
+          standDemo.arm(test, { shop_id: VIOLATOR_SHOP.id });
+          armed = true;
+        } catch {
+          stop ??= "ARM_REJECTED";
+        }
+        if (armed) {
+          // Снятие — в поле сразу после взвода, до любого другого действия: что бы ни бросило дальше (и шаг на шину), finally
+          // его снимет (повторное ревью П-11.3д-1 № 1 — иначе взвод без снятия «отравил» бы все следующие сюжеты).
+          let done = false;
+          const disarm = (): void => {
+            if (done) return;
+            done = true;
+            if (this.#disarm === disarm) this.#disarm = null;
+            // `disarm` стенда бросает только при выключенных сбоях или чужом тесте — здесь недостижимо; если всё же бросил,
+            // шага «снят» нет — несоответствие видно на шине (№ 6). Шаг на шину после снятия: его сбой снятие не отменяет.
+            try {
+              standDemo.disarm(test);
+              this.#step("fault.note.disarmed", { test, shop_id: VIOLATOR_SHOP.id });
+            } catch {
+              // шаг «снят» не выпускается
+            }
+          };
+          this.#disarm = disarm;
+          this.#step("fault.note.armed", { test, shop_id: VIOLATOR_SHOP.id });
+        }
+      }
+      if (stop === undefined) await branch.run(ctx);
     } catch (e) {
       // Ветка сама остановилась с конкретной причиной (нет второго продавца) — эта причина; иначе что ветка бросила, итог не
       // решает — решает журнал; учитывается только «ветка сломалась».
@@ -613,11 +671,22 @@ export class FaultyDriver {
     } finally {
       run.abort(); // ветка кончилась — новые запросы, пометки и шаги из неё не уходят
       this.#abortRun = null;
+      this.#disarm?.(); // при любом исходе ветки (решение владельца по В1 П-11.3д)
     }
     // Итог — только когда пришли ответы на все ушедшие запросы (или не пришли — тогда сбой).
     const entries = await Promise.all(journal);
     if (this.#ac.signal.aborted) return;
-    this.#settle(test, plan, marked, stop, threw, entries);
+    // Записи стенда за прогон (только `recordOnly`): обе — пометка этого теста и **после неё** нужная запись по витрине
+    // нарушителя; и у ветки — успешный (2xx) свой запрос подготовки из таблицы (`via`) к витрине нарушителя: запись от
+    // чужого чтения в окне прогона итог не делает (ревью П-11.3д-1 № 4, повторное № 2).
+    const log = plan.recordOnly ? standDemo.log().slice(logFrom) : [];
+    const markSeq = log.find((e) => e.test === test && e.what === "MARKED")?.seq;
+    const recorded =
+      plan.recordOnly !== undefined &&
+      markSeq !== undefined &&
+      log.some((e) => e.test === test && e.what === plan.recordOnly!.record && e.ids.shop_id === VIOLATOR_SHOP.id && e.seq > markSeq) &&
+      entries.some((e) => !e.violation && e.kind === "ok" && e.op !== undefined && `${e.op.method} ${e.op.path}` === plan.recordOnly!.via.replace("{shop_id}", VIOLATOR_SHOP.id));
+    this.#settle(test, plan, marked, stop, threw, entries, recorded);
   }
 
   /** Подписанный запрос к витрине ключом агента — как у ядра: x-agent-code, x-timestamp, x-nonce, подпись; без повторов
@@ -659,9 +728,11 @@ export class FaultyDriver {
    *  5. сбой нарушения (нет ответа, 5xx, перенаправление, отказ клиента ПАО, тело не разобрать, код не по форме, без кода);
    *  6. отказ нарушения с необъявленной парой — `UNEXPECTED_<код>`;
    *  7. ветка сломалась сама — `BRANCH_ERROR`; нарушение не отправлено — `NOT_SENT`.
+   *  Тест «только записи стенда» (`recordOnly`, Н-05 к MVP) после п. 3: `fault.recorded` «записи стенда сделаны» — при обеих
+   *  записях стенда за прогон; иначе `missing` таблицы; это не «защита сработала» и не «совершено».
    *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
    *  разыграно» с причиной и идентификаторами. */
-  #settle(test: FaultTest, plan: FaultPlanEntry, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[]): void {
+  #settle(test: FaultTest, plan: FaultPlanEntry, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[], recorded: boolean): void {
     const ids = marked ? pick(marked) : {};
     const unplayed = (code: string, status?: number) =>
       this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
@@ -673,6 +744,12 @@ export class FaultyDriver {
     // П-11.3а-4 № 1; исключение из решения о последнем кирпиче каркаса — ложный зелёный, видимый до прогона).
     const prep = entries.find((e) => !e.violation && e.kind !== "ok");
     if (prep && prep.kind !== "ok") return unplayed(`PREP_FAILED,${prep.code}`, prep.status);
+    // Только записи стенда (Р-1483): нарушающего запроса нет (таблица — без операций нарушения); итог — «записи стенда
+    // сделаны» строго при обеих записях за прогон, иначе — «не разыграно» с причиной таблицы. Сломавшаяся ветка — не итог.
+    if (plan.recordOnly) {
+      if (threw) return unplayed("BRANCH_ERROR");
+      return recorded ? this.#step("fault.recorded", { test, ...ids }) : unplayed(plan.recordOnly.missing);
+    }
     if (v?.kind === "refused" && plan.expect.some((g) => g.code === v.code && g.status === v.status)) return this.#step("fault.refused", { test, code: v.code, status: v.status, ...ids });
     if (v?.kind === "fail") return unplayed(v.code, v.status);
     if (v?.kind === "refused") return unplayed(`UNEXPECTED_${v.code}`, v.status);
@@ -725,6 +802,16 @@ function shopUrl(base: string, target: string): URL | undefined {
   }
   if (!url.pathname.startsWith("/v1/")) return undefined;
   return url.origin === new URL(base).origin && url.hash === "" && url.username === "" && url.password === "" ? url : undefined;
+}
+
+/** Взведён ли сбой стенда сейчас — по журналу стенда: последняя запись ARMED / DISARMED этого теста (у `StandDemo` нет
+ *  чтения взвода; Н-05 сам себя не снимает — снимает только `disarm`). */
+function armedNow(log: readonly { readonly test?: string; readonly what: string }[], test: FaultTest): boolean {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i]!;
+    if (e.test === test && (e.what === "ARMED" || e.what === "DISARMED")) return e.what === "ARMED";
+  }
+  return false;
 }
 
 /** Параметры шага ветки: только код, статус и идентификаторы стенда — и только по форме (инвариант 1). */

@@ -104,16 +104,22 @@ describe("драйвер нарушителя «ПР» — при режиме �
     await demo?.close();
   });
 
-  it("маршрут: только POST, только с Origin монитора, имя — только из перечня; ветки нет — 409 NOT_READY", async () => {
+  it("маршрут: только POST, только с Origin монитора, имя — только из перечня; запуск — 202; ветки нет — NOT_READY", async () => {
     expect(demo.faulty).toBeDefined();
     expect((await post(`/fault/${enc("Н-07")}`, null)).status).toBe(403);
     expect((await post(`/fault/${enc("Н-07")}`, "http://evil.example")).status).toBe(403);
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
     expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
-    const r = await post(`/fault/${enc("Н-05")}`); // ветки Н-05 пока нет (П-11.3д)
-    expect(r.status).toBe(409);
-    expect(JSON.parse(r.body)).toEqual({ ok: false, code: "NOT_READY" });
+    // С П-11.3д ветки есть у всех тестов «ПР»: маршрут запускает Н-05 (без ожидания клиента) — 202 и итог на шине.
+    const n = steps().length;
+    const r = await post(`/fault/${enc("Н-05")}`);
+    expect(r.status).toBe(202);
+    expect(JSON.parse(r.body)).toEqual({ ok: true });
+    await demo.faulty!.settled();
+    expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.recorded", params: { test: "Н-05" } });
+    // NOT_READY — у драйвера без ветки теста (ответ маршрута на него — 409, тот же объект).
+    expect(driver({}).start("Н-05")).toEqual({ ok: false, code: "NOT_READY" });
   });
 
   it("запрос к ПАО — ключом агента после пометки «ПР»; ответ 2xx — «совершено и помечено»; «запрос отправлен» выпускает драйвер; своя метка прогона", async () => {
@@ -656,7 +662,10 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(FAULT_PLAN["Н-01"].expect).toEqual([{ code: "ORDER_NOT_PAYABLE", status: 409 }]);
       expect(FAULT_PLAN["Н-08"].expect).toEqual([{ code: "MANDATE_SCOPE", status: 409 }]);
       expect(FAULT_PLAN["Н-09"].expect).toEqual([{ code: "MANDATE_SCOPE", status: 409 }]);
-      expect(FAULT_PLAN["Н-05"].expect).toEqual([]);
+      expect(FAULT_PLAN["Н-05"]).toEqual({ violations: [], expect: [], arm: true, recordOnly: { record: "INSTRUCTION_SERVED", missing: "INSTRUCTION_NOT_SERVED", via: "GET /v1/shops/{shop_id}/catalog" } });
+      // «Только записи стенда» — без нарушения и без защиты: иначе блок recordOnly итога скрыл бы отказ нарушения (ревью
+      // П-11.3д-1 № 7).
+      for (const [t, e] of Object.entries(FAULT_PLAN)) if (e.recordOnly) expect([e.violations, e.expect], t).toEqual([[], []]);
     });
 
     it("нарушение не той операцией, что в таблице, — ошибка BAD_VIOLATION, запрос не уходит", async () => {
@@ -1041,8 +1050,202 @@ describe("драйвер нарушителя «ПР» — при режиме �
     });
   });
 
+  describe("П-11.3д: ветка Н-05 «ПР» — только записи стенда (Р-1483)", { timeout: 30_000 }, () => {
+    const log = () => demo.stand.stand.demo!.log();
+    /** Взведён ли Н-05 сейчас — по журналу стенда (последняя ARMED / DISARMED). */
+    const n05Armed = () => log().filter((e) => e.test === "Н-05" && (e.what === "ARMED" || e.what === "DISARMED")).at(-1)?.what === "ARMED";
+    /** Драйвер с подменной веткой Н-05 и настоящей таблицей (взвод и итог — по FAULT_PLAN). */
+    const withBranch = (run: FaultBranch["run"], o: Opts = {}) => new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches: { "Н-05": { run } }, ...o });
+
+    it("Н-05: драйвер взводит сбой на витрину нарушителя, помечает, читает каталог ключом агента — INSTRUCTION_SERVED и MARKED; итог «записи стенда сделаны»; заказа нет; сбой снят; инструкция — ни на шине, ни в журнале", async () => {
+      const n = steps().length;
+      const from = log().length;
+      const callsFrom = demo.stand.merchantCalls().length;
+      let served = "";
+      // Подглядывающий fetch (только автотест): описание первой карточки из настоящего ответа каталога — то, что видел нарушитель.
+      const spy = (async (input: string | URL | Request, init?: RequestInit) => {
+        const r = await fetch(input, init);
+        if (new URL(input instanceof Request ? input.url : String(input)).pathname === `/v1/shops/${MASSA_MADRE.id}/catalog` && r.ok)
+          served = String(((await r.clone().json()) as { items?: { description?: unknown }[] }).items?.[0]?.description ?? "");
+        return r;
+      }) as typeof fetch;
+      expect(n05Armed()).toBe(false);
+      const d = real({ fetch: spy });
+      expect(d.start("Н-05")).toEqual({ ok: true });
+      await d.settled();
+      const s = steps().slice(n);
+      expect(s.at(-1)).toMatchObject({ step: "fault.recorded", params: { test: "Н-05", merchant_id: MASSA_MADRE.merchant_id, shop_id: MASSA_MADRE.id } });
+      expect(s.some((x) => x.step === "fault.sent")).toBe(false);
+      expect(s.find((x) => x.step === "fault.note.catalog_read")?.params).toMatchObject({ shop_id: MASSA_MADRE.id });
+      // Взвод и снятие сбоя стенда — на шине с пометкой (ПР), по витрине нарушителя (ревью П-11.3д-1 № 2).
+      expect(s.filter((x) => x.step === "fault.note.armed" || x.step === "fault.note.disarmed").map((x) => [x.step, x.params.shop_id])).toEqual([
+        ["fault.note.armed", MASSA_MADRE.id],
+        ["fault.note.disarmed", MASSA_MADRE.id],
+      ]);
+      // Записи стенда за прогон — по порядку: взвод → пометка → инструкция отдана (витрина нарушителя) → снятие.
+      const w = log().slice(from).filter((e) => e.test === "Н-05").map((e) => [e.what, e.ids.shop_id ?? null]);
+      expect(w).toEqual([
+        ["ARMED", null],
+        ["MARKED", MASSA_MADRE.id],
+        ["INSTRUCTION_SERVED", MASSA_MADRE.id],
+        ["DISARMED", null],
+      ]);
+      expect(n05Armed()).toBe(false);
+      // Заказа «по инструкции» нет (исполнение — после MVP).
+      expect(demo.stand.merchantCalls().slice(callsFrom).filter((c) => c.method === "POST")).toEqual([]);
+      // Инструкция отдана (описание длиннее исходного) и не вышла ни на шину, ни в журнал агента (инвариант 4).
+      const original = MASSA_MADRE.items[0]!.description ?? "";
+      expect(served.startsWith(original) && served.length > original.length + 10, "витрина отдала инструкцию").toBe(true);
+      const instruction = served.slice(original.length).trim();
+      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries)].join("\n");
+      expect(everywhere.includes(instruction), "инструкция вышла на шину или в журнал").toBe(false);
+    });
+
+    it("сбой снят после любого исхода (решение по В1): ветка сломалась, «прервать», закрытие драйвера с зависшей веткой; без каталога — «не разыграно» INSTRUCTION_NOT_SERVED", async () => {
+      const shopMark = (c: FaultContext) => c.mark({ merchant_id: MASSA_MADRE.merchant_id, shop_id: MASSA_MADRE.id });
+      // Ветка сломалась после пометки.
+      let n = steps().length;
+      const broken = withBranch(async (c) => {
+        shopMark(c);
+        throw new Error("сломалась");
+      });
+      broken.start("Н-05");
+      await broken.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-05", code: "BRANCH_ERROR" } });
+      expect(n05Armed(), "после сбоя ветки").toBe(false);
+      // Пометка без чтения каталога — записи «инструкция отдана» нет.
+      n = steps().length;
+      const idle = withBranch(async (c) => void shopMark(c));
+      idle.start("Н-05");
+      await idle.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-05", code: "INSTRUCTION_NOT_SERVED" } });
+      expect(n05Armed(), "без каталога").toBe(false);
+      // «Прервать»: сбой снят сразу, не дожидаясь конца ветки.
+      const hang = (c: FaultContext) => (shopMark(c), new Promise<void>((ok) => c.signal.addEventListener("abort", () => ok(), { once: true })));
+      n = steps().length;
+      const aborted = withBranch(hang);
+      aborted.start("Н-05");
+      expect(n05Armed(), "взведён во время ветки (взвод — синхронно в start)").toBe(true);
+      expect(aborted.abort()).toEqual({ ok: true });
+      expect(n05Armed(), "сразу после «прервать»").toBe(false);
+      await aborted.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-05", code: "ABORTED" } });
+      // Закрытие драйвера с веткой, которая отмену не слушает.
+      const stuck = withBranch(async (c) => (shopMark(c), await new Promise<never>(() => undefined)), { closeWaitMs: 100 });
+      stuck.start("Н-05");
+      expect(n05Armed()).toBe(true);
+      await stuck.close();
+      expect(n05Armed(), "после закрытия драйвера").toBe(false);
+    });
+
+    it("«прервать», пока запрос каталога в полёте (ревью П-11.3д-1 № 9): сбой снят сразу; сюжет не стартует до конца прогона; итог ABORTED", async () => {
+      const n = steps().length;
+      const from = log().length;
+      let sent = false;
+      // Медленный ответ каталога (настоящий, но через 800 мс).
+      const slow = (async (input: string | URL | Request, init?: RequestInit) => {
+        if (new URL(input instanceof Request ? input.url : String(input)).pathname === `/v1/shops/${MASSA_MADRE.id}/catalog`) {
+          sent = true;
+          await pause(800);
+        }
+        return fetch(input, init);
+      }) as typeof fetch;
+      const d = real({ fetch: slow });
+      expect(d.start("Н-05")).toEqual({ ok: true });
+      for (const end = Date.now() + 5000; !sent && Date.now() < end; await pause(10));
+      expect(sent, "запрос каталога ушёл").toBe(true);
+      expect(d.abort()).toEqual({ ok: true });
+      expect(n05Armed(), "сразу после «прервать»").toBe(false);
+      const sc = new DemoScenarios(demo.stand, () => undefined, { otherBusy: () => d.busy });
+      expect(sc.start("intent"), "сюжет до конца прогона").toEqual({ ok: false, code: "BUSY" });
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-05", code: "ABORTED" } });
+      expect(n05Armed()).toBe(false);
+      // Снят один раз (abort и finally — одно снятие) и до того, как запрос дошёл до витрины: инструкции нет (повторное № 4).
+      expect(steps().slice(n).filter((x) => x.step === "fault.note.disarmed")).toHaveLength(1);
+      expect(log().slice(from).some((e) => e.what === "INSTRUCTION_SERVED")).toBe(false);
+    });
+
+    it("сбой получателя шагов сразу после взвода — сбой стенда всё равно снят (повторное ревью П-11.3д-1 № 1)", async () => {
+      const from = log().length;
+      const d = new FaultyDriver(
+        demo.stand,
+        (s) => {
+          if (s.step === "fault.note.armed") throw new Error("шина недоступна");
+          demo.bus.scenario(s);
+        },
+        { otherBusy: () => demo.scenarios.busy },
+      );
+      d.start("Н-05");
+      await d.settled();
+      expect(log().slice(from).filter((e) => e.test === "Н-05" && (e.what === "ARMED" || e.what === "DISARMED")).map((e) => e.what)).toEqual(["ARMED", "DISARMED"]);
+      expect(n05Armed()).toBe(false);
+    });
+
+    it("чужое чтение каталога в окне прогона итог не делает (ревью П-11.3д-1 № 4): запись до пометки или без своего успешного запроса — INSTRUCTION_NOT_SERVED", async () => {
+      const shopMark = (c: FaultContext) => c.mark({ merchant_id: MASSA_MADRE.merchant_id, shop_id: MASSA_MADRE.id });
+      // Чтение каталога не нарушителем (без подписи агента) — витрина при взведённом Н-05 тоже пишет INSTRUCTION_SERVED.
+      const outsider = async () => expect((await fetch(`${demo.stand.urls.merchants}/v1/shops/${MASSA_MADRE.id}/catalog`)).status).toBe(200);
+      const cases: [string, FaultBranch["run"]][] = [
+        // запись до пометки; свой запрос после пометки — успешный, но не каталог
+        ["до пометки", async (c) => (await outsider(), shopMark(c), void (await c.shop("GET", "/v1/shops")))],
+        // запись после пометки, своего запроса нет
+        ["без своего запроса", async (c) => (shopMark(c), await outsider())],
+        // запись после пометки, свой успешный запрос — не к каталогу (повторное ревью П-11.3д-1 № 2)
+        ["свой запрос не к каталогу", async (c) => (shopMark(c), await c.shop("GET", "/v1/shops"), await outsider())],
+      ];
+      for (const [name, run] of cases) {
+        const n = steps().length;
+        const from = log().length;
+        const d = withBranch(run);
+        d.start("Н-05");
+        await d.settled();
+        expect(log().slice(from).some((e) => e.what === "INSTRUCTION_SERVED"), `${name}: чужое чтение записано`).toBe(true);
+        expect(steps().slice(n).at(-1), name).toMatchObject({ step: "fault.unplayed", params: { test: "Н-05", code: "INSTRUCTION_NOT_SERVED" } });
+        expect(n05Armed()).toBe(false);
+      }
+    });
+
+    it("стенд не взвёл сбой — «не разыграно» ARM_REJECTED: ветка не идёт — ни пометки, ни запросов (ревью П-11.3д-1 № 3)", async () => {
+      const n = steps().length;
+      const from = log().length;
+      const callsFrom = demo.stand.merchantCalls().length;
+      let ran = false;
+      // Н-01 — не сбой стенда (не ARMABLE): стенд отказывает во взводе — проверка пути отказа на настоящем стенде.
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+        branches: { "Н-01": { run: async (c) => ((ran = true), c.mark({ merchant_id: MASSA_MADRE.merchant_id }), void (await c.shop("GET", "/v1/shops"))) } },
+        plan: { "Н-01": { violations: [], expect: [], arm: true } },
+      });
+      d.start("Н-01");
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.failed", params: { test: "Н-01", code: "ARM_REJECTED" } });
+      expect(ran).toBe(false);
+      expect(log().slice(from)).toEqual([]);
+      expect(demo.stand.merchantCalls().slice(callsFrom)).toEqual([]);
+    });
+
+    it("Н-05, взведённый до прогона (человеком, сбой «П»), драйвер не трогает: ни перезаписи, ни снятия", async () => {
+      demo.stand.stand.demo!.arm("Н-05");
+      try {
+        const from = log().length;
+        const n = steps().length;
+        const d = real();
+        d.start("Н-05");
+        await d.settled();
+        expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.recorded", params: { test: "Н-05" } });
+        expect(log().slice(from).filter((e) => e.test === "Н-05" && (e.what === "ARMED" || e.what === "DISARMED"))).toEqual([]);
+        expect(steps().slice(n).some((x) => x.step === "fault.note.armed" || x.step === "fault.note.disarmed"), "ложный шаг драйвера").toBe(false);
+        expect(n05Armed()).toBe(true);
+      } finally {
+        demo.stand.stand.demo!.disarm("Н-05");
+      }
+      expect(n05Armed()).toBe(false);
+    });
+  });
+
   it("тексты итоговых шагов — с пометкой «нарушитель (ПР)», ru и en; «не помечено» — только у fault.failed", () => {
-    for (const step of ["run.fault", "fault.sent", "fault.refused", "fault.marked", "fault.unplayed", "fault.failed"])
+    // Шаги самого драйвера — тоже с пометкой (П7 п. 4): взвод и снятие сбоя стенда (повторное ревью П-11.3д-1 № 3).
+    for (const step of ["run.fault", "fault.sent", "fault.refused", "fault.marked", "fault.recorded", "fault.unplayed", "fault.failed", "fault.note.armed", "fault.note.disarmed"])
       for (const lang of ["ru", "en"] as const) expect((MESSAGES[lang] as Record<string, string>)[`step.${step}`], `${lang} ${step}`).toMatch(/\(ПР\)/);
     expect(MESSAGES.ru["step.fault.unplayed"]).toMatch(/помечено на стенде, но не разыграно/);
   });

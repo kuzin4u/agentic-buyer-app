@@ -58,6 +58,13 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.fault": p("Нарушитель (ПР) — драйвер приложения: начато нарушение {test}", "Violator (ПР) — app driver: violation {test} started"),
   "fault.refused": p("Нарушитель (ПР): нарушение {test} остановлено защитой — {code}", "Violator (ПР): violation {test} stopped by a safeguard — {code}"),
   "fault.marked": p("Нарушитель (ПР): нарушение {test} совершено и помечено на стенде", "Violator (ПР): violation {test} committed and marked on the stand"),
+  "fault.recorded": p(
+    "Нарушитель (ПР): {test} — записи стенда сделаны (инструкция отдана, пометка поставлена); не защита и не исполнение",
+    "Violator (ПР): {test} — stand records made (instruction served, mark set); neither a safeguard nor an execution",
+  ),
+  "fault.note.catalog_read": p("Нарушитель (ПР): прочитал каталог витрины[ {shop_id}]; инструкцию, если отдана, не исполняет", "Violator (ПР): read the catalog of shop[ {shop_id}]; does not execute the instruction if served"),
+  "fault.note.armed": p("Нарушитель (ПР): взвёл сбой стенда на витрину[ {shop_id}] на время нарушения", "Violator (ПР): armed the stand fault on shop[ {shop_id}] for the violation"),
+  "fault.note.disarmed": p("Нарушитель (ПР): снял сбой стенда с витрины[ {shop_id}]", "Violator (ПР): disarmed the stand fault on shop[ {shop_id}]"),
   "fault.unplayed": p("Нарушитель (ПР): нарушение {test} помечено, но не разыграно — {code}", "Violator (ПР): violation {test} marked but not played — {code}"),
   "fault.note.intent_requested": p("Нарушитель (ПР): запрошено поручение[ {mandate_id}] — подпись клиента в банке", "Violator (ПР): mandate[ {mandate_id}] requested — client signature in the bank"),
   "fault.note.intent_signed": p("Нарушитель (ПР): клиент подписал поручение[ {mandate_id}]", "Violator (ПР): the client signed mandate[ {mandate_id}]"),
@@ -189,6 +196,8 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   MARK_AFTER_VIOLATION: p("пометка после нарушающего запроса", "a mark after the violating request"),
   ABORTED: p("прервано человеком", "aborted by a human"),
   NO_SECOND_MERCHANT: p("нет второго продавца на стенде", "no second merchant on the stand"),
+  INSTRUCTION_NOT_SERVED: p("витрина не отдала инструкцию — записи стенда нет", "the shop did not serve the instruction — no stand record"),
+  ARM_REJECTED: p("стенд не взвёл сбой для нарушения", "the stand refused to arm the fault for the violation"),
   ORDER_ID_MALFORMED: p("номер заказа в ответе витрины не по форме", "the order number in the shop reply is malformed"),
   FIRST_PAYMENT_NOT_AUTHORIZED: p(
     "у Платформы нет авторизованной первой оплаты заказа с номером операции по форме — повторять нечего",
