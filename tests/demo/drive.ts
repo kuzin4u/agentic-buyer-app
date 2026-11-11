@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -111,6 +111,26 @@ export function driver(demo: Demo) {
         await pause(50);
       }
       if (last.step !== "scope.refused") throw new Error(`сюжет 8: ${last.step} ${JSON.stringify(last.params)} — выбор демо-правила у продавца поручения или сбой`);
+    } else if (no === 9) {
+      // Поручение сюжета 1; человек соглашается с карточкой — до запроса корзины оператор Системы приостанавливает агента.
+      await intent();
+      ok(await post("suspended"), "suspended");
+      await until(n, "cart.card");
+      ok(await post("cart/accept"), "cart/accept");
+      // Конец сюжета — возобновление агента или шаг сбоя: понятная причина вместо таймаута.
+      const end = Date.now() + 60_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["suspend.resumed", "suspend.resume_failed", "operator.reinstate_failed", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 9");
+        await pause(50);
+      }
+      if (last.step !== "suspend.resumed") throw new Error(`сюжет 9: ${last.step} ${JSON.stringify(last.params)}`);
+      // События статуса агента агент читает лентой после возобновления — они могут отстать от шага сюжета.
+      const evEnd = Date.now() + 30_000;
+      while (!demo.bus.history().some((i) => i.stream === "monitor" && i.event.seq > n && i.event.what === "agent.reinstated")) {
+        if (Date.now() > evEnd) throw new Error("не дождались события agent.reinstated");
+        await pause(50);
+      }
     } else if (no === 6) {
       await intent();
       await purchase("reject", n);

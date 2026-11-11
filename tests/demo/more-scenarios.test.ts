@@ -2,7 +2,7 @@
 // агентом (createAgentCore). Проверка здесь — код защиты и записи стенда; паспорт К2.1 и контролёр К2.2 — по ленте
 // прогона, как у сюжетов 1–5 (tests/demo/interpret-live.test.ts). Паспорт в пульте — П-11.5 основного окна.
 // Решения клиента в банке — эмулятором банка в автотесте (П2 п. 5, как подпись в drive.ts).
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { control, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
 import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation } from "../../src/dashboards/interpret.js";
 import { matches, type Passport } from "../../src/dashboards/passports.js";
@@ -226,6 +226,153 @@ describe("сюжет 8 «Продавец вне поручения» (П-06)", 
     expect(items.find((r) => r.ref === "scope.refused")?.stage).toBe("outcome");
     const runs = segments(items);
     expect(runs.map((s) => s.passport.name)).toEqual(["scope"]);
+    for (const s of runs) expectAccepted(s);
+  });
+});
+
+describe("сюжет 9 «Агент приостановлен» (П-07)", { timeout: 180_000 }, () => {
+  let demo: Demo;
+  let env: InterpretEnv;
+  const steps = (): ScenarioLine[] => demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
+  const post = (name: string) => fetch(`${demo.monitor.url}/scenario/${name}`, { method: "POST", headers: { origin: demo.monitor.url } });
+  beforeAll(async () => {
+    demo = await startDemo();
+    const raw = await (await fetch(`${demo.monitor.url}/api/diag`)).json();
+    env = { snapshot: parseDiagSnapshot(raw)!.snapshot, emulated: LOCAL_STAND_EMULATED, training: TRAINING_MERCHANTS };
+  }, 30_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("без поручения — 409", async () => {
+    expect((await post("suspended")).status).toBe(409);
+  });
+
+  it("оператор Системы приостанавливает агента до корзины → Платформа 403 AGENT_SUSPENDED → покупка остановлена; после снятия агент допущен; паспорт принят", async () => {
+    const callsFrom = demo.stand.stand.calls().length;
+    const merchantsFrom = demo.stand.merchantCalls().length;
+    const items = (await driver(demo).run(9)).map((i) => interpret(i, env));
+    const all = steps();
+    const stopped = all.find((s) => s.step === "suspend.stopped")!;
+    expect(stopped.params).toMatchObject({ code: "AGENT_SUSPENDED", state: "STOPPED" });
+    expect(stopped.params.intent_id).toBe(all.find((s) => s.step === "intent.created")!.params.mandate_id);
+    // Порядок: согласие → приостановление → остановка → снятие → возобновление.
+    const order = ["cart.agreed", "operator.suspended", "suspend.stopped", "operator.reinstated", "suspend.resumed"].map((n) => all.find((s) => s.step === n)!.seq);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // В демо push нет, ленту до запроса корзины никто не будит: защищает Платформа — 403 на первое обращение агента после
+    // приостановления (задание П-07). Это сверка поручения перед запросом корзины: сама корзина к Платформе не уходит.
+    expect(all.some((s) => s.step === "suspend.by_platform")).toBe(true);
+    expect(all.some((s) => s.step === "suspend.by_agent")).toBe(false);
+    const calls = demo.stand.stand.calls().slice(callsFrom);
+    const intentId = String(stopped.params.intent_id);
+    const refused = calls.filter((c) => c.status === 403 && c.code === "AGENT_SUSPENDED" && c.path.startsWith("/pao/") && c.path !== "/pao/v1/events");
+    expect(refused.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /pao/v1/mandates/${intentId}/verify`]);
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates")).toHaveLength(1); // только поручение, корзины нет
+    // Код защиты: ни реквизита, ни заказа у витрины.
+    expect(calls.some((c) => c.path === "/pao/v1/credentials")).toBe(false);
+    expect(demo.stand.merchantCalls().slice(merchantsFrom).some((c) => c.method === "POST" && /\/orders$/.test(c.path))).toBe(false);
+    // Отказ Платформы — на шине монитора с кодом; события статуса агента — тоже.
+    const mon = demo.bus.history().flatMap((i) => (i.stream === "monitor" ? [i.event] : []));
+    expect(mon.some((e) => e.what === "GET /pao/v1/mandates/{mandate_id}/verify" && e.status === 403 && e.code === "AGENT_SUSPENDED")).toBe(true);
+    expect(mon.some((e) => e.source === "pao_event" && e.what === "agent.suspended")).toBe(true);
+    expect(mon.some((e) => e.what.startsWith("operation."))).toBe(false);
+    expect(items.find((r) => r.ref === "suspend.stopped")?.stage).toBe("outcome");
+    const runs = segments(items);
+    expect(runs.map((s) => s.passport.name)).toEqual(["intent", "suspended"]);
+    for (const s of runs) expectAccepted(s);
+  });
+
+  // Ветки сюжета 9 (ревью П-11.1г № 3): подмены стенда и ядра — только в этом тесте; после каждой агент снова допущен.
+  describe("ветки: агент не остаётся приостановленным", () => {
+    const real = { suspend: () => demo.stand.stand.suspendAgent, reinstate: () => demo.stand.stand.reinstateAgent };
+    afterEach(async () => {
+      vi.restoreAllMocks();
+      await demo.scenarios.settled();
+      await demo.stand.stand.reinstateAgent(demo.stand.agentCode).catch(() => undefined);
+      await demo.stand.agent.recheck();
+    });
+    /** Сюжет 1 (подпись эмулятором банка) и сюжет 9 до конца; шаги прогона. */
+    async function run9(): Promise<ScenarioLine[]> {
+      const n = steps().length;
+      expect((await post("intent")).status).toBe(202);
+      const id = await (async () => {
+        for (;;) {
+          const w = steps().slice(n).find((s) => s.step === "intent.awaiting_signature");
+          if (w) return String(w.params.mandate_id);
+          await pause(50);
+        }
+      })();
+      expect((await demo.stand.stand.issuer.sign(id)).statusCode).toBe(200);
+      while (!steps().slice(n).some((s) => s.step === "intent.signed")) await pause(50);
+      await demo.scenarios.settled();
+      expect((await post("suspended")).status).toBe(202);
+      while (!steps().slice(n).some((s) => s.step === "cart.card")) await pause(50);
+      expect((await post("cart/accept")).status).toBe(202);
+      await demo.scenarios.settled();
+      return steps().slice(n);
+    }
+    const names = (s: ScenarioLine[]) => s.map((x) => x.step).filter((x) => /^(aborted|failed|operator\.|suspend\.)/.test(x));
+
+    it("«прервать» сразу после приостановления — шаг «прервано», снятие и сверка выполнены", async () => {
+      const suspend = real.suspend().bind(demo.stand.stand);
+      vi.spyOn(demo.stand.stand, "suspendAgent").mockImplementation(async (code, ground) => {
+        const r = await suspend(code, ground);
+        demo.scenarios.abort();
+        return r;
+      });
+      expect(names(await run9())).toEqual(["operator.suspended", "aborted", "operator.reinstated", "suspend.resumed"]);
+    });
+
+    it("агент узнал о приостановлении раньше запроса — остановился сам, к поручениям Платформы с 403 не обращался", async () => {
+      const suspend = real.suspend().bind(demo.stand.stand);
+      vi.spyOn(demo.stand.stand, "suspendAgent").mockImplementation(async (code, ground) => {
+        const r = await suspend(code, ground);
+        await demo.stand.agent.recheck().catch(() => undefined); // сверка ядра прочитала SUSPENDED — подпись приостановлена
+        return r;
+      });
+      const callsFrom = demo.stand.stand.calls().length;
+      const s = await run9();
+      expect(names(s)).toEqual(["operator.suspended", "suspend.stopped", "suspend.by_agent", "operator.reinstated", "suspend.resumed"]);
+      expect(demo.stand.stand.calls().slice(callsFrom).some((c) => c.path.startsWith("/pao/v1/mandates") && c.status === 403)).toBe(false);
+    });
+
+    it("статус сменён, событие не записано (сбой приостановления) — снятие всё равно выполнено", async () => {
+      const suspend = real.suspend().bind(demo.stand.stand);
+      vi.spyOn(demo.stand.stand, "suspendAgent").mockImplementation(async (code, ground) => {
+        await suspend(code, ground);
+        throw Object.assign(new Error("событие не записано"), { name: "AgentStatusEventMissingError" });
+      });
+      expect(names(await run9())).toEqual(["failed", "operator.reinstated", "suspend.resumed"]);
+    });
+
+    it("сбой снятия один раз — повтор; дважды — шаг сбоя словами, сверка показывает, что агент не возобновлён", async () => {
+      const reinstate = real.reinstate().bind(demo.stand.stand);
+      const missing = () => Object.assign(new Error("событие не записано"), { name: "AgentStatusEventMissingError" });
+      const once = vi.spyOn(demo.stand.stand, "reinstateAgent").mockRejectedValueOnce(missing()).mockImplementation(reinstate);
+      expect(names(await run9())).toEqual(["operator.suspended", "suspend.stopped", "suspend.by_platform", "operator.reinstated", "suspend.resumed"]);
+      expect(once).toHaveBeenCalledTimes(2);
+      vi.restoreAllMocks();
+      vi.spyOn(demo.stand.stand, "reinstateAgent").mockRejectedValue(missing());
+      const s = await run9();
+      expect(names(s)).toEqual(["operator.suspended", "suspend.stopped", "suspend.by_platform", "operator.reinstate_failed", "suspend.resume_failed"]);
+      expect(s.find((x) => x.step === "operator.reinstate_failed")!.params.code).toBe("AGENT_STATUS_EVENT_MISSING");
+      expect(s.find((x) => x.step === "suspend.resume_failed")!.params.code).toBe("AGENT_SUSPENDED");
+    });
+
+    it("сбой сверки ядра после снятия — шаг «не возобновил» с кодом", async () => {
+      vi.spyOn(demo.stand.agent, "recheck").mockRejectedValueOnce(Object.assign(new Error("503"), { code: "STATE_UNAVAILABLE" }));
+      const s = await run9();
+      expect(names(s)).toEqual(["operator.suspended", "suspend.stopped", "suspend.by_platform", "operator.reinstated", "suspend.resume_failed"]);
+      expect(s.find((x) => x.step === "suspend.resume_failed")!.params.code).toBe("STATE_UNAVAILABLE");
+    });
+  });
+
+  it("после сюжета 9 агент снова работает: сюжеты 1 → 2 — оплачено по событию Платформы", async () => {
+    const from = steps().length;
+    const items = (await driver(demo).run(2)).map((i) => interpret(i, env));
+    expect(steps().slice(from).find((s) => s.step === "outcome")?.params.status).toBe("AUTHORIZED");
+    const runs = segments(items);
+    expect(runs.map((s) => s.passport.name)).toEqual(["intent", "purchase"]);
     for (const s of runs) expectAccepted(s);
   });
 });

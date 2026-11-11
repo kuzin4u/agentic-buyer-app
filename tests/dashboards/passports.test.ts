@@ -46,6 +46,14 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
       expect(ids).toEqual(expect.arrayContaining(["no-fraud", "no-owner-verdict", "agent-admitted", "agent-key-valid", "client-sign-only", "client-confirm-only", "client-revoke-only"]));
       const paid = p.expect.some((e) => e.match.ref === "operation.authorized");
       expect(paid || (ids.includes("no-paid") && ids.includes("no-outcome")), `${p.no}`).toBe(true);
+      // Запрет допуска — весь перечень AGENT_CODES; у паспорта 9 «Агент приостановлен» (П-07) — без двух кодов приостановления,
+      // и они там ожидаются (ревью П-11.1г № 9).
+      const admitted = [p.forbid.find((e) => e.id === "agent-admitted")!.match.code ?? []].flat();
+      const suspendedCodes = ["AGENT_SUSPENDED", "DECLINED_AGENT_SUSPENDED"];
+      if (p.name === "suspended") {
+        expect(admitted, `${p.no}`).toEqual(AGENT_CODES.filter((c) => !suspendedCodes.includes(c)));
+        expect(p.expect.some((e) => e.match.code === "AGENT_SUSPENDED")).toBe(true);
+      } else expect(admitted, `${p.no}`).toEqual([...AGENT_CODES]);
     }
   });
 

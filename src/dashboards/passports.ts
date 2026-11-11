@@ -21,6 +21,7 @@ export const SCENARIOS = [
   { no: 6, name: "reject" },
   { no: 7, name: "unconfirmed" },
   { no: 8, name: "scope" },
+  { no: 9, name: "suspended" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -392,6 +393,48 @@ const RAW: readonly Passport[] = [
       { id: "no-cart", what: t("Корзины нет", "No cart"), match: { stream: "scenario", ref: "cart.created" } },
       { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-07 задания (П-11.1г, Р-1459 В7): оператор Системы приостанавливает агента до запроса корзины. Защитник — Платформа
+    // (403 AGENT_SUSPENDED на запрос покупки) или агент (подпись приостановлена по событию раньше запроса) — принимаются
+    // оба; какой сработал — шаг сюжета и таблица тестирования. Общий запрет «агент допущен» здесь заменён: приостановка —
+    // ожидаемый код; прочие отказы в допуске запрещены.
+    no: 9,
+    name: "suspended",
+    title: t("9. Агент приостановлен", "9. The agent is suspended"),
+    outcome: {
+      kind: "stopped",
+      text: t("Оператор Системы приостановил агента; покупка остановлена до корзины, заказа и оплаты; после снятия агент снова допущен", "The System operator suspended the agent; the purchase stopped before the cart, order and payment; after reinstatement the agent is admitted again"),
+    },
+    statuses: {
+      mandate: t("поручение подписано, корзины нет", "mandate signed, no cart"),
+      operation: t("операции нет", "no operation"),
+      agent: t("агент был приостановлен, после сюжета активен", "the agent was suspended, active after the scenario"),
+      key: t("ключ агента действует", "agent key valid"),
+    },
+    expect: [
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      step("suspended", "operator.suspended", t("Оператор Системы приостановил агента", "The System operator suspended the agent")),
+      step("stopped", "suspend.stopped", t("Покупка остановлена: агент приостановлен", "Purchase stopped: the agent is suspended"), { code: "AGENT_SUSPENDED" }),
+      step("reinstated", "operator.reinstated", t("Оператор Системы снял приостановление", "The System operator reinstated the agent")),
+      step("resumed", "suspend.resumed", t("Агент сверился с реестром — снова допущен", "The agent checked the registry — admitted again")),
+      event("reinstated-event", "agent.reinstated", t("Платформа: агент снова допущен", "Platform: the agent is reinstated")),
+    ],
+    forbid: [
+      ...COMMON_FORBID.filter((f) => f.id !== "agent-admitted"),
+      {
+        id: "agent-admitted",
+        what: t("Других отказов в допуске агента нет — только приостановление оператором", "No other agent admission refusals — only the operator suspension"),
+        match: { code: AGENT_CODES.filter((c) => c !== "AGENT_SUSPENDED" && c !== "DECLINED_AGENT_SUSPENDED") },
+      },
+      ...NO_PAID,
+      { id: "no-cart", what: t("Корзины нет", "No cart"), match: { stream: "scenario", ref: "cart.created" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+      { id: "no-reinstate-failed", what: t("Снятие приостановления прошло", "Reinstatement succeeded"), match: { stream: "scenario", ref: "operator.reinstate_failed" } },
+      { id: "no-resume-failed", what: t("Агент возобновил работу после снятия", "The agent resumed after reinstatement"), match: { stream: "scenario", ref: "suspend.resume_failed" } },
     ],
   },
 ];
