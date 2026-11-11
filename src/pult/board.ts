@@ -3,7 +3,7 @@
 // (`tx.ts`): что на карточке и в какой она колонке. Тексты карточки — фразы интерпретатора ru/en (данные для textContent,
 // инвариант 4); «завершена» — только по итогу из события Платформы (инвариант 6, модель транзакций).
 import type { Interpretation, Kind, Stage, Texts } from "../dashboards/interpret.js";
-import type { PultMandate, PultTx, TxModel, TxOutcomeKind } from "./tx.js";
+import type { PultMandate, PultTx, TxModel, TxOpKind, TxOutcomeKind } from "./tx.js";
 
 /** Колонки доски — как в модели 1.23 (`BOARD_COLS`). «После операции» — расчёт и возврат после итога (после MVP на стенде
  *  событий расчёта нет: колонка пустая, но остаётся — структура экранов модели сохраняется, Р-1426). */
@@ -39,8 +39,17 @@ export interface BoardCard {
   readonly worst: Kind;
   /** Конфликт звеньев — итога нет, решает человек (модель транзакций, Р-1444). */
   readonly linkConflict?: true;
-  /** Есть операции или итоговые события подтверждения, связанные с корзиной только номером заказа (Р-1458, Р-1460). */
+  /** Есть операции или итоговые события подтверждения, связанные с корзиной только номером заказа, а шаг итога агента уже
+   *  пришёл (Р-1458, Р-1460, П-3.2а). */
   readonly unconfirmed?: true;
+  /** Событие операции пришло, шага итога агента ещё нет — «ждём шаг агента» (повторное ревью П-2.1 № 1, П-3.2а). */
+  readonly pending?: true;
+  /** «Оплачено» после отзыва поручения корзины (В5). */
+  readonly afterRevoke?: true;
+  /** Два «оплачено» по одной корзине (R46). */
+  readonly doubleDebit?: true;
+  /** Операции транзакции с итогом каждой — когда их больше одной (повтор после отказа, В6). */
+  readonly ops?: readonly { readonly opRef: string; readonly kind?: TxOpKind }[];
   /** Последняя ключевая запись: время и фраза ru/en. */
   readonly last?: { readonly at: string; readonly phrase: Texts };
   /** seq первой записи — порядок карточек в колонке. */
@@ -88,6 +97,10 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       worst: t.worst,
       ...(t.linkConflict && { linkConflict: true as const }),
       ...((t.unconfirmedOps || t.unconfirmedConfirmations) && { unconfirmed: true as const }),
+      ...(t.pendingOps && { pending: true as const }),
+      ...(t.afterRevoke && { afterRevoke: true as const }),
+      ...(t.doubleDebit && { doubleDebit: true as const }),
+      ...(t.ops.length > 1 && { ops: t.ops.map((o) => ({ opRef: o.opRef, ...(o.kind !== undefined && { kind: o.kind }) })) }),
       ...(last && { last }),
       order: t.seqs[0]!,
     });

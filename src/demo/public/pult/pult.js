@@ -212,7 +212,13 @@
       t.dataset.since = c.since;
       b.appendChild(t);
     }
+    // Признаки итога (П-3.2а): «оплачено» после отзыва (В5), два списания (R46); операции — при повторе (В6).
+    if (c.afterRevoke) b.appendChild(el("div", label("card.after_revoke"), "bc-w"));
+    if (c.doubleDebit) b.appendChild(el("div", label("card.double_debit"), "bc-w"));
+    if (Array.isArray(c.ops))
+      b.appendChild(el("div", label("card.ops") + ": " + c.ops.map((o) => o.opRef + " — " + label(o.kind ? "op." + o.kind : "op.none")).join(" · "), "bc-ops"));
     if (c.unconfirmed) b.appendChild(el("div", label("card.unconfirmed"), "bc-w"));
+    if (c.pending) b.appendChild(el("div", label("card.pending"), "bc-p"));
     if (c.last) b.appendChild(el("div", clock(c.last.at) + " " + (c.last.phrase[lang] || c.last.phrase.ru), "bc-e"));
     return b;
   }
@@ -302,7 +308,11 @@
       row.dataset.card = r.id;
       const lastSeg = r.segs[r.segs.length - 1];
       if (lastSeg && lastSeg.col === "done") row.dataset.done = "1";
-      row.appendChild(el("span", r.id, "gname"));
+      const name = el("span", r.id, "gname");
+      // Пометки строки (П-3.2а): «оплачено» после отзыва (В5), два списания (R46) — строкой под номером, в ячейке имени.
+      if (r.afterRevoke) name.appendChild(el("span", label("card.after_revoke"), "gflag"));
+      if (r.doubleDebit) name.appendChild(el("span", label("card.double_debit"), "gflag"));
+      row.appendChild(name);
       const track = el("span", undefined, "gtrack");
       for (const sg of r.segs) {
         const s = el("span", undefined, "seg col-" + sg.col);

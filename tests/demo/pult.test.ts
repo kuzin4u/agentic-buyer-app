@@ -250,6 +250,8 @@ describe("пульт: доска «Ход по стадиям» на живом 
     expect(tx[0]).toMatchObject({ column: "done", outcome: "paid" });
     expect(tx[0]!.linkConflict).toBeUndefined();
     expect(tx[0]!.unconfirmed).toBeUndefined();
+    // П-3.2а: после сюжета 2 с настоящим агентом нет ни «ждём шаг агента», ни признаков; операция одна — списка нет.
+    for (const k of ["pending", "afterRevoke", "doubleDebit", "ops"] as const) expect(tx[0]![k], k).toBeUndefined();
     // Поручение сюжета 2 показывает его транзакция; поручение сюжета 1 (покупки по нему нет) — карточка поручения.
     expect(cards.filter((c) => c.kind === "mandate")).toEqual([expect.objectContaining({ column: "mandate" })]);
     expect(cards.some((c) => c.kind === "mandate" && c.id === tx[0]!.intentId)).toBe(false);
