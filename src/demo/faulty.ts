@@ -22,7 +22,7 @@ import type { DemoIds } from "agentic-ps-platform/stand";
 import { listKeys, loadKey } from "agentic-buyer-ref/src/agent/signer/index.js";
 import { FAULT_PLAN, matchesOp, type FaultPlanEntry, type FaultStart, type FaultTest } from "./fault-tests.js";
 import { DEMO_PRINCIPAL, EXPIRY_SEC, type ScenarioStep, type StepSink } from "./scenarios.js";
-import { MASSA_MADRE } from "./shops.js";
+import { DEMO_SHOPS, MASSA_MADRE } from "./shops.js";
 import type { DemoStand } from "./stand.js";
 
 export { FAULT_PLAN, FAULT_TESTS, isFaultTest, type FaultPlanEntry, type FaultStart, type FaultTest, type Guard } from "./fault-tests.js";
@@ -48,6 +48,8 @@ export const BRANCH_STEPS = [
   "fault.note.cart_keep_unsigned",
   "fault.note.cart_sign_ask",
   "fault.note.cart_signed",
+  "fault.note.cart_sign_ask_scope",
+  "fault.note.other_merchant",
   "fault.note.revoke_ask",
   "fault.note.revoked",
 ] as const;
@@ -116,8 +118,9 @@ const mandateBody = (type: "INTENT" | "CART", parent: string | null, validTo: st
   };
 };
 
-/** Подготовка Н-07 и Н-06: пометка по продавцу, поручение нарушителя, подпись клиента, корзина под ним. */
-async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
+/** Подготовка Н-06…Н-09: пометка по продавцу, поручение нарушителя, подпись клиента, корзина под ним, пометка по корзине.
+ *  Экспортирована для обратных автотестов (Н-08 «в пределе»); сборка демо-стенда ветки задаёт только таблицей BRANCHES. */
+export async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
   c.mark({ merchant_id: VIOLATOR_SHOP.merchant_id, shop_id: VIOLATOR_SHOP.id });
   const validTo = new Date(Date.now() + 86_400_000).toISOString();
   const intent = await c.call("POST /pao/v1/mandates", { body: mandateBody("INTENT", null, validTo), idempotencyKey: `${key}-intent` });
@@ -136,12 +139,55 @@ async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: 
   return { intentId, cartId };
 }
 
-/** Реквизит по корзине нарушителя — нарушение Н-07 и Н-06 (операция таблицы FAULT_PLAN). */
-const credentialFor = (c: FaultContext, cartId: string, key: string) =>
+/** Реквизит по корзине нарушителя — нарушение Н-06…Н-09 (операция таблицы FAULT_PLAN). Сумма — минимальные единицы и
+ *  валюта корзины (правило совместимости 2); по умолчанию — цена корзины и продавец корзины. Тело ответа (реквизит) — только
+ *  в памяти вызывающего: в журнал нарушения идёт лишь исход (ответ / отказ / сбой), на шину — код и статус (инвариант 1). */
+export const credentialFor = (c: FaultContext, cartId: string, key: string, o: { amountMax?: number; merchantId?: string } = {}) =>
   c.violate.call("POST /pao/v1/credentials", {
-    body: { mandate_id: cartId, order_ref: `fault-${key}`, merchant_id: VIOLATOR_SHOP.merchant_id, amount_max: VIOLATOR_PRICE, currency: "RUB", kind: "CARD" },
+    body: {
+      mandate_id: cartId,
+      order_ref: `fault-${key}`,
+      merchant_id: o.merchantId ?? VIOLATOR_SHOP.merchant_id,
+      amount_max: o.amountMax ?? VIOLATOR_PRICE,
+      currency: "RUB",
+      kind: "CARD",
+    },
     idempotencyKey: `${key}-credential`,
   });
+
+/** Подпись корзины клиентом перед нарушением Н-08, Н-09: в ПАО проверка «не подписан» стоит раньше «вне области» — по
+ *  неподписанной корзине защита MANDATE_SCOPE не проверяется (план П-11.3в). */
+export async function signedCart(c: FaultContext, key: string): Promise<{ intentId: string; cartId: string }> {
+  const ids = await intentAndCart(c, key);
+  c.step("fault.note.cart_sign_ask_scope", { mandate_id: ids.cartId });
+  await c.waitClient(ids.cartId, "ACTIVE");
+  c.step("fault.note.cart_signed", { mandate_id: ids.cartId });
+  return ids;
+}
+
+/** Остановка ветки ею самой с конкретной причиной (до пометки — «не помечено», после — «помечено, но не разыграно»). */
+export class BranchStop extends Error {
+  constructor(readonly code: "NO_SECOND_MERCHANT") {
+    super(code);
+  }
+}
+
+/** Продавец Б для Н-09 — первая витрина набора стенда, отличная от продавца корзины (не литералом: при правке состава витрин
+ *  литерал молча указал бы на несуществующего продавца). Нет такой — undefined (решение владельца, чат 11.11). */
+export const otherMerchant = (shops: readonly { readonly merchant_id: string; readonly id: string }[]): string | undefined =>
+  shops.find((s) => s.merchant_id !== VIOLATOR_SHOP.merchant_id)?.merchant_id;
+
+/** Ветка Н-09 на данном наборе витрин (для автотестов «нет второго продавца»; в сборке — DEMO_SHOPS). */
+export const n09Branch = (shops: readonly { readonly merchant_id: string; readonly id: string }[]): FaultBranch => ({
+  run: async (c) => {
+    const merchantB = otherMerchant(shops);
+    if (merchantB === undefined) throw new BranchStop("NO_SECOND_MERCHANT"); // до пометки и запросов
+    const key = `n09-${randomUUID()}`;
+    const { cartId } = await signedCart(c, key);
+    c.step("fault.note.other_merchant", { merchant_id: merchantB });
+    await credentialFor(c, cartId, key, { merchantId: merchantB });
+  },
+});
 
 /** Ветки по тестам (П-11.3б–д). Нет ветки — запуск NOT_READY. */
 const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
@@ -173,6 +219,18 @@ const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
       await credentialFor(c, cartId, key);
     },
   },
+  // Н-08 «сумма операции ≠ корзине» (R17), ветка MANDATE_SCOPE (Р-1459 В5): реквизит по подписанной корзине на сумму на одну
+  // минимальную единицу больше её предела → 409 MANDATE_SCOPE.
+  "Н-08": {
+    run: async (c) => {
+      const key = `n08-${randomUUID()}`;
+      const { cartId } = await signedCart(c, key);
+      await credentialFor(c, cartId, key, { amountMax: VIOLATOR_PRICE + 1 });
+    },
+  },
+  // Н-09 «оплата другому продавцу» (R26), ветка MANDATE_SCOPE: реквизит по подписанной корзине продавца А на продавца Б →
+  // 409 MANDATE_SCOPE. Это и защита Платформы для П-06 (сюжет 8 — защитил агент).
+  "Н-09": n09Branch(DEMO_SHOPS),
 };
 
 /** Сколько закрытие ждёт идущую ветку (как у сюжетов): ответ стенда без таймаута не вешает остановку демо. */
@@ -216,7 +274,8 @@ type StopCode =
   | "CLIENT_SIGN_TIMEOUT"
   | "CLIENT_REVOKE_TIMEOUT"
   | "CLIENT_DECLINED"
-  | "ABORTED";
+  | "ABORTED"
+  | "NO_SECOND_MERCHANT";
 
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
@@ -487,8 +546,11 @@ export class FaultyDriver {
     let threw = false;
     try {
       await branch.run(ctx);
-    } catch {
-      threw = true; // что ветка бросила, итог не решает — решает журнал; учитывается только «ветка сломалась»
+    } catch (e) {
+      // Ветка сама остановилась с конкретной причиной (нет второго продавца) — эта причина; иначе что ветка бросила, итог не
+      // решает — решает журнал; учитывается только «ветка сломалась».
+      if (e instanceof BranchStop) stop ??= e.code;
+      else threw = true;
     } finally {
       run.abort(); // ветка кончилась — новые запросы, пометки и шаги из неё не уходят
       this.#abortRun = null;

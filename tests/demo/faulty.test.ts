@@ -14,11 +14,11 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv } from "../../src/da
 import { parseDiagSnapshot, parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { ScenarioLine } from "../../src/demo/bus.js";
 import { FAULT_TESTS, type FaultTest } from "../../src/demo/fault-tests.js";
-import { BRANCH_STEPS, FAULT_PLAN, FaultyDriver, ID_FIELDS, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
+import { BRANCH_STEPS, credentialFor, FAULT_PLAN, FaultyDriver, ID_FIELDS, n09Branch, otherMerchant, signedCart, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { DemoScenarios } from "../../src/demo/scenarios.js";
-import { MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { DEMO_SHOPS, MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { DYNAMIC, filesUnder, specifiers } from "../support/imports.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -110,7 +110,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
     expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
-    const r = await post(`/fault/${enc("Н-08")}`); // ветки Н-08 пока нет (П-11.3в)
+    const r = await post(`/fault/${enc("Н-01")}`); // ветки Н-01 пока нет (П-11.3г)
     expect(r.status).toBe(409);
     expect(JSON.parse(r.body)).toEqual({ ok: false, code: "NOT_READY" });
   });
@@ -802,6 +802,102 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient"]);
       expect(signCalls(callsFrom)).toEqual([]);
       expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
+    });
+  });
+
+  describe("П-11.3в: ветка MANDATE_SCOPE — Н-08, Н-09 (по подписанной корзине)", { timeout: 60_000 }, () => {
+    const real = () => new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { otherBusy: () => demo.scenarios.busy, clientWaitMs: 15_000 });
+    const untilStep = async (from: number, name: string) => {
+      for (const end = Date.now() + 15_000; Date.now() < end; await pause(50)) {
+        const s = steps().slice(from).find((x) => x.step === name);
+        if (s) return s;
+      }
+      throw new Error(`не дождались шага ${name}`);
+    };
+    /** Клиент (эмулятор банка, автотест) подписывает поручение и корзину нарушителя. */
+    const clientSignsBoth = async (from: number): Promise<string> => {
+      const req = await untilStep(from, "fault.note.intent_requested");
+      expect((await demo.stand.stand.issuer.sign(String(req.params.mandate_id))).statusCode).toBe(200);
+      const ask = await untilStep(from, "fault.note.cart_sign_ask_scope");
+      const cartId = String(ask.params.mandate_id);
+      expect((await demo.stand.stand.issuer.sign(cartId)).statusCode).toBe(200);
+      return cartId;
+    };
+    const price = MASSA_MADRE.items[0]!.price!;
+
+    it("Н-08: реквизит по подписанной корзине на сумму на одну единицу больше её предела → 409 MANDATE_SCOPE, реквизит не выдан", async () => {
+      const n = steps().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      const d = real();
+      expect(d.start("Н-08")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      const s = steps().slice(n);
+      expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-08", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+    });
+
+    it("Н-08, обратный (только автотест): сумма в пределе корзины — не защита: реквизит выдан, «совершено»; криптограмма и token_ref — только в памяти ветки", async () => {
+      const n = steps().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      let secrets: string[] = [];
+      // Тот же ход, что ветка Н-08, но amount_max = цене корзины (в пределе); таблица — настоящая FAULT_PLAN.
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+        otherBusy: () => demo.scenarios.busy,
+        clientWaitMs: 15_000,
+        branches: {
+          "Н-08": {
+            run: async (c) => {
+              const key = `n08r-${Date.now()}`;
+              const { cartId } = await signedCart(c, key);
+              const cred = await credentialFor(c, cartId, key, { amountMax: price });
+              // Без фильтра: каждое поле — явно (ревью П-11.3в № 1 — исключение: отсутствующее поле не проверялось бы молча).
+              secrets = [cred.payload?.cryptogram, cred.payload?.token_ref, cred.credential_ref] as string[];
+            },
+          },
+        },
+      });
+      d.start("Н-08");
+      await clientSignsBoth(n);
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.marked", params: { test: "Н-08" } });
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1); // MANDATE_SCOPE в прямом тесте — из-за суммы
+      const [cryptogram, tokenRef, credentialRef] = secrets;
+      for (const [name, v] of [["cryptogram", cryptogram], ["token_ref", tokenRef], ["credential_ref", credentialRef]] as const) {
+        expect(typeof v === "string" && v.length > 0, `${name} — непустая строка`).toBe(true);
+      }
+      // Явно, а не полагаясь на фильтр шага: ни на шине, ни в журнале агента, ни в журнале стенда, ни в ответах маршрута.
+      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log()), replies.join("")].join("\n");
+      for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
+    });
+
+    it("Н-09: реквизит по подписанной корзине «Массы Мадре» на другого продавца стенда → 409 MANDATE_SCOPE, реквизит не выдан", async () => {
+      const n = steps().length;
+      const credsFrom = demo.stand.stand.issuedCredentials().length;
+      const d = real();
+      expect(d.start("Н-09")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      const s = steps().slice(n);
+      const other = s.find((x) => x.step === "fault.note.other_merchant")!;
+      expect(other.params.merchant_id).toBe(otherMerchant(DEMO_SHOPS));
+      expect(other.params.merchant_id).not.toBe(MASSA_MADRE.merchant_id);
+      expect(DEMO_SHOPS.some((x) => x.merchant_id === other.params.merchant_id)).toBe(true);
+      expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-09", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
+      expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
+    });
+
+    it("Н-09 без второго продавца на стенде — «не разыграно» NO_SECOND_MERCHANT до пометки и запросов, не «Масса Мадре» по умолчанию", async () => {
+      expect(otherMerchant([MASSA_MADRE])).toBeUndefined();
+      const callsFrom = demo.stand.stand.calls().length;
+      const logFrom = demo.stand.stand.demo!.log().length;
+      const n = steps().length;
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches: { "Н-09": n09Branch([MASSA_MADRE]) } });
+      d.start("Н-09");
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.failed", params: { test: "Н-09", code: "NO_SECOND_MERCHANT" } });
+      expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.path.startsWith("/pao/"))).toEqual([]);
+      expect(demo.stand.stand.demo!.log().slice(logFrom).some((e) => e.what === "MARKED")).toBe(false);
     });
   });
 

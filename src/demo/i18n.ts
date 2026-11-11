@@ -175,6 +175,9 @@ const ru = {
   "step.fault.note.cart_sign_ask":
     "Нарушитель (ПР) — драйвер приложения ({test}): второе действие — подпишите корзину {mandate_id} на экране мандатов банка: тест проверяет отзыв полномочия, которое действовало.",
   "step.fault.note.cart_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал корзину {mandate_id}.",
+  "step.fault.note.cart_sign_ask_scope":
+    "Нарушитель (ПР) — драйвер приложения ({test}): второе действие — подпишите корзину {mandate_id} на экране мандатов банка: защита по сумме и продавцу проверяется у действующей корзины.",
+  "step.fault.note.other_merchant": "Нарушитель (ПР) — драйвер приложения ({test}): просит реквизит по корзине на другого продавца — {merchant_id}.",
   "step.fault.note.revoke_ask": "Нарушитель (ПР) — драйвер приложения ({test}): третье действие — отзовите поручение {mandate_id} на экране мандатов банка; корзина отзовётся вместе с ним.",
   "step.fault.note.revoked": "Нарушитель (ПР) — драйвер приложения ({test}): корзина {mandate_id} отозвана вместе с поручением.",
   "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
@@ -417,6 +420,9 @@ const en: Record<MessageKey, string> = {
   "step.fault.note.cart_sign_ask":
     "Violator (ПР) — app driver ({test}): second action — sign cart {mandate_id} on the bank mandates screen: the test checks revocation of an authority that was in force.",
   "step.fault.note.cart_signed": "Violator (ПР) — app driver ({test}): the client signed cart {mandate_id}.",
+  "step.fault.note.cart_sign_ask_scope":
+    "Violator (ПР) — app driver ({test}): second action — sign cart {mandate_id} on the bank mandates screen: the amount and merchant safeguard is checked on a cart in force.",
+  "step.fault.note.other_merchant": "Violator (ПР) — app driver ({test}): asks for a credential on the cart for another merchant — {merchant_id}.",
   "step.fault.note.revoke_ask": "Violator (ПР) — app driver ({test}): third action — revoke mandate {mandate_id} on the bank mandates screen; the cart is revoked with it.",
   "step.fault.note.revoked": "Violator (ПР) — app driver ({test}): cart {mandate_id} revoked together with the mandate.",
   "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
