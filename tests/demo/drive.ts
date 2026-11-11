@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -131,6 +131,16 @@ export function driver(demo: Demo) {
         if (Date.now() > evEnd) throw new Error("не дождались события agent.reinstated");
         await pause(50);
       }
+    } else if (no === 10) {
+      // Своё поручение с коротким сроком (startDemo({ expirySec })); подпись — до конца срока, затем сюжет ждёт сам.
+      await intent("expired");
+      const end = Date.now() + 120_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["expiry.refused", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 10");
+        await pause(100);
+      }
+      if (last.step !== "expiry.refused") throw new Error(`сюжет 10: ${last.step} ${JSON.stringify(last.params)}`);
     } else if (no === 6) {
       await intent();
       await purchase("reject", n);

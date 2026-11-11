@@ -4,7 +4,7 @@ import { MonitorBus } from "./bus.js";
 import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
-import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK, MORE_SCENARIOS } from "./scenarios.js";
+import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK, moreScenarios } from "./scenarios.js";
 import { startMonitorServer, type MonitorServer } from "./server.js";
 import { TRAINING_MERCHANTS } from "./shops.js";
 import { startDemoStand, type DemoStand } from "./stand.js";
@@ -18,6 +18,8 @@ export interface DemoOptions {
   /** Режим сбоев стенда для прогона тестов пульта (`DEMO_FAULTS=1`, Р-1355 ответ 1, П-1.3): `demo: { faults: true }`,
    *  срок подтверждения 45 с. По умолчанию выключен. Для показа людям не включается. */
   faults?: boolean;
+  /** Срок поручения сюжета 10 «срок поручения истёк», секунд (по умолчанию EXPIRY_SEC); короче — для автотестов. */
+  expirySec?: number;
 }
 
 export interface Demo {
@@ -40,7 +42,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
   let scenarios: DemoScenarios | undefined;
   try {
     // Сюжеты пишут шаги в шину; шина берёт у сюжетов сумму операции для строки итога. Связь — через замыкания.
-    const sc = new DemoScenarios(stand, (s) => bus?.scenario(s));
+    const sc = new DemoScenarios(stand, (s) => bus?.scenario(s), { ...(o.expirySec !== undefined && { expirySec: o.expirySec }) });
     scenarios = sc;
     const b = new MonitorBus({
       calls: () => stand.stand.calls(),
@@ -75,7 +77,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       scenarios: sc,
       intentCard: INTENT_CARD,
       intentCardUpk: INTENT_CARD_UPK,
-      moreScenarios: MORE_SCENARIOS,
+      // Карточка сюжета 10 — с тем же сроком, что у сюжетов (Т3а).
+      moreScenarios: moreScenarios(o.expirySec),
       // Одноразовая ссылка входа клиента банка стенда: банк его уже опознал (эмулятор), подпись — на экране банка.
       bankLogin: () => `${stand.urls.bankApp}${stand.stand.bankApp.session(DEMO_PRINCIPAL)}`,
       // Реестры диагностики импортирует сборка контура; экраны DEMO-2 видят только снимок (Р-1246 п. 3, Р-1273 п. 3).

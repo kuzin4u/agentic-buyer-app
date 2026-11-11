@@ -26,8 +26,9 @@ export type StepSink = (s: ScenarioStep) => void;
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
  *  «подтверждение человеком через УПК» (своё поручение); revoke — сюжет 5. Сюжеты 6–10 — правильные тесты задания на
  *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03); unconfirmed — 7 «клиент не
- *  подтвердил покупку» (П-04); scope — 8 «продавец вне поручения» (П-06); suspended — 9 «агент приостановлен» (П-07). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed" | "scope" | "suspended";
+ *  подтвердил покупку» (П-04); scope — 8 «продавец вне поручения» (П-06); suspended — 9 «агент приостановлен» (П-07);
+ *  expired — 10 «срок поручения истёк» (П-09). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed" | "scope" | "suspended" | "expired";
 
 /** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
 export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
@@ -40,6 +41,7 @@ export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
   unconfirmed: "run.unconfirmed",
   scope: "run.scope",
   suspended: "run.suspended",
+  expired: "run.expired",
 };
 
 /** Сюжеты, которым нужно действующее поручение сюжета 1. */
@@ -102,6 +104,8 @@ export interface IntentCard {
   readonly subject: string;
   readonly limit: Money;
   readonly validDays: number;
+  /** Срок в секундах вместо дней (сюжет 10 «срок поручения истёк»): на карточке — секундами. */
+  readonly validSec?: number;
   readonly merchants: number;
   /** Продавцы поручения (merchant_id); нет — все продавцы стенда. */
   readonly scope?: readonly string[];
@@ -130,14 +134,26 @@ export const INTENT_CARD_SCOPE: IntentCard = {
   scopeLabels: SCOPE_SHOPS.map((s) => `${s.name} (${s.merchant_id})`),
 };
 
+/** Срок поручения сюжета 10 на мониторе (П-11.1д): человек успевает подписать его в банке, затем сюжет ждёт конца срока. */
+export const EXPIRY_SEC = 180;
+
+/** Поручение сюжета 10 (П-09): как у сюжета 1, но со сроком в секундах. Срок — данные карточки (Т3а: видна до кнопки). */
+export const expiryIntentCard = (sec: number = EXPIRY_SEC): IntentCard => ({ ...INTENT_CARD, validSec: sec });
+
 /** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением (видна до кнопки).
- *  Сюжет 7 — то же поручение, что у сюжета 4: выше порога подтверждения банка. */
-export const MORE_SCENARIOS: readonly MoreScenario[] = [
+ *  Сюжет 7 — то же поручение, что у сюжета 4: выше порога подтверждения банка. Срок поручения сюжета 10 — параметром,
+ *  тем же, что у сюжетов (DemoScenarios), чтобы карточка говорила правду. */
+export const moreScenarios = (expirySec: number = EXPIRY_SEC): readonly MoreScenario[] => [
   { name: "reject" },
   { name: "unconfirmed", card: INTENT_CARD_UPK },
   { name: "scope", card: INTENT_CARD_SCOPE },
   { name: "suspended" },
+  { name: "expired", card: expiryIntentCard(expirySec) },
 ];
+export const MORE_SCENARIOS: readonly MoreScenario[] = moreScenarios();
+
+/** Сколько сюжет 10 ждёт после конца срока по часам стенда, прежде чем пробовать покупку. */
+const EXPIRY_MARGIN_MS = 1000;
 
 export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDraft {
   return {
@@ -145,7 +161,7 @@ export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDr
     parentId: null,
     subject: card.subject,
     amountLimit: card.limit,
-    validTo: new Date(now.getTime() + card.validDays * 86_400_000).toISOString(),
+    validTo: new Date(now.getTime() + (card.validSec !== undefined ? card.validSec * 1000 : card.validDays * 86_400_000)).toISOString(),
     merchantScope: card.scope ? [...card.scope] : MERCHANT_FIXTURES.map((f) => f.merchant_id),
     principalRef: DEMO_PRINCIPAL,
     confirmationMode: "IMMEDIATE",
@@ -182,10 +198,13 @@ export class DemoScenarios {
   /** Заказ текущего сюжета — для связи шагов отказа с панелью витрины. */
   #orderId: string | null = null;
   #seq = 0;
+  /** Срок поручения сюжета 10, секунд. */
+  readonly #expirySec: number;
 
-  constructor(d: DemoStand, emit: StepSink) {
+  constructor(d: DemoStand, emit: StepSink, o: { expirySec?: number } = {}) {
     this.#d = d;
     this.#emit = emit;
+    this.#expirySec = o.expirySec ?? EXPIRY_SEC;
   }
 
   /** Сумма и причина отказа операции, как их вернуло ядро (GET операции после события), — для строки события в мониторе:
@@ -280,7 +299,9 @@ export class DemoScenarios {
                   ? this.#outOfScope()
                   : name === "suspended"
                     ? this.#suspendedAgent()
-                    : this.#buy();
+                    : name === "expired"
+                      ? this.#expiredMandate()
+                      : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -429,6 +450,71 @@ export class DemoScenarios {
     } finally {
       if (attempted) await this.#reinstate(agentCode, suspended);
     }
+  }
+
+  /** Сюжет 10 (П-09): своё поручение с коротким сроком (карточка у кнопки 10), подпись человеком; сюжет ждёт конца срока по
+   *  часам стенда и пробует покупку. Срок приложение не проверяет (инвариант 2) — только ждёт: остановку даёт ядро до витрин,
+   *  корзины и оплаты. По ПАО 1.4.0 сверка поручения отвечает OUT_OF_SCOPE на любой статус, кроме ACTIVE, в том числе на
+   *  истёкший (исхода EXPIRED у verify нет), и ядро agentic-buyer-ref 4a4ee7c отдаёт MANDATE_OUT_OF_SCOPE (mandates/client.ts
+   *  requireActive). Код — как есть, причину «срок» сюжет не утверждает; текст отказа ядра — как есть (решение владельца, чат
+   *  11.11). MANDATE_EXPIRED — после передачи агенту (после MVP). */
+  async #expiredMandate(): Promise<void> {
+    await this.#intent(expiryIntentCard(this.#expirySec));
+    if (!this.#intentActive) return;
+    // Поручение сюжета 10 — не для других сюжетов: признак снимается сразу после подписи, до ожидания, — и при «прервать»
+    // во время ожидания сюжеты 2, 3, 5, 6, 9 отвечают NEED_INTENT (ревью П-11.1д № 1). Срок приложение не проверяет.
+    this.#intentActive = false;
+    const p = this.#purchase!;
+    const mandate = p.intentMandate!;
+    this.#step("expiry.wait", { mandate_id: mandate.id, valid_to: mandate.validTo });
+    await this.#sleepUntil(Date.parse(mandate.validTo) + EXPIRY_MARGIN_MS);
+    this.#step("expiry.attempt", { mandate_id: mandate.id });
+    try {
+      await p.search();
+    } catch (e) {
+      const reason = p.reason;
+      if ((reason === "MANDATE_OUT_OF_SCOPE" || reason === "MANDATE_EXPIRED") && !this.#ac.signal.aborted) {
+        // Текст отказа ядра для человека (MandateRefused) — как есть, без разбора на коды; нет его — шаг без текста ядра
+        // (на мониторе — прочерк).
+        const text = e instanceof Error && e.name === "MandateRefused" ? e.message : undefined;
+        this.#step("expiry.refused", { mandate_id: mandate.id, code: reason, state: p.state, ...(text !== undefined && { core_text: text }) });
+      } else this.#fail(e);
+      return;
+    }
+    // Ядро дошло до выдачи по истёкшему поручению — так быть не должно: видно человеку как сбой.
+    this.#step("failed", { code: "EXPIRED_NOT_ENFORCED", state: p.state });
+  }
+
+  /** Ожидание до момента по часам стенда; отмена сюжета снимает ожидание. Сбой часов стенда — отказ ожидания, а не
+   *  необработанное исключение в таймере (ревью П-11.1д № 8). */
+  #sleepUntil(atMs: number): Promise<void> {
+    const signal = this.#signal;
+    return new Promise((ok, fail) => {
+      if (signal.aborted) return fail(new Error("сюжет отменён"));
+      const timer = setInterval(() => {
+        let now: number;
+        try {
+          now = this.#d.stand.now().getTime();
+        } catch (e) {
+          done();
+          fail(e);
+          return;
+        }
+        if (now < atMs) return;
+        done();
+        ok();
+      }, 250);
+      timer.unref();
+      const onAbort = () => {
+        done();
+        fail(new Error("сюжет отменён"));
+      };
+      function done(): void {
+        clearInterval(timer);
+        signal.removeEventListener("abort", onAbort);
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /** Кто защитил покупку (Р-1459 В7) — по положительному признаку (ревью П-11.1г № 4): Платформа — отказ 403 на обращение

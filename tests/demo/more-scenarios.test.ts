@@ -10,7 +10,7 @@ import { parseDiagSnapshot, parseWireItem } from "../../src/dashboards/wire.js";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
-import { INTENT_CARD_SCOPE, MORE_SCENARIOS } from "../../src/demo/scenarios.js";
+import { EXPIRY_SEC, INTENT_CARD_SCOPE, MORE_SCENARIOS } from "../../src/demo/scenarios.js";
 import { MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
 import { driver } from "./drive.js";
@@ -374,6 +374,81 @@ describe("сюжет 9 «Агент приостановлен» (П-07)", { tim
     const runs = segments(items);
     expect(runs.map((s) => s.passport.name)).toEqual(["intent", "purchase"]);
     for (const s of runs) expectAccepted(s);
+  });
+});
+
+describe("сюжет 10 «Срок поручения истёк» (П-09)", { timeout: 180_000 }, () => {
+  const EXPIRY = 6; // секунд: подпись эмулятором банка успевает, ожидание короткое
+  let demo: Demo;
+  let env: InterpretEnv;
+  beforeAll(async () => {
+    demo = await startDemo({ expirySec: EXPIRY });
+    const raw = await (await fetch(`${demo.monitor.url}/api/diag`)).json();
+    env = { snapshot: parseDiagSnapshot(raw)!.snapshot, emulated: LOCAL_STAND_EMULATED, training: TRAINING_MERCHANTS };
+  }, 30_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("карточка поручения сюжета 10 — срок в секундах, тот же, что у сюжета (Т3а), ru и en", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      const html = await (await fetch(`${demo.monitor.url}/?lang=${lang}`)).text();
+      const card = html.slice(html.indexOf('id="intent-card-expired"'), html.indexOf('data-scenario="expired"'));
+      expect(card).toContain(`${MESSAGES[lang]["card.valid_sec"]}: ${EXPIRY}<`);
+    }
+    // Монитор по умолчанию — 180 с: человек успевает подписать.
+    expect(MORE_SCENARIOS.find((s) => s.name === "expired")?.card?.validSec).toBe(EXPIRY_SEC);
+  });
+
+  it("поручение подписано, срок вышел → сверка у Платформы не подтвердила, агент сам остановил попытку до витрин, корзины и оплаты (код ядра как есть); паспорт принят", async () => {
+    const callsFrom = demo.stand.stand.calls().length;
+    const merchantsFrom = demo.stand.merchantCalls().length;
+    const items = (await driver(demo).run(10)).map((i) => interpret(i, env));
+    const steps = demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
+    const wait = steps.find((s) => s.step === "expiry.wait")!;
+    const refused = steps.find((s) => s.step === "expiry.refused")!;
+    // Код ядра 4a4ee7c — MANDATE_OUT_OF_SCOPE: по ПАО 1.4.0 сверка отвечает OUT_OF_SCOPE на любой статус, кроме ACTIVE, в том
+    // числе на истёкший (исхода EXPIRED у verify нет); текст отказа ядра — как есть. MANDATE_EXPIRED — после передачи агенту.
+    expect(refused.params).toMatchObject({ code: "MANDATE_OUT_OF_SCOPE", state: "STOPPED", mandate_id: wait.params.mandate_id });
+    expect(String(refused.params.core_text)).toMatch(/OUT_OF_SCOPE$/);
+    expect(demo.stand.journal.entries.some((e) => e.kind === "agent.refused" && e.reason === "MANDATE_OUT_OF_SCOPE")).toBe(true);
+    // Сверка у Платформы после срока — была (ядро спросило Платформу, а не решило по своим часам).
+    expect(demo.stand.stand.calls().slice(callsFrom).filter((c) => c.method === "GET" && /^\/pao\/v1\/mandates\/[^/]+\/verify$/.test(c.path)).length).toBeGreaterThan(0);
+    // Срок — из карточки: поручение действует EXPIRY секунд от запроса; попытка — после срока по часам стенда.
+    const created = steps.find((s) => s.step === "intent.created")!;
+    expect(Date.parse(String(wait.params.valid_to)) - Date.parse(created.at)).toBeLessThanOrEqual(EXPIRY * 1000 + 1000);
+    expect(Date.parse(steps.find((s) => s.step === "expiry.attempt")!.at)).toBeGreaterThan(Date.parse(String(wait.params.valid_to)));
+    // Код защиты: до витрин не дошло — ни выдачи, ни корзины, ни заказа, ни реквизита.
+    expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
+    const calls = demo.stand.stand.calls().slice(callsFrom);
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/pao/v1/mandates")).toHaveLength(1); // только поручение
+    expect(calls.some((c) => c.path === "/pao/v1/credentials")).toBe(false);
+    expect(items.find((r) => r.ref === "expiry.refused")?.stage).toBe("outcome");
+    const runs = segments(items);
+    expect(runs.map((s) => s.passport.name)).toEqual(["expired"]);
+    for (const s of runs) expectAccepted(s);
+  });
+
+  it("«прервать» во время ожидания срока — поручение сюжета 10 другим сюжетам не достаётся: сюжет 2 — 409 (ревью П-11.1д № 1)", async () => {
+    const steps = () => demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
+    const post = (name: string) => fetch(`${demo.monitor.url}/scenario/${name}`, { method: "POST", headers: { origin: demo.monitor.url } });
+    const n = steps().length;
+    const until = async (name: string) => {
+      for (const end = Date.now() + 30_000; Date.now() < end; await pause(50)) {
+        const s = steps().slice(n).find((x) => x.step === name);
+        if (s) return s;
+      }
+      throw new Error(`не дождались шага ${name}`);
+    };
+    expect((await post("expired")).status).toBe(202);
+    const w = await until("intent.awaiting_signature");
+    expect((await demo.stand.stand.issuer.sign(String(w.params.mandate_id))).statusCode).toBe(200);
+    await until("expiry.wait");
+    expect((await post("abort")).status).toBe(202);
+    await demo.scenarios.settled();
+    expect(steps().slice(n).some((s) => s.step === "aborted")).toBe(true);
+    expect(steps().slice(n).some((s) => s.step === "expiry.attempt")).toBe(false);
+    expect((await post("purchase")).status).toBe(409);
   });
 });
 

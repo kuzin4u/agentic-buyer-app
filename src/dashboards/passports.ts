@@ -22,6 +22,7 @@ export const SCENARIOS = [
   { no: 7, name: "unconfirmed" },
   { no: 8, name: "scope" },
   { no: 9, name: "suspended" },
+  { no: 10, name: "expired" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -435,6 +436,41 @@ const RAW: readonly Passport[] = [
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
       { id: "no-reinstate-failed", what: t("Снятие приостановления прошло", "Reinstatement succeeded"), match: { stream: "scenario", ref: "operator.reinstate_failed" } },
       { id: "no-resume-failed", what: t("Агент возобновил работу после снятия", "The agent resumed after reinstatement"), match: { stream: "scenario", ref: "suspend.resume_failed" } },
+    ],
+  },
+  {
+    // П-09 задания (П-11.1д): своё поручение с коротким сроком; приложение срок не проверяет — только ждёт, остановку даёт
+    // ядро до витрин, корзины и оплаты. Код — как отдаёт ядро 4a4ee7c: MANDATE_OUT_OF_SCOPE (сверка по ПАО 1.4.0 отвечает
+    // OUT_OF_SCOPE и на истёкшее поручение); MANDATE_EXPIRED — после передачи агенту (решение владельца, чат 11.11). В таблице
+    // тестирования: исход сходится, код — замечание до передачи.
+    no: 10,
+    name: "expired",
+    title: t("10. Срок поручения истёк", "10. The mandate has expired"),
+    outcome: { kind: "stopped", text: t("Срок поручения вышел; агент остановил попытку сам — до витрин, корзины и оплаты", "The mandate expired; the agent stopped the attempt itself — before shops, cart and payment") },
+    statuses: { mandate: t("поручение истекло", "mandate expired"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("created", "intent.created", t("Агент просит поручение (С-01)", "The agent asks for a mandate (С-01)"), { situation: "С-01" }),
+      clientSigns("mandate"),
+      step("signed", "intent.signed", t("Поручение действует", "The mandate is active"), { status: "ACTIVE" }),
+      // Корзины нет: запрос мандата у Платформы — один, это само поручение (ревью П-11.1д № 5).
+      { id: "one-mandate", what: t("Запрос мандата — один: поручение; корзины нет", "One mandate request — the mandate; no cart"), match: { stream: "monitor", ref: "POST /pao/v1/mandates" }, times: 1 },
+      step("wait", "expiry.wait", t("Сюжет ждёт конца срока поручения", "The scenario waits for the mandate to expire")),
+      step("attempt", "expiry.attempt", t("Срок вышел — агент пробует покупку", "Expired — the agent tries a purchase")),
+      step(
+        "refused",
+        "expiry.refused",
+        t("После конца срока агент остановил попытку сам: Платформа не подтвердила поручение", "After the expiry the agent stopped the attempt itself: the Platform did not confirm the mandate"),
+        { code: ["MANDATE_OUT_OF_SCOPE", "MANDATE_EXPIRED"] },
+      ),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      // «До витрин» — по обращениям агента к витринам на мониторе, а не по шагам сюжета (их сюжет 10 не выдаёт; ревью П-11.1д № 5).
+      { id: "no-shops", what: t("К витринам агент не обращался — остановился до поиска", "The agent did not contact shops — it stopped before the search"), match: { stream: "monitor", ref: "GET /v1/shops" } },
+      { id: "no-catalog", what: t("Каталогов витрин агент не читал", "The agent did not read shop catalogs"), match: { stream: "monitor", ref: "GET /v1/shops/{shop_id}/catalog" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
     ],
   },
 ];
