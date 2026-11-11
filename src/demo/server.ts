@@ -22,6 +22,7 @@ import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
+import { isFaultTest, type FaultStart, type FaultTest } from "./fault-tests.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
@@ -69,6 +70,8 @@ export interface MonitorServerOptions {
   bankLogin?: () => string;
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
+  /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
+  faulty?: { start(test: FaultTest): FaultStart };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -308,6 +311,25 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             ? o.scenarios.answerCart(what === "cart/accept")
             : o.scenarios.start(what as ScenarioName);
       return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
+    // Нарушение «ПР» (П7, Р-1482): только POST, только при драйвере (режим сбоев), только со страниц этого сервера (Origin),
+    // имя теста — только из перечня драйвера. Без драйвера маршрута нет — ответ 404, как у любого неизвестного адреса.
+    // Без драйвера — 404 на любой метод (П7 п. 2): маршрута нет, а не «метод не тот».
+    if (!o.faulty && u.pathname.startsWith("/fault/")) return send(res, 404, plain, t(lang, "http.not_found"));
+    if (req.method === "POST" && o.faulty && u.pathname.startsWith("/fault/")) {
+      let test: string;
+      try {
+        test = decodeURIComponent(u.pathname.slice("/fault/".length));
+      } catch {
+        return send(res, 400, plain, t(lang, "http.bad_request"));
+      }
+      if (isFaultTest(test)) {
+        if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+        const r = o.faulty.start(test);
+        return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+      }
+      // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
+      return send(res, 404, plain, t(lang, "http.not_found"));
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {

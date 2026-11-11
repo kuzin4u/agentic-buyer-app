@@ -362,6 +362,8 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   suspend: "service",
   // Сюжет 10: ожидание срока поручения — стадия поручения; остановка — по state ядра.
   expiry: "mandate",
+  // Драйвер нарушителя «ПР» (П7): служебная стадия — нарушение не стадия покупки эталонного агента.
+  fault: "service",
   failed: "outcome",
   aborted: "service",
 };

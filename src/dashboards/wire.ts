@@ -158,7 +158,7 @@ function parseConsole(l: unknown): WireConsoleLine | undefined {
 export const WIRE_SCENARIO_PARAMS = [
   "amount", "candidates", "code", "codes", "confirmation_id", "contour", "delivery_cost", "delivery_days", "delivery_method",
   "intent_id", "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "sku", "state", "status",
-  "subject", "threshold", "title", "total", "unavailable", "valid_to",
+  "subject", "test", "threshold", "title", "total", "unavailable", "valid_to",
 ] as const;
 
 /** Параметры шагов — моменты времени (WireTime), не строки (П-11.1д-а). */

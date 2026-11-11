@@ -161,6 +161,11 @@ const ru = {
   "step.operator.reinstate_failed": "Снять приостановление агента {agent_code} не удалось (повтор тоже): {code}. Допущен ли агент — по сверке ниже.",
   "step.suspend.resumed": "Агент сверился с реестром Платформы — снова допущен.",
   "step.suspend.resume_failed": "Агент сверился с реестром, но не возобновил работу: {code}.",
+  // Драйвер нарушителя «ПР» (П7): каждый шаг помечен — нарушение разыгрывает приложение, не эталонный агент.
+  "step.fault.start": "Нарушитель (ПР) — драйвер приложения: начато нарушение {test} ключом агента.",
+  "step.fault.refused": "Нарушитель (ПР) — драйвер приложения: нарушение {test} остановлено защитой — {code} ({status}); помечено на стенде.",
+  "step.fault.marked": "Нарушитель (ПР) — драйвер приложения: нарушение {test} совершено и помечено на стенде; защиты в таблице нет — ловит пульт.",
+  "step.fault.failed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} не разыграно — {code}; на стенде не помечено.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
     "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
@@ -387,6 +392,10 @@ const en: Record<MessageKey, string> = {
   "step.operator.reinstate_failed": "Could not lift the suspension of agent {agent_code} (retry failed too): {code}. Whether the agent is admitted — see the check below.",
   "step.suspend.resumed": "The agent checked the Platform registry — admitted again.",
   "step.suspend.resume_failed": "The agent checked the registry but did not resume: {code}.",
+  "step.fault.start": "Violator (ПР) — app driver: violation {test} started with the agent key.",
+  "step.fault.refused": "Violator (ПР) — app driver: violation {test} stopped by a safeguard — {code} ({status}); marked on the stand.",
+  "step.fault.marked": "Violator (ПР) — app driver: violation {test} committed and marked on the stand; no safeguard in the table — the console catches it.",
+  "step.fault.failed": "Violator (ПР) — app driver: violation {test} not played — {code}; not marked on the stand.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":
     "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",

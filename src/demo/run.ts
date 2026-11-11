@@ -1,6 +1,7 @@
 // Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сюжеты, сервер экранов. Общая для npm run demo и тестов.
 import { LOCAL_STAND_EMULATED } from "../dashboards/interpret.js";
 import { MonitorBus } from "./bus.js";
+import { FaultyDriver } from "./faulty.js";
 import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
@@ -26,6 +27,8 @@ export interface Demo {
   readonly stand: DemoStand;
   readonly bus: MonitorBus;
   readonly scenarios: DemoScenarios;
+  /** Драйвер нарушителя «ПР» — только при режиме сбоев (П7); без флага его нет. */
+  readonly faulty?: FaultyDriver;
   readonly monitor: MonitorServer;
   close(): Promise<void>;
 }
@@ -40,6 +43,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
   });
   let bus: MonitorBus | undefined;
   let scenarios: DemoScenarios | undefined;
+  let driver: FaultyDriver | undefined;
   try {
     // Сюжеты пишут шаги в шину; шина берёт у сюжетов сумму операции для строки итога. Связь — через замыкания.
     const sc = new DemoScenarios(stand, (s) => bus?.scenario(s), { ...(o.expirySec !== undefined && { expirySec: o.expirySec }) });
@@ -69,6 +73,9 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
     });
     bus = b;
     b.start();
+    // Драйвер нарушителя «ПР» (П7): только при режиме сбоев — без флага экземпляр не создаётся и ключ не загружается.
+    const faulty = stand.faults ? new FaultyDriver(stand, (s) => b.scenario(s)) : undefined;
+    driver = faulty;
     const monitor = await startMonitorServer({
       bus: b,
       urls: stand.urls,
@@ -90,14 +97,17 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
       faults: stand.faults,
+      ...(faulty && { faulty }),
     });
     return {
       stand,
       bus: b,
       scenarios: sc,
+      ...(faulty && { faulty }),
       monitor,
       close: async () => {
         await sc.close().catch(() => undefined);
+        await faulty?.close().catch(() => undefined);
         b.stop();
         try {
           await monitor.close();
@@ -108,6 +118,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
     };
   } catch (e) {
     await scenarios?.close().catch(() => undefined);
+    await driver?.close().catch(() => undefined);
     bus?.stop();
     await stand.close().catch((r: unknown) => console.error(t(o.lang ?? "ru", "cli.release_failed"), r));
     throw e;

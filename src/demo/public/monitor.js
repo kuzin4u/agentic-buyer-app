@@ -99,7 +99,8 @@
       l.step === "suspend.stopped" ||
       l.step === "expiry.refused" ||
       l.step === "operator.reinstate_failed" ||
-      l.step === "suspend.resume_failed";
+      l.step === "suspend.resume_failed" ||
+      l.step.startsWith("fault."); // нарушитель (ПР) — драйвер приложения (П7): каждый шаг с пометкой
     li.className = stop ? "step warn" : l.step === "outcome" ? "step outcome" : "step";
     li.textContent = time(l.at) + "  ";
     for (const node of fillNodes(m["step." + l.step] || l.step, l.params)) li.appendChild(node);
