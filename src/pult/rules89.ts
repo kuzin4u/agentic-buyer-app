@@ -27,8 +27,13 @@ export const CHECKABLE_CONDITIONS = [
 export type CheckableCondition = (typeof CHECKABLE_CONDITIONS)[number];
 
 /** Коды всех условий модели 1.23 (`COND`: R01…R45 и R46, R47; тексты — только у 18 проверяемых, шапка п. 5) — на них
- *  ссылаются правила (`conds`), узлы и сектора. */
-export const CONDITION_IDS: readonly string[] = Array.from({ length: 47 }, (_, i) => `R${String(i + 1).padStart(2, "0")}`);
+ *  ссылаются правила (`conds`), узлы и сектора; тип — точный (ревью П-3.1 № 7): опечатку в коде условия ловит `tsc`. */
+export const CONDITION_IDS = [
+  "R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R10", "R11", "R12", "R13", "R14", "R15", "R16",
+  "R17", "R18", "R19", "R20", "R21", "R22", "R23", "R24", "R25", "R26", "R27", "R28", "R29", "R30", "R31", "R32",
+  "R33", "R34", "R35", "R36", "R37", "R38", "R39", "R40", "R41", "R42", "R43", "R44", "R45", "R46", "R47",
+] as const;
+export type ConditionId = (typeof CONDITION_IDS)[number];
 
 export const ZONES = ["red", "orange", "yellow", "background"] as const;
 export type Zone = (typeof ZONES)[number];
@@ -118,7 +123,7 @@ export const NODES = {
   У3: { name: p("Итог — только от Платформы", "Outcome — only from the Platform"), conds: ["R27", "R28", "R30", "R32"], act: "review", sign: p("реквизит выдан, итога нет", "credential issued, no outcome") },
   У4: { name: p("Порядок и поздние события", "Order and late events"), conds: ["R31"], act: "review", sign: p("итог задерживается", "the outcome is delayed") },
   У5: { name: p("Отзыв во время покупки", "Revocation during a purchase"), conds: ["R09", "R37", "R38"], act: "stop", sign: p("поручение отозвано или истекло, покупки идут", "mandate revoked or expired, purchases go on") },
-} as const satisfies Readonly<Record<string, { name: Phrase; conds: readonly string[]; act: Reaction; sign: Phrase }>>;
+} as const satisfies Readonly<Record<string, { name: Phrase; conds: readonly ConditionId[]; act: Reaction; sign: Phrase }>>;
 export type NodeId = keyof typeof NODES;
 
 /** Сектора «Приоритета» модели (`SECTS`); «Гонки и устойчивость» в модели без условий. */
@@ -131,7 +136,7 @@ export const SECTORS = {
   access: { name: p("Агент и доступ", "Agent and access"), conds: ["R04", "R05", "R40"] },
   races: { name: p("Гонки и устойчивость", "Races and resilience"), conds: [] },
   antifraud: { name: p("Антифрод", "Anti-fraud"), conds: ["R13", "R42"] },
-} as const satisfies Readonly<Record<string, { name: Phrase; conds: readonly string[] }>>;
+} as const satisfies Readonly<Record<string, { name: Phrase; conds: readonly ConditionId[] }>>;
 export type Sector = keyof typeof SECTORS;
 
 /** Тексты правила: формулировка, кто обеспечивает, как проверить, почему уязвимо, почему критично. */
@@ -157,7 +162,7 @@ export interface Rule89 {
   readonly coverage: Coverage;
   readonly control: Control;
   /** Условия модели, которыми правило проверяется (`R`). */
-  readonly conds: readonly string[];
+  readonly conds: readonly ConditionId[];
   readonly node?: NodeId;
   readonly sector?: Sector;
   /** Правило защиты (`SAFE89`): на «Приоритете» — вместе с красной зоной. */
@@ -182,7 +187,7 @@ const text = ([rule, who, evidence, whyVuln, whyCrit]: T): RuleText => ({ rule, 
  *  условия, узел, сектор, тексты ru, тексты en. */
 function rule(
   id: string, group: RuleGroup, zone: Zone, v: number, c: number, owner: Party, owner2: Party | null, kind: RuleKind,
-  point: Point, coverage: Coverage, control: Control, conds: readonly string[], node: NodeId | null, sector: Sector | null,
+  point: Point, coverage: Coverage, control: Control, conds: readonly ConditionId[], node: NodeId | null, sector: Sector | null,
   ru: T, en?: T,
 ): Rule89 {
   return {
