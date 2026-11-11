@@ -111,7 +111,11 @@ const IMPERSONATION = new Set(["SIGNATURE_INVALID", "AGENT_UNKNOWN", "KEY_UNKNOW
 /** Коды передачи решения человеку (инвариант 3): это норма, не отказ. */
 export const TO_HUMAN_CODES = new Set(["CONFIRMATION_REQUIRED", "CONFIRMATION_PENDING"]);
 /** Коды сюжета демо-стенда (не реестров): агент не остановился после отзыва — ошибка агента (ревью К1.3 № 7). */
-const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = { REVOKED_NOT_ENFORCED: ["agent"] };
+const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = {
+  REVOKED_NOT_ENFORCED: ["agent"],
+  // Сюжет 10: ядро дошло до выдачи по истёкшему поручению (ревью П-11.1д № 2).
+  EXPIRED_NOT_ENFORCED: ["agent"],
+};
 
 /** Кто отказал: Платформа, продавец или сам агент (журнал агента). */
 export type Origin = "platform" | "merchant" | "agent";
@@ -273,6 +277,9 @@ const EVENTS: Readonly<Record<string, MonitorRule>> = {
   "operation.declined": { stage: "outcome", actor: "platform", level: "key" },
   "operation.settled": { stage: "outcome", actor: "platform", level: "key" },
   "operation.refunded": { stage: "outcome", actor: "platform", level: "key" },
+  // Статус допуска агента (РП54, сюжет 9): служебная стадия — не стадия покупки.
+  "agent.suspended": { stage: "service", actor: "platform", level: "key" },
+  "agent.reinstated": { stage: "service", actor: "platform", level: "key" },
 };
 
 /** Событие ленты ПАО — отказ (норма у остальных); код — если пришёл. */
@@ -347,6 +354,16 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   upk: "confirmation",
   notice: "confirmation",
   revoke: "revoke",
+  reject: "cart",
+  unconfirmed: "confirmation",
+  scope: "cart",
+  // Сюжет 9: действия оператора Системы и возобновление агента — служебная стадия; остановка покупки — по state ядра.
+  operator: "service",
+  suspend: "service",
+  // Сюжет 10: ожидание срока поручения — стадия поручения; остановка — по state ядра.
+  expiry: "mandate",
+  // Драйвер нарушителя «ПР» (П7): служебная стадия — нарушение не стадия покупки эталонного агента.
+  fault: "service",
   failed: "outcome",
   aborted: "service",
 };
@@ -363,6 +380,14 @@ const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "limit.declined": "platform",
   outcome: "platform",
   "revoke.ask": "client",
+  "reject.ask": "client",
+  "reject.signed": "client",
+  "unconfirmed.ask": "client",
+  // Оператор Системы — сторона Платформы (эмулятор стенда).
+  "operator.suspended": "platform",
+  "operator.reinstated": "platform",
+  "operator.reinstate_failed": "platform",
+  "suspend.by_platform": "platform",
 };
 const STEP_SITUATION: Readonly<Record<string, string>> = {
   "intent.created": "С-01",
@@ -382,6 +407,10 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
   "revoke.refused": "С-28",
 };
 
+/** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
+ *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
+const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped", "expiry.refused"]);
+
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
   const head = l.step.split(".")[0]!;
@@ -395,7 +424,9 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   const codes = [l.params.code, l.params.codes].filter((c): c is string => typeof c === "string").flatMap((c) => c.split(","));
   const code = codes.find((c) => CODE_RE.test(c) && !TO_HUMAN_CODES.has(c));
   if (code !== undefined) {
-    const q = qualifyCode(env, code, { origin: l.step === "limit.declined" ? "platform" : "agent", sender: "agent" });
+    // Отказ Платформы (лимит) и сбой эмулятора оператора Системы (сюжет 9) — не агента (ревью П-11.1г № 8).
+    const platform = l.step === "limit.declined" || head === "operator";
+    const q = qualifyCode(env, code, { origin: platform ? "platform" : "agent", sender: platform ? "platform" : "agent" });
     kind = q.kind;
     who = q.who;
     situation = q.situation ?? situation;
@@ -409,7 +440,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
-    stage: (l.step === "failed" && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
+    stage: (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
     actor,
     emulated: env.emulated.includes(actor),
     kind,

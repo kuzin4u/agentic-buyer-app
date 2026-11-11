@@ -18,10 +18,11 @@ import { controlPage } from "./dash-control.js";
 import { pultPage } from "./dash-pult.js";
 import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
 import { switcherHtml } from "./switcher.js";
-import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
+import { isFaultTest, type FaultStart, type FaultTest } from "./fault-tests.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
@@ -39,6 +40,15 @@ export function loadBrand(path: string): { brand: Brand; logoFile: string | null
   return { brand, logoFile };
 }
 
+/** Сюжет 6–10 на мониторе: имя кнопки и карточка своего поручения (Т3а: видна до нажатия кнопки). */
+export interface MoreScenario {
+  readonly name: ScenarioName;
+  readonly card?: IntentCard;
+}
+
+/** Сюжеты 1–5 — кнопки разметкой страницы ниже; 6–10 — из `moreScenarios`. */
+const BASE_SCENARIOS: readonly ScenarioName[] = ["intent", "purchase", "limit", "upk", "revoke"];
+
 export interface MonitorServerOptions {
   bus: MonitorBus;
   urls: DemoUrls;
@@ -52,10 +62,16 @@ export interface MonitorServerOptions {
   intentCard?: IntentCard;
   /** Карточка поручения сюжета 4 — у кнопки 4. */
   intentCardUpk?: IntentCard;
+  /** Сюжеты 6–10 для тестов пульта (П-11.1, Р-1457): кнопка, пояснение и карточка поручения, если у сюжета своё поручение.
+   *  Тексты — `scenario.<имя>`, `scenario.<имя>_note`, `card.intent_<имя>.title` словаря. Маршрут `/scenario/<имя>` — только
+   *  для сюжетов 1–5 и этих. */
+  moreScenarios?: readonly MoreScenario[];
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
+  /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
+  faulty?: { start(test: FaultTest): FaultStart; abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -85,10 +101,30 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
     <dt>${e(titleKey)}</dt>
     <dd>${e("card.subject")}: ${escapeHtml(card.subject)}</dd>
     <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: card.limit.amount, currency: card.limit.currency }, lang))}</dd>
-    <dd>${e("card.valid_days")}: ${card.validDays}</dd>
-    <dd>${e("card.merchants")}: ${card.merchants}</dd>
+    ${
+      // Срок в секундах — у поручения сюжета 10 «срок поручения истёк» (П-11.1д); иначе — в днях.
+      card.validSec !== undefined ? `<dd>${e("card.valid_sec")}: ${card.validSec}</dd>` : `<dd>${e("card.valid_days")}: ${card.validDays}</dd>`
+    }
+    ${
+      // Область продавцов — ключевое условие поручения (Т3а): у поручения не на всех продавцов — кто именно (данные витрин
+      // стенда, экранируются; ревью П-11.1в № 4).
+      card.scopeLabels
+        ? `<dd>${e("card.scope")}: ${escapeHtml(card.scopeLabels.join(", "))}</dd>`
+        : `<dd>${e("card.merchants")}: ${card.merchants}</dd>`
+    }
     <dd>${e("card.single_use")}</dd>
   </dl>`;
+}
+
+/** Кнопка сюжета 6–10 с пояснением; карточка поручения — до кнопки. Ключи словаря — по имени сюжета: компилятор их не
+ *  проверяет, проверяет тест (`tests/demo/more-scenarios.test.ts`); имя — из перечня кода, в разметке всё равно
+ *  экранируется (ревью П-11.1а № 6). */
+function moreScenarioHtml(lang: Lang, s: MoreScenario): string {
+  const e = (k: string) => escapeHtml(t(lang, k as MessageKey));
+  const name = escapeHtml(s.name);
+  const card = s.card ? intentCardHtml(lang, s.card, `intent-card-${name}`, `card.intent_${s.name}.title` as MessageKey) : "";
+  return `${card}<button type="button" data-scenario="${name}">${e(`scenario.${s.name}`)}</button>
+  <p class="hint">${e(`scenario.${s.name}_note`)}</p>`;
 }
 
 /** Страница монитора. «Витрины продавцов» — страница для человека на языке монитора (`/shops?lang=…`, Платформа v0.47.0,
@@ -143,6 +179,7 @@ ${
   <p class="hint">${e("scenario.upk_note")}</p>
   <button type="button" data-scenario="revoke">${e("scenario.revoke")}</button>
   <p class="hint">${e("scenario.revoke_note")}</p>
+  ${(o.moreScenarios ?? []).map((s) => moreScenarioHtml(lang, s)).join("\n  ")}
   <div id="upk-panel" class="card" hidden>
     <dl>
       <dt>${e("upk.panel.title")} <span class="badge emu">${e("badge.emulator")}</span></dt>
@@ -224,6 +261,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
   const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
   const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
+  const scenarioNames: ReadonlySet<string> = new Set([...BASE_SCENARIOS, ...(o.moreScenarios ?? []).map((s) => s.name)]);
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
   /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
@@ -259,18 +297,47 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|limit|upk|revoke|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
-    if (req.method === "POST" && scenario && o.scenarios) {
+    // Имя сюжета — только из перечня (1–5 и `moreScenarios`): иное имя маршрутом сюжетов не считается.
+    const scenario = /^\/scenario\/([a-z_]+|cart\/accept|cart\/decline)$/.exec(u.pathname);
+    const known = scenario !== null && (scenario[1]!.startsWith("cart/") || scenario[1] === "abort" || scenarioNames.has(scenario[1]!));
+    if (req.method === "POST" && scenario && known && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;
       // Ответ на карточку корзины — действие человека на этой странице (Р-1248 п. 1); сюжет его только ждёт.
+      // «Прервать» — и сюжет, и нарушение «ПР» (драйвер ждёт клиента до 180 с; решение владельца 3, чат 11.11): сюжета нет —
+      // прерывается нарушение.
+      const abortBoth = (): ScenarioStart => {
+        const s = o.scenarios!.abort();
+        if (s.ok || !o.faulty) return s;
+        const f = o.faulty.abort();
+        return f.ok ? f : s;
+      };
       const r =
         what === "abort"
-          ? o.scenarios.abort()
+          ? abortBoth()
           : what.startsWith("cart/")
             ? o.scenarios.answerCart(what === "cart/accept")
             : o.scenarios.start(what as ScenarioName);
       return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
+    // Нарушение «ПР» (П7, Р-1482): только POST, только при драйвере (режим сбоев), только со страниц этого сервера (Origin),
+    // имя теста — только из перечня драйвера. Без драйвера маршрута нет — ответ 404, как у любого неизвестного адреса.
+    // Без драйвера — 404 на любой метод (П7 п. 2): маршрута нет, а не «метод не тот».
+    if (!o.faulty && u.pathname.startsWith("/fault/")) return send(res, 404, plain, t(lang, "http.not_found"));
+    if (req.method === "POST" && o.faulty && u.pathname.startsWith("/fault/")) {
+      let test: string;
+      try {
+        test = decodeURIComponent(u.pathname.slice("/fault/".length));
+      } catch {
+        return send(res, 400, plain, t(lang, "http.bad_request"));
+      }
+      if (isFaultTest(test)) {
+        if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+        const r = o.faulty.start(test);
+        return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+      }
+      // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
+      return send(res, 404, plain, t(lang, "http.not_found"));
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {

@@ -72,7 +72,9 @@ const ru = {
   "card.subject": "Что покупать",
   "card.limit": "Предел",
   "card.valid_days": "Срок, дней",
+  "card.valid_sec": "Срок, секунд",
   "card.merchants": "Продавцов стенда",
+  "card.scope": "Продавцы поручения",
   "card.single_use": "Разовое: одна покупка",
   "card.cart.title": "Карточка корзины — ваше решение до запроса корзины",
   "card.line.item": "Товар: {title} ({sku})",
@@ -121,6 +123,82 @@ const ru = {
   "step.revoke.attempt": "Агент пробует купить по поручению {mandate_id}.",
   "step.revoke.refused":
     "Попытка остановлена агентом до витрин, корзины и оплаты — {code} (состояние {state}): поручение отозвано, к Платформе с этой попыткой агент не обращался.",
+  // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
+  "scenario.reject": "6. Клиент отказался от корзины",
+  "scenario.reject_note":
+    "Нужно подписанное поручение (сюжет 1). Согласитесь с карточкой корзины, затем на экране мандатов банка нажмите «Отклонить» у корзины — подпись не ставьте. По событию Платформы агент перечитает корзину (отклонена) и остановится сам; заказа и оплаты нет.",
+  "step.run.reject": "— Сюжет 6: клиент отказался от корзины —",
+  "step.reject.ask": "Отклоните корзину {mandate_id} на экране мандатов банка (ссылка вверху) — кнопка «Отклонить»; агент ждёт события Платформы.",
+  "step.cart.rejected": "Корзина {mandate_id} отклонена в банке (событие Платформы): агент остановился — {code} (состояние {state}); заказа и оплаты нет.",
+  "step.reject.signed":
+    "Корзина {mandate_id} подписана, а сюжет 6 ждал отказа: заказа нет, корзина остаётся действующей и неиспользованной. Поручение израсходовано — начните с сюжета 1, затем сюжет 6 и «Отклонить».",
+  "scenario.unconfirmed": "7. Клиент не подтвердил покупку",
+  "scenario.unconfirmed_note":
+    "Своё поручение, как в сюжете 4 (карточка выше), — подпишите его и корзину в банке. Покупка выше порога: банк попросит подтверждения. На странице УПК нажмите «Отклонить» (код — в панели) — агент остановится сразу по ответу Платформы. Можно не отвечать вовсе: о конце срока запроса агент узнает сам, но с задержкой в несколько минут (допуск часов агента). Оплаты нет.",
+  "card.intent_unconfirmed.title": "Карточка поручения сюжета 7 (видна до подписи)",
+  "step.run.unconfirmed": "— Сюжет 7: клиент не подтвердил покупку —",
+  "step.unconfirmed.ask":
+    "Не подтверждайте покупку {confirmation_id}: на странице УПК нажмите «Отклонить». Без ответа агент узнает о конце срока запроса сам — через несколько минут после срока (допуск часов агента).",
+  "step.upk.declined": "Покупка не подтверждена в банке: агент остановился — {code} (заказ {order_id}, состояние {state}); оплаты нет.",
+  "orders.outcome.not_confirmed": "не подтверждено в банке, покупка остановлена",
+  "scenario.scope": "8. Продавец вне поручения — агент отказался сам",
+  "scenario.scope_note":
+    "Своё поручение только на продавцов из карточки выше — подпишите его в банке. Демо-правило выбора берёт самый дешёвый хлеб стенда; если он у продавца вне поручения, после вашего согласия с карточкой корзины агент сам откажется её запрашивать — до Платформы запрос не дойдёт. Если выбор окажется в поручении, сюжет остановится до подписи корзины. Отказ Платформы на такой запрос — сюжет подставного агента.",
+  "step.scope.not_refused":
+    "Выбор демо-правила оказался у продавца поручения ({merchant_id}): агент корзину принял, сюжет 8 проверять нечего — остановлен до подписи корзины; не подписывайте её.",
+  "card.intent_scope.title": "Карточка поручения сюжета 8 (видна до подписи)",
+  "step.run.scope": "— Сюжет 8: продавец вне поручения —",
+  "step.scope.refused": "Агент отказался запрашивать корзину у продавца {merchant_id}: {code} (состояние {state}) — продавец вне поручения; к Платформе с корзиной агент не обращался.",
+  "scenario.suspended": "9. Агент приостановлен",
+  "scenario.suspended_note":
+    "Нужно подписанное поручение (сюжет 1). Согласитесь с карточкой корзины — до запроса корзины оператор Системы (эмулятор Платформы стенда) приостановит агента. Покупка остановится до корзины, заказа и оплаты; ниже — кто её остановил: Платформа отказом или агент сам. После сюжета приостановление снимается, агент снова допущен; поручение израсходовано — следующая покупка через сюжет 1.",
+  "step.run.suspended": "— Сюжет 9: агент приостановлен —",
+  "step.operator.suspended": "Оператор Системы приостановил агента {agent_code} (эмулятор Платформы стенда).",
+  "step.suspend.stopped": "Покупка остановлена до корзины: {code} (состояние {state}); заказа и оплаты нет.",
+  "step.suspend.by_platform": "Остановила Платформа: запрос агента отклонён — агент приостановлен.",
+  "step.suspend.by_agent": "Остановил агент сам: о приостановлении он узнал раньше запроса и запрос не отправил.",
+  "step.operator.reinstated": "Оператор Системы снял приостановление агента {agent_code}.",
+  "step.operator.reinstate_failed": "Снять приостановление агента {agent_code} не удалось (повтор тоже): {code}. Допущен ли агент — по сверке ниже.",
+  "step.suspend.resumed": "Агент сверился с реестром Платформы — снова допущен.",
+  "step.suspend.resume_failed": "Агент сверился с реестром, но не возобновил работу: {code}.",
+  // Драйвер нарушителя «ПР» (П7): каждый шаг помечен — нарушение разыгрывает приложение, не эталонный агент.
+  "step.run.fault": "— Нарушитель (ПР) — драйвер приложения: нарушение {test} ключом агента —",
+  "step.fault.refused": "Нарушитель (ПР) — драйвер приложения: нарушение {test} остановлено защитой — {code} ({status}); помечено на стенде.",
+  "step.fault.marked": "Нарушитель (ПР) — драйвер приложения: нарушение {test} совершено и помечено на стенде; защиты в таблице нет — ловит пульт.",
+  "step.fault.failed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} не разыграно — {code}; на стенде не помечено.",
+  "step.fault.unplayed": "Нарушитель (ПР) — драйвер приложения: нарушение {test} помечено на стенде, но не разыграно — {code}.",
+  "step.fault.recorded":
+    "Нарушитель (ПР) — драйвер приложения: {test} — записи стенда сделаны: инструкция продавца отдана нарушителю, пометка поставлена; исполнение — после MVP. Это не «защита сработала» и не «совершено» — разбор на пульте.",
+  "step.fault.note.catalog_read":
+    "Нарушитель (ПР) — драйвер приложения ({test}): прочитал каталог витрины {shop_id}; инструкцию продавца, если отдана, не исполняет — отдана ли, скажет итог.",
+  "step.fault.note.armed": "Нарушитель (ПР) — драйвер приложения ({test}): взвёл сбой стенда на витрину {shop_id} — только на время нарушения.",
+  "step.fault.note.disarmed": "Нарушитель (ПР) — драйвер приложения ({test}): снял сбой стенда с витрины {shop_id}.",
+  "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
+  "step.fault.note.intent_requested": "Нарушитель (ПР) — драйвер приложения ({test}): запрошено поручение {mandate_id} — подпишите его на экране мандатов банка.",
+  "step.fault.note.intent_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал поручение {mandate_id}.",
+  "step.fault.note.cart_created": "Нарушитель (ПР) — драйвер приложения ({test}): запрошена корзина {mandate_id}.",
+  "step.fault.note.cart_keep_unsigned": "Нарушитель (ПР) — драйвер приложения ({test}): корзину {mandate_id} не подписывайте — нарушитель попросит реквизит без согласия клиента.",
+  "step.fault.note.cart_sign_ask":
+    "Нарушитель (ПР) — драйвер приложения ({test}): второе действие — подпишите корзину {mandate_id} на экране мандатов банка: тест проверяет отзыв полномочия, которое действовало.",
+  "step.fault.note.cart_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал корзину {mandate_id}.",
+  "step.fault.note.cart_sign_ask_scope":
+    "Нарушитель (ПР) — драйвер приложения ({test}): второе действие — подпишите корзину {mandate_id} на экране мандатов банка: защита по сумме и продавцу проверяется у действующей корзины.",
+  "step.fault.note.other_merchant": "Нарушитель (ПР) — драйвер приложения ({test}): просит реквизит по корзине на другого продавца — {merchant_id}.",
+  "step.fault.note.revoke_ask": "Нарушитель (ПР) — драйвер приложения ({test}): третье действие — отзовите поручение {mandate_id} на экране мандатов банка; корзина отзовётся вместе с ним.",
+  "step.fault.note.revoked": "Нарушитель (ПР) — драйвер приложения ({test}): корзина {mandate_id} отозвана вместе с поручением.",
+  "step.fault.note.order_placed": "Нарушитель (ПР) — драйвер приложения ({test}): заказ {order_id} у витрины по корзине {mandate_id}.",
+  "step.fault.note.first_payment":
+    "Нарушитель (ПР) — драйвер приложения ({test}): Платформа записала операцию {op_ref} по заказу {order_id} — итог первой оплаты на мониторе по событию; первая оплата законна и входит в тест, нарушение — её повтор.",
+  "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
+  "scenario.expired": "10. Срок поручения истёк",
+  "scenario.expired_note":
+    "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
+  "card.intent_expired.title": "Карточка поручения сюжета 10 (видна до подписи)",
+  "step.run.expired": "— Сюжет 10: срок поручения истёк —",
+  "step.expiry.wait": "Поручение {mandate_id} действует до {valid_to} — сюжет ждёт конца срока.",
+  "step.expiry.attempt": "Срок поручения {mandate_id} вышел — агент пробует купить.",
+  "step.expiry.refused":
+    "После конца срока поручения {mandate_id} агент остановил попытку до витрин, корзины и оплаты — {code} (состояние {state}). Ответ агента: {core_text}",
   "orders.title": "Заказы в витрине продавца",
   "orders.hint":
     "Номер, сумма и ответ витрины на оплату — слова продавца (эмулятор). Итог оплаты — отдельной колонкой и только по событию Платформы.",
@@ -250,7 +328,9 @@ const en: Record<MessageKey, string> = {
   "card.subject": "What to buy",
   "card.limit": "Limit",
   "card.valid_days": "Valid, days",
+  "card.valid_sec": "Valid, seconds",
   "card.merchants": "Stand merchants",
+  "card.scope": "Mandate merchants",
   "card.single_use": "Single use: one purchase",
   "card.cart.title": "Cart card — your decision before the cart is requested",
   "card.line.item": "Item: {title} ({sku})",
@@ -299,6 +379,80 @@ const en: Record<MessageKey, string> = {
   "step.revoke.attempt": "The agent tries to buy under mandate {mandate_id}.",
   "step.revoke.refused":
     "Attempt stopped by the agent before the shops, cart and payment — {code} (state {state}): the mandate is revoked; the agent did not contact the Platform with this attempt.",
+  "scenario.reject": "6. The client refused the cart",
+  "scenario.reject_note":
+    "A signed mandate is required (scenario 1). Agree to the cart card, then press “Decline” for the cart on the bank mandates screen — do not sign it. On the Platform event the agent re-reads the cart (rejected) and stops itself; no order, no payment.",
+  "step.run.reject": "— Scenario 6: the client refused the cart —",
+  "step.reject.ask": "Decline cart {mandate_id} on the bank mandates screen (link at the top) — the “Decline” button; the agent waits for the Platform event.",
+  "step.cart.rejected": "Cart {mandate_id} declined in the bank (Platform event): the agent stopped — {code} (state {state}); no order, no payment.",
+  "step.reject.signed":
+    "Cart {mandate_id} was signed, but scenario 6 expected a refusal: no order; the cart stays active and unused. The mandate is used up — start with scenario 1, then scenario 6 and “Decline”.",
+  "scenario.unconfirmed": "7. The client did not confirm the purchase",
+  "scenario.unconfirmed_note":
+    "Its own mandate, as in scenario 4 (card above) — sign it and the cart in the bank. The purchase is above the threshold: the bank will ask for confirmation. On the UPK page press “Decline” (the code is in the panel) — the agent stops at once on the Platform's answer. You may also not answer at all: the agent learns the request has expired by itself, but a few minutes late (the agent's clock tolerance). No payment.",
+  "card.intent_unconfirmed.title": "Scenario 7 mandate card (shown before signing)",
+  "step.run.unconfirmed": "— Scenario 7: the client did not confirm the purchase —",
+  "step.unconfirmed.ask":
+    "Do not confirm purchase {confirmation_id}: press “Decline” on the UPK page. Without an answer the agent learns the request has expired by itself — a few minutes after the deadline (the agent's clock tolerance).",
+  "step.upk.declined": "The purchase was not confirmed in the bank: the agent stopped — {code} (order {order_id}, state {state}); no payment.",
+  "orders.outcome.not_confirmed": "not confirmed in the bank, purchase stopped",
+  "scenario.scope": "8. Merchant outside the mandate — the agent refused on its own",
+  "scenario.scope_note":
+    "Its own mandate only for the merchants on the card above — sign it in the bank. The demo choice rule takes the cheapest bread on the stand; if it is at a merchant outside the mandate, after you agree to the cart card the agent refuses to request the cart on its own — the request does not reach the Platform. If the choice falls inside the mandate, the scenario stops before the cart is signed. A Platform refusal of such a request is the rogue-agent scenario.",
+  "step.scope.not_refused":
+    "The demo choice fell at a mandate merchant ({merchant_id}): the agent accepted the cart, scenario 8 has nothing to check — stopped before the cart signature; do not sign it.",
+  "card.intent_scope.title": "Scenario 8 mandate card (shown before signing)",
+  "step.run.scope": "— Scenario 8: merchant outside the mandate —",
+  "step.scope.refused": "The agent refused to request a cart from merchant {merchant_id}: {code} (state {state}) — the merchant is outside the mandate; the agent did not contact the Platform with the cart.",
+  "scenario.suspended": "9. The agent is suspended",
+  "scenario.suspended_note":
+    "Needs a signed mandate (scenario 1). Agree to the cart card — before the cart is requested the System operator (the stand's Platform emulator) suspends the agent. The purchase stops before the cart, order and payment; below — who stopped it: the Platform by a refusal or the agent itself. After the scenario the suspension is lifted and the agent is admitted again; the mandate is used — the next purchase goes through scenario 1.",
+  "step.run.suspended": "— Scenario 9: the agent is suspended —",
+  "step.operator.suspended": "The System operator suspended agent {agent_code} (the stand's Platform emulator).",
+  "step.suspend.stopped": "The purchase stopped before the cart: {code} (state {state}); no order, no payment.",
+  "step.suspend.by_platform": "Stopped by the Platform: the agent's request was refused — the agent is suspended.",
+  "step.suspend.by_agent": "Stopped by the agent itself: it learned of the suspension before the request and did not send it.",
+  "step.operator.reinstated": "The System operator lifted the suspension of agent {agent_code}.",
+  "step.operator.reinstate_failed": "Could not lift the suspension of agent {agent_code} (retry failed too): {code}. Whether the agent is admitted — see the check below.",
+  "step.suspend.resumed": "The agent checked the Platform registry — admitted again.",
+  "step.suspend.resume_failed": "The agent checked the registry but did not resume: {code}.",
+  "step.run.fault": "— Violator (ПР) — app driver: violation {test} with the agent key —",
+  "step.fault.refused": "Violator (ПР) — app driver: violation {test} stopped by a safeguard — {code} ({status}); marked on the stand.",
+  "step.fault.marked": "Violator (ПР) — app driver: violation {test} committed and marked on the stand; no safeguard in the table — the console catches it.",
+  "step.fault.failed": "Violator (ПР) — app driver: violation {test} not played — {code}; not marked on the stand.",
+  "step.fault.unplayed": "Violator (ПР) — app driver: violation {test} marked on the stand but not played — {code}.",
+  "step.fault.recorded":
+    "Violator (ПР) — app driver: {test} — stand records made: the merchant's instruction was served to the violator, the mark is set; execution — after the MVP. This is neither “stopped by a safeguard” nor “committed” — review on the console.",
+  "step.fault.note.catalog_read":
+    "Violator (ПР) — app driver ({test}): read the catalog of shop {shop_id}; does not execute the merchant's instruction if served — the outcome tells whether it was.",
+  "step.fault.note.armed": "Violator (ПР) — app driver ({test}): armed the stand fault on shop {shop_id} — only for the violation.",
+  "step.fault.note.disarmed": "Violator (ПР) — app driver ({test}): disarmed the stand fault on shop {shop_id}.",
+  "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
+  "step.fault.note.intent_requested": "Violator (ПР) — app driver ({test}): mandate {mandate_id} requested — sign it on the bank mandates screen.",
+  "step.fault.note.intent_signed": "Violator (ПР) — app driver ({test}): the client signed mandate {mandate_id}.",
+  "step.fault.note.cart_created": "Violator (ПР) — app driver ({test}): cart {mandate_id} requested.",
+  "step.fault.note.cart_keep_unsigned": "Violator (ПР) — app driver ({test}): do not sign cart {mandate_id} — the violator will ask for a credential without the client's consent.",
+  "step.fault.note.cart_sign_ask":
+    "Violator (ПР) — app driver ({test}): second action — sign cart {mandate_id} on the bank mandates screen: the test checks revocation of an authority that was in force.",
+  "step.fault.note.cart_signed": "Violator (ПР) — app driver ({test}): the client signed cart {mandate_id}.",
+  "step.fault.note.cart_sign_ask_scope":
+    "Violator (ПР) — app driver ({test}): second action — sign cart {mandate_id} on the bank mandates screen: the amount and merchant safeguard is checked on a cart in force.",
+  "step.fault.note.other_merchant": "Violator (ПР) — app driver ({test}): asks for a credential on the cart for another merchant — {merchant_id}.",
+  "step.fault.note.revoke_ask": "Violator (ПР) — app driver ({test}): third action — revoke mandate {mandate_id} on the bank mandates screen; the cart is revoked with it.",
+  "step.fault.note.revoked": "Violator (ПР) — app driver ({test}): cart {mandate_id} revoked together with the mandate.",
+  "step.fault.note.order_placed": "Violator (ПР) — app driver ({test}): order {order_id} placed at the shop under cart {mandate_id}.",
+  "step.fault.note.first_payment":
+    "Violator (ПР) — app driver ({test}): the Platform recorded operation {op_ref} for order {order_id} — the first payment outcome is on the monitor from the event; the first payment is legitimate and part of the test, the violation is its repeat.",
+  "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
+  "scenario.expired": "10. The mandate has expired",
+  "scenario.expired_note":
+    "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",
+  "card.intent_expired.title": "Scenario 10 mandate card (shown before signing)",
+  "step.run.expired": "— Scenario 10: the mandate has expired —",
+  "step.expiry.wait": "Mandate {mandate_id} is valid until {valid_to} — the scenario waits for it to expire.",
+  "step.expiry.attempt": "Mandate {mandate_id} has expired — the agent tries to buy.",
+  "step.expiry.refused":
+    "After mandate {mandate_id} expired, the agent stopped the attempt before shops, cart and payment — {code} (state {state}). Agent reply: {core_text}",
   "orders.title": "Orders in the merchant shop",
   "orders.hint":
     "Number, amount and the shop reply to payment are the merchant's words (emulator). The payment outcome is a separate column and only by the Platform event.",

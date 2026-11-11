@@ -1,30 +1,12 @@
 // К1.2 (Р-1246 п. 3, Р-1275 п. 2): экраны DEMO-2 не импортируют код агента, Платформы, ядра и сборки стенда — ни прямо,
 // ни через свои модули. Граф импортов обходится от каждого файла src/dashboards; `import type` тоже считается.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DYNAMIC, filesUnder, specifiers } from "../support/imports.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
-
-/** Формы ссылки на модуль: from, побочный импорт, динамический импорт, require/createRequire, `/// <reference types>`. */
-const SPEC =
-  /(?:^|[\s;])(?:import|export)\s[^"'`;]*?from\s*["'`]([^"'`]+)["'`]|(?:^|[\s;])import\s*["'`]([^"'`]+)["'`]|import\(\s*["'`]([^"'`]+)["'`]\s*\)|\brequire(?:\.resolve)?\(\s*["'`]([^"'`]+)["'`]\s*\)|\/\/\/\s*<reference\s+(?:types|path)\s*=\s*["']([^"']+)["']/g;
-/** Динамическая ссылка, которую статически не прочитать, — сама нарушение. */
-const DYNAMIC = /import\(\s*[^"'`\s)]|\brequire\(\s*[^"'`\s)]|\bcreateRequire\(/;
-
-export function specifiers(source: string): string[] {
-  const out: string[] = [];
-  for (const m of source.matchAll(SPEC)) out.push((m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5])!);
-  return out;
-}
-
-function filesUnder(dir: string): string[] {
-  return readdirSync(dir).flatMap((n) => {
-    const p = join(dir, n);
-    return statSync(p).isDirectory() ? filesUnder(p) : /\.(ts|mts|cts|tsx|js)$/.test(n) ? [p] : [];
-  });
-}
 
 /** Относительный импорт `./x.js` → файл .ts рядом (NodeNext). */
 function resolveLocal(from: string, spec: string): string {

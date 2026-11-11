@@ -33,6 +33,12 @@ export interface WireMoney {
   readonly text: Readonly<Record<WireLang, string>>;
 }
 
+/** Момент времени: машинное значение ISO 8601 и текст, уже отформатированный источником по языку (П-11.1д-а). */
+export interface WireTime {
+  readonly iso: string;
+  readonly text: Readonly<Record<WireLang, string>>;
+}
+
 export interface WireMonitorEvent {
   readonly seq: number;
   readonly at: string;
@@ -56,7 +62,7 @@ export interface WireScenarioLine {
   readonly seq: number;
   readonly at: string;
   readonly step: string;
-  readonly params: Readonly<Record<string, string | number | WireMoney>>;
+  readonly params: Readonly<Record<string, string | number | WireMoney | WireTime>>;
 }
 
 export type WireItem =
@@ -92,6 +98,13 @@ function parseMoney(v: unknown): WireMoney | undefined {
   const text = v.text;
   if (!WIRE_LANGS.every((l) => isStr(text[l]))) return undefined;
   return { minor: v.minor as number, currency: v.currency, text: { ru: text.ru as string, en: text.en as string } };
+}
+
+function parseTime(v: unknown): WireTime | undefined {
+  if (!isObj(v) || !isAt(v.iso) || !isObj(v.text)) return undefined;
+  const text = v.text;
+  if (!WIRE_LANGS.every((l) => isStr(text[l]))) return undefined;
+  return { iso: v.iso, text: { ru: text.ru as string, en: text.en as string } };
 }
 
 function parseIds(v: unknown): WireIds | undefined {
@@ -145,8 +158,11 @@ function parseConsole(l: unknown): WireConsoleLine | undefined {
 export const WIRE_SCENARIO_PARAMS = [
   "amount", "candidates", "code", "codes", "confirmation_id", "contour", "delivery_cost", "delivery_days", "delivery_method",
   "intent_id", "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "sku", "state", "status",
-  "subject", "threshold", "title", "total", "unavailable",
+  "subject", "test", "threshold", "title", "total", "unavailable", "valid_to",
 ] as const;
+
+/** Параметры шагов — моменты времени (WireTime), не строки (П-11.1д-а). */
+export const WIRE_TIME_PARAMS = ["valid_to"] as const;
 
 /** Шаги, которые на линию дашбордов не идут: код «SMS банка» вводит только человек на странице УПК (инвариант 3).
  *  Перечень ключей общий для всех шагов: новый шаг с одноразовым кодом или иным секретом — сюда, иначе его `code`
@@ -160,10 +176,14 @@ export const isHiddenScenarioItem = (raw: unknown): boolean =>
 function parseScenario(l: unknown): WireScenarioLine | undefined {
   if (!isObj(l) || !isSeq(l.seq) || !isAt(l.at) || !isStr(l.step) || !NAME.test(l.step) || !isObj(l.params)) return undefined;
   if ((WIRE_SCENARIO_HIDDEN_STEPS as readonly string[]).includes(l.step)) return undefined;
-  const params: Record<string, string | number | WireMoney> = {};
+  const params: Record<string, string | number | WireMoney | WireTime> = {};
   for (const [k, v] of Object.entries(l.params)) {
     if (!isIn(WIRE_SCENARIO_PARAMS, k)) continue;
-    if (isStr(v) || (typeof v === "number" && Number.isFinite(v))) params[k] = v;
+    if (isIn(WIRE_TIME_PARAMS, k)) {
+      const tm = parseTime(v);
+      if (!tm) return undefined;
+      params[k] = tm;
+    } else if (isStr(v) || (typeof v === "number" && Number.isFinite(v))) params[k] = v;
     else {
       const m = parseMoney(v);
       if (!m) return undefined;

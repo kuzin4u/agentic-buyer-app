@@ -45,6 +45,9 @@ export interface DemoStand {
   readonly urls: DemoUrls;
   /** Режим сбоев стенда включён (`demo: { faults: true }`, П-1.3): прогон тестов пульта, срок подтверждения 45 с. */
   readonly faults: boolean;
+  /** Каталог ключей агента приложения — только при режиме сбоев: из него драйвер нарушителя «ПР» загружает ключ (П7).
+   *  Без флага поля нет. Путь, не ключ: сам ключ читает только драйвер. */
+  readonly keysDir?: string;
   /** Обращения к витринам эмулятора: метод, путь без строки запроса, статус, код при 4xx и 5xx. Тел нет (инвариант 1).
    *  Живой массив без копии: шина читает его по индексу. */
   merchantCalls(): readonly CallRecord[];
@@ -236,6 +239,8 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?:
       agentCode: fixture.agent_code,
       urls: { pao, merchants: merchantsUrl, bankApp, upk },
       faults,
+      // Каталог ключей агента — только в режиме сбоев, для драйвера нарушителя «ПР» (П7); без флага его нет.
+      ...(faults && { keysDir }),
       merchantCalls: () => merchantCalls,
       isAgentKid: (kid) => agentKids.has(kid),
       adpDecision: (opRef) => adpDecisions.get(opRef),

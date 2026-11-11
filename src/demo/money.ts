@@ -70,3 +70,22 @@ export function moneyView(m: Money): MoneyView {
   const text = Object.fromEntries(LANGS.map((l) => [l, formatMoney(m, l)])) as Record<Lang, string>;
   return { minor: m.minor, currency: m.currency, text };
 }
+
+/** Момент для ленты (П-11.1д-а, ревью П-11.1д № 3): машинное значение ISO 8601 и текст на каждом языке — дата и время до
+ *  минут в поясе процесса стенда, как время на экране мандатов банка (З9): ru «11.11.2026, 10:23», en «11/11/2026, 10:23». */
+export interface TimeView {
+  readonly iso: string;
+  readonly text: Readonly<Record<Lang, string>>;
+}
+
+const TIME_LOCALE: Readonly<Record<Lang, string>> = { ru: "ru-RU", en: "en-GB" };
+
+/** Момент не по форме — исключение: шина выводит шаг без него, как сумму не по форме. */
+export function timeView(iso: string): TimeView {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) throw new RangeError(`время не по форме: ${iso}`);
+  const text = Object.fromEntries(
+    LANGS.map((l) => [l, d.toLocaleString(TIME_LOCALE[l], { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })]),
+  ) as Record<Lang, string>;
+  return { iso: d.toISOString(), text };
+}

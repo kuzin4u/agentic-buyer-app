@@ -158,6 +158,11 @@ describe("интерпретатор: квалификация по правил
     const r = interpret(step("failed", { code: "REVOKED_NOT_ENFORCED", state: "AUTHORIZING" }), ENV);
     expect(r).toMatchObject({ kind: "error", stage: "payment" });
     expect(r.who).toMatchObject({ status: "unknown", side: ["agent"], verdict: "failure" });
+    // Сюжет 10: агент дошёл до выдачи по истёкшему поручению — сбой агента, код словами (ревью П-11.1д № 2).
+    const x = interpret(step("failed", { code: "EXPIRED_NOT_ENFORCED", state: "OFFERS" }), ENV);
+    expect(x).toMatchObject({ kind: "error" });
+    expect(x.who).toMatchObject({ side: ["agent"], verdict: "failure" });
+    for (const lang of ["ru", "en"] as const) expect(rawInHumanText(x.phrase[lang], lang), x.phrase[lang]).toBeUndefined();
   });
 
   it("«оплачено» — только у события с источником pao_event (инвариант 6, ревью № 8); без суммы и кода — без пустых скобок", () => {
@@ -233,7 +238,11 @@ describe("интерпретатор: квалификация по правил
     expect(interpret(step("failed", { code: "NO_INTENT", state: "INTENT_PENDING" }), ENV).stage).toBe("mandate");
     expect(interpret(step("failed", { code: "NO_CANDIDATE", state: "OFFERS" }), ENV).stage).toBe("search");
     expect(interpret(step("failed", { code: "UNKNOWN" }), ENV).stage).toBe("outcome");
-    expect(interpret(mon({ source: "pao_event", cls: "other", what: "agent.suspended" }), ENV).phrase).toEqual({ ru: "Событие Платформы: agent.suspended", en: "Platform event: agent.suspended" });
+    // Незнакомое событие ПАО (agent.suspended с П-11.1г знакомо — сюжет 9).
+    expect(interpret(mon({ source: "pao_event", cls: "other", what: "dispute.updated" }), ENV).phrase).toEqual({ ru: "Событие Платформы: dispute.updated", en: "Platform event: dispute.updated" });
+    const suspended = interpret(mon({ source: "pao_event", cls: "other", what: "agent.suspended" }), ENV);
+    expect(suspended).toMatchObject({ stage: "service", actor: "platform", kind: "norm", level: "key" });
+    expect(suspended.phrase.ru).toBe("Платформа: агент приостановлен оператором Системы");
     const pay = interpret(mon({ source: "agent_merchant", cls: "payment", what: "POST /v1/shops/{shop_id}/orders/{order_id}/payment", status: 200 }), ENV);
     expect(pay.phrase).toEqual({ ru: "Агент передал оплату заказа продавцу", en: "The agent sent payment for order to the merchant" });
   });

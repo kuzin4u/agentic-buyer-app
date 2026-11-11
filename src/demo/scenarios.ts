@@ -8,9 +8,11 @@
 import { MERCHANT_FIXTURES } from "agentic-ps-platform/fixtures";
 import type { Purchase } from "agentic-buyer-ref/src/agent/pipeline/index.js";
 import { cartTotal } from "agentic-buyer-ref/src/agent/policy/index.js";
-import type { MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import type { Mandate, MandateDraft, Money, Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import { ISO4217_MINOR_UNITS } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
+import type { MoreScenario } from "./server.js";
+import { MASSA_MADRE } from "./shops.js";
 import type { DemoStand } from "./stand.js";
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
@@ -22,8 +24,11 @@ export interface ScenarioStep {
 export type StepSink = (s: ScenarioStep) => void;
 
 /** intent — сюжет 1; purchase — сюжет 2; limit — сюжет 3 «отказ: превышен лимит клиента в банке»; upk — сюжет 4
- *  «подтверждение человеком через УПК» (своё поручение). */
-export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke";
+ *  «подтверждение человеком через УПК» (своё поручение); revoke — сюжет 5. Сюжеты 6–10 — правильные тесты задания на
+ *  тестирование пульта (П-11.1, Р-1457): reject — 6 «клиент отказался от корзины» (П-03); unconfirmed — 7 «клиент не
+ *  подтвердил покупку» (П-04); scope — 8 «продавец вне поручения» (П-06); suspended — 9 «агент приостановлен» (П-07);
+ *  expired — 10 «срок поручения истёк» (П-09). */
+export type ScenarioName = "intent" | "purchase" | "limit" | "upk" | "revoke" | "reject" | "unconfirmed" | "scope" | "suspended" | "expired";
 
 /** Метка начала прогона сюжета — шаг `run.<имя>` (К2.3а). Литералами — чтобы словари сверялись с шагами по тексту. */
 export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
@@ -32,7 +37,39 @@ export const RUN_STEP: Readonly<Record<ScenarioName, string>> = {
   limit: "run.limit",
   upk: "run.upk",
   revoke: "run.revoke",
+  reject: "run.reject",
+  unconfirmed: "run.unconfirmed",
+  scope: "run.scope",
+  suspended: "run.suspended",
+  expired: "run.expired",
 };
+
+/** Сюжеты, которым нужно действующее поручение сюжета 1. */
+const NEEDS_INTENT: ReadonlySet<ScenarioName> = new Set(["purchase", "limit", "revoke", "reject", "suspended"]);
+
+/** Основание приостановления агента оператором Системы в сюжете 9 (A2 п. 7.1, перечень Платформы SUSPENSION_GROUNDS):
+ *  подозрение на компрометацию ключа — мера предосторожности, без обвинения агента (решение владельца, чат 11.11).
+ *  Нейтрального основания («решение оператора») в перечне нет — предложение Платформе после MVP. Других действий у
+ *  Платформы основание не вызывает (ключи не отзываются); агенту не приходит — событие несёт только agent_code (РП54). */
+const SUSPEND_GROUND = "KEY_COMPROMISE";
+
+/** Обращения покупки к поручениям ПАО (сверка поручения, запрос корзины): отказ на них — защита Платформы в сюжете 9.
+ *  Лента, подписка, сверка статуса агента и ключи — не запрос покупки. */
+const PURCHASE_PATH = "/pao/v1/mandates";
+
+/** Код сбоя для шага сюжета: код ядра (code / reason) или ошибка реестра стенда по имени класса — словами в CODE_WORDS
+ *  (ревью П-11.1г № 7); иначе UNKNOWN. */
+const STAND_ERRORS: Readonly<Record<string, string>> = {
+  StatusTransitionError: "AGENT_STATUS_TRANSITION",
+  AgentStatusEventMissingError: "AGENT_STATUS_EVENT_MISSING",
+  AgentStatusEventConflictError: "AGENT_STATUS_EVENT_CONFLICT",
+  AgentNotFoundError: "AGENT_NOT_FOUND",
+};
+function standCode(e: unknown): string {
+  const o = (e ?? {}) as { code?: unknown; reason?: unknown; name?: unknown };
+  for (const c of [o.code, o.reason]) if (typeof c === "string") return c;
+  return (typeof o.name === "string" && Object.hasOwn(STAND_ERRORS, o.name) ? STAND_ERRORS[o.name] : undefined) ?? "UNKNOWN";
+}
 
 export type ScenarioStart = { ok: true } | { ok: false; code: "BUSY" | "NEED_INTENT" | "NOT_AWAITING" | "PAYING" };
 
@@ -54,6 +91,8 @@ const infoOf = (op: Operation): OperationInfo => ({
   ...(op.orderRef && { orderRef: op.orderRef }),
 });
 const CLOSE_WAIT_MS = 3000;
+/** Сколько сюжет ждёт события «корзина отклонена», если ядро остановилось раньше него (сюжет 6). */
+const REJECT_WAIT_MS = 3000;
 
 /** Клиент банка стенда, от имени которого агент действует. Идентификатор клиента, не реквизит. */
 export const DEMO_PRINCIPAL = "pr_demo";
@@ -65,7 +104,13 @@ export interface IntentCard {
   readonly subject: string;
   readonly limit: Money;
   readonly validDays: number;
+  /** Срок в секундах вместо дней (сюжет 10 «срок поручения истёк»): на карточке — секундами. */
+  readonly validSec?: number;
   readonly merchants: number;
+  /** Продавцы поручения (merchant_id); нет — все продавцы стенда. */
+  readonly scope?: readonly string[];
+  /** Подписи продавцов поручения для карточки — имя витрины и merchant_id (данные стенда). */
+  readonly scopeLabels?: readonly string[];
 }
 
 /** Условия поручения сюжета 1 (Р-1235: «хлеб на выходные, до 1 000 ₽, один раз»): разовое, на всех продавцов стенда. */
@@ -79,14 +124,45 @@ export const INTENT_CARD: IntentCard = {
 /** Поручение сюжета 4 (Р-1255 п. 2): своё, до 5 000 ₽ — выше порога подтверждения банка; карточка — у кнопки 4. */
 export const INTENT_CARD_UPK: IntentCard = { ...INTENT_CARD, limit: { amount: 500000, currency: "RUB" } };
 
+/** Поручение сюжета 8 (П-06): только один продавец — «Масса Мадре» (merchant_id — из набора витрин стенда, не литералом).
+ *  Демо-правило выбора (самый дешёвый хлеб в контуре без A5) выбирает товар другого продавца — вне поручения. */
+const SCOPE_SHOPS = [MASSA_MADRE];
+export const INTENT_CARD_SCOPE: IntentCard = {
+  ...INTENT_CARD,
+  merchants: SCOPE_SHOPS.length,
+  scope: SCOPE_SHOPS.map((s) => s.merchant_id),
+  scopeLabels: SCOPE_SHOPS.map((s) => `${s.name} (${s.merchant_id})`),
+};
+
+/** Срок поручения сюжета 10 на мониторе (П-11.1д): человек успевает подписать его в банке, затем сюжет ждёт конца срока. */
+export const EXPIRY_SEC = 180;
+
+/** Поручение сюжета 10 (П-09): как у сюжета 1, но со сроком в секундах. Срок — данные карточки (Т3а: видна до кнопки). */
+export const expiryIntentCard = (sec: number = EXPIRY_SEC): IntentCard => ({ ...INTENT_CARD, validSec: sec });
+
+/** Сюжеты 6–10 на мониторе — по порядку кнопок (П-11.1); карточка — у сюжета со своим поручением (видна до кнопки).
+ *  Сюжет 7 — то же поручение, что у сюжета 4: выше порога подтверждения банка. Срок поручения сюжета 10 — параметром,
+ *  тем же, что у сюжетов (DemoScenarios), чтобы карточка говорила правду. */
+export const moreScenarios = (expirySec: number = EXPIRY_SEC): readonly MoreScenario[] => [
+  { name: "reject" },
+  { name: "unconfirmed", card: INTENT_CARD_UPK },
+  { name: "scope", card: INTENT_CARD_SCOPE },
+  { name: "suspended" },
+  { name: "expired", card: expiryIntentCard(expirySec) },
+];
+export const MORE_SCENARIOS: readonly MoreScenario[] = moreScenarios();
+
+/** Сколько сюжет 10 ждёт после конца срока по часам стенда, прежде чем пробовать покупку. */
+const EXPIRY_MARGIN_MS = 1000;
+
 export function demoIntent(now: Date, card: IntentCard = INTENT_CARD): MandateDraft {
   return {
     kind: "INTENT",
     parentId: null,
     subject: card.subject,
     amountLimit: card.limit,
-    validTo: new Date(now.getTime() + card.validDays * 86_400_000).toISOString(),
-    merchantScope: MERCHANT_FIXTURES.map((f) => f.merchant_id),
+    validTo: new Date(now.getTime() + (card.validSec !== undefined ? card.validSec * 1000 : card.validDays * 86_400_000)).toISOString(),
+    merchantScope: card.scope ? [...card.scope] : MERCHANT_FIXTURES.map((f) => f.merchant_id),
     principalRef: DEMO_PRINCIPAL,
     confirmationMode: "IMMEDIATE",
     keyTermsShown: true,
@@ -122,10 +198,17 @@ export class DemoScenarios {
   /** Заказ текущего сюжета — для связи шагов отказа с панелью витрины. */
   #orderId: string | null = null;
   #seq = 0;
+  /** Срок поручения сюжета 10, секунд. */
+  readonly #expirySec: number;
 
-  constructor(d: DemoStand, emit: StepSink) {
+  /** Занят ли драйвер нарушителя «ПР» (П7): он ходит тем же ключом агента — сюжет одновременно с ним не стартует. */
+  readonly #otherBusy: () => boolean;
+
+  constructor(d: DemoStand, emit: StepSink, o: { expirySec?: number; otherBusy?: () => boolean } = {}) {
     this.#d = d;
     this.#emit = emit;
+    this.#expirySec = o.expirySec ?? EXPIRY_SEC;
+    this.#otherBusy = o.otherBusy ?? (() => false);
   }
 
   /** Сумма и причина отказа операции, как их вернуло ядро (GET операции после события), — для строки события в мониторе:
@@ -193,8 +276,8 @@ export class DemoScenarios {
 
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
-    if (this.#running) return { ok: false, code: "BUSY" };
-    if ((name === "purchase" || name === "limit" || name === "revoke") && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
+    if (this.#running || this.#otherBusy()) return { ok: false, code: "BUSY" };
+    if (NEEDS_INTENT.has(name) && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();
     this.#runAc = run;
@@ -210,11 +293,19 @@ export class DemoScenarios {
         ? this.#intent()
         : name === "limit"
           ? this.#overLimit()
-          : name === "upk"
-            ? this.#upk()
+          : name === "upk" || name === "unconfirmed"
+            ? this.#upk(name === "unconfirmed")
             : name === "revoke"
               ? this.#revoke()
-              : this.#buy();
+              : name === "reject"
+                ? this.#buy({ expectReject: true })
+                : name === "scope"
+                  ? this.#outOfScope()
+                  : name === "suspended"
+                    ? this.#suspendedAgent()
+                    : name === "expired"
+                      ? this.#expiredMandate()
+                      : this.#buy();
     this.#running = work
       .catch((e: unknown) => this.#fail(e))
       .finally(() => {
@@ -298,7 +389,7 @@ export class DemoScenarios {
   /** Сюжет 4 (Р-1255 п. 2): своё поручение до 5 000 ₽ (карточка у кнопки 4), подпись человеком; затем покупка с суммой
    *  выше порога подтверждения банка. ADP отвечает CONFIRMATION_REQUIRED — ядро ждёт решения человека (инвариант 3):
    *  на мониторе — ссылка на страницу УПК и панель «эмулятор SMS банка» с кодом; код вводит человек на странице УПК. */
-  async #upk(): Promise<void> {
+  async #upk(expectDecline = false): Promise<void> {
     await this.#intent(INTENT_CARD_UPK);
     if (!this.#intentActive) return;
     // Рыночный порог подтверждения Платформы стенда (confirm_above_kop — в копейках рубля); количество — чтобы сумма была
@@ -313,7 +404,165 @@ export class DemoScenarios {
         return qty;
       },
       confirmation: true,
+      expectDecline,
     });
+  }
+
+  /** Сюжет 8 (П-06, Р-1459 В5): своё поручение на одного продавца, подпись человеком; выбор демо-правилом — товар другого
+   *  продавца. Ядро само отказывает до запроса корзины (политика: продавец вне области поручения — MANDATE_OUT_OF_SCOPE);
+   *  Платформа до отказа не доходит. Приложение продавца с поручением не сравнивает (инвариант 2) — только называет причину
+   *  остановки ядра. Защита Платформы (MANDATE_SCOPE) — драйвер нарушителя П-11.3. */
+  async #outOfScope(): Promise<void> {
+    await this.#intent(INTENT_CARD_SCOPE);
+    if (!this.#intentActive) return;
+    await this.#buy({ expectScope: true });
+  }
+
+  /** Сюжет 9 (П-07, Р-1459 В7): покупка по поручению сюжета 1; после согласия клиента с карточкой и до запроса корзины
+   *  оператор Системы (эмулятор Платформы стенда) приостанавливает агента. Ядро останавливает покупку само по отказу
+   *  Платформы 403 AGENT_SUSPENDED или по своей приостановке подписи, если раньше прочитало событие agent.suspended, —
+   *  какая защита сработала, сюжет называет отдельным шагом по записи стенда (В7: паспорт принимает обе). После сюжета —
+   *  при любом исходе — приостановление снимается, и сюжет просит ядро сверить статус с реестром (recheck — публичный
+   *  метод ядра; расписание сверок — за вызывающим): подпись возобновляет ядро, а не приложение. */
+  async #suspendedAgent(): Promise<void> {
+    const agentCode = this.#d.agentCode;
+    // «Пытались приостановить» — до вызова: стенд может сменить статус и не записать событие (AgentStatusEventMissingError,
+    // РП54 п. 2) — снимать надо и тогда, иначе агент остаётся приостановленным до перезапуска демо (ревью П-11.1г № 1).
+    let attempted = false;
+    let suspended = false;
+    let callsFrom = 0;
+    let journalFrom = 0;
+    try {
+      await this.#buy({
+        beforeCart: async () => {
+          callsFrom = this.#d.stand.calls().length;
+          journalFrom = this.#d.journal.entries.length;
+          attempted = true;
+          await this.#d.stand.suspendAgent(agentCode, SUSPEND_GROUND);
+          suspended = true;
+          this.#step("operator.suspended", { agent_code: agentCode });
+        },
+      });
+    } catch (e) {
+      const p = this.#purchase;
+      if (suspended && p?.reason === "AGENT_SUSPENDED" && !this.#ac.signal.aborted) {
+        const intentId = p.intentMandate?.id;
+        this.#step("suspend.stopped", { code: p.reason, state: p.state, ...(intentId !== undefined && { intent_id: intentId }) });
+        const defender = this.#defender(callsFrom, journalFrom);
+        if (defender) this.#step(defender);
+      } else this.#fail(e);
+    } finally {
+      if (attempted) await this.#reinstate(agentCode, suspended);
+    }
+  }
+
+  /** Сюжет 10 (П-09): своё поручение с коротким сроком (карточка у кнопки 10), подпись человеком; сюжет ждёт конца срока по
+   *  часам стенда и пробует покупку. Срок приложение не проверяет (инвариант 2) — только ждёт: остановку даёт ядро до витрин,
+   *  корзины и оплаты. По ПАО 1.4.0 сверка поручения отвечает OUT_OF_SCOPE на любой статус, кроме ACTIVE, в том числе на
+   *  истёкший (исхода EXPIRED у verify нет), и ядро agentic-buyer-ref 4a4ee7c отдаёт MANDATE_OUT_OF_SCOPE (mandates/client.ts
+   *  requireActive). Код — как есть, причину «срок» сюжет не утверждает; текст отказа ядра — как есть (решение владельца, чат
+   *  11.11). MANDATE_EXPIRED — после передачи агенту (после MVP). */
+  async #expiredMandate(): Promise<void> {
+    await this.#intent(expiryIntentCard(this.#expirySec));
+    if (!this.#intentActive) return;
+    // Поручение сюжета 10 — не для других сюжетов: признак снимается сразу после подписи, до ожидания, — и при «прервать»
+    // во время ожидания сюжеты 2, 3, 5, 6, 9 отвечают NEED_INTENT (ревью П-11.1д № 1). Срок приложение не проверяет.
+    this.#intentActive = false;
+    const p = this.#purchase!;
+    const mandate = p.intentMandate!;
+    this.#step("expiry.wait", { mandate_id: mandate.id, valid_to: mandate.validTo });
+    await this.#sleepUntil(Date.parse(mandate.validTo) + EXPIRY_MARGIN_MS);
+    this.#step("expiry.attempt", { mandate_id: mandate.id });
+    try {
+      await p.search();
+    } catch (e) {
+      const reason = p.reason;
+      if ((reason === "MANDATE_OUT_OF_SCOPE" || reason === "MANDATE_EXPIRED") && !this.#ac.signal.aborted) {
+        // Текст отказа ядра для человека (MandateRefused) — как есть, без разбора на коды; нет его — шаг без текста ядра
+        // (на мониторе — прочерк).
+        const text = e instanceof Error && e.name === "MandateRefused" ? e.message : undefined;
+        this.#step("expiry.refused", { mandate_id: mandate.id, code: reason, state: p.state, ...(text !== undefined && { core_text: text }) });
+      } else this.#fail(e);
+      return;
+    }
+    // Ядро дошло до выдачи по истёкшему поручению — так быть не должно: видно человеку как сбой.
+    this.#step("failed", { code: "EXPIRED_NOT_ENFORCED", state: p.state });
+  }
+
+  /** Ожидание до момента по часам стенда; отмена сюжета снимает ожидание. Сбой часов стенда — отказ ожидания, а не
+   *  необработанное исключение в таймере (ревью П-11.1д № 8). */
+  #sleepUntil(atMs: number): Promise<void> {
+    const signal = this.#signal;
+    return new Promise((ok, fail) => {
+      if (signal.aborted) return fail(new Error("сюжет отменён"));
+      const timer = setInterval(() => {
+        let now: number;
+        try {
+          now = this.#d.stand.now().getTime();
+        } catch (e) {
+          done();
+          fail(e);
+          return;
+        }
+        if (now < atMs) return;
+        done();
+        ok();
+      }, 250);
+      timer.unref();
+      const onAbort = () => {
+        done();
+        fail(new Error("сюжет отменён"));
+      };
+      function done(): void {
+        clearInterval(timer);
+        signal.removeEventListener("abort", onAbort);
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /** Кто защитил покупку (Р-1459 В7) — по положительному признаку (ревью П-11.1г № 4): Платформа — отказ 403 на обращение
+   *  покупки к поручениям (сверка или запрос корзины), а не на ленту, сверку статуса или ключи; агент — приостановка подписи
+   *  в журнале ядра без такого отказа. Нет ни того, ни другого — шага нет. */
+  #defender(callsFrom: number, journalFrom: number): "suspend.by_platform" | "suspend.by_agent" | undefined {
+    const refused = this.#d.stand
+      .calls()
+      .slice(callsFrom)
+      .some((c) => c.path.startsWith(PURCHASE_PATH) && c.status === 403 && c.code === "AGENT_SUSPENDED");
+    if (refused) return "suspend.by_platform";
+    const self = this.#d.journal.entries.slice(journalFrom).some((e) => e.kind === "signing.suspended" && e.reason === "AGENT_SUSPENDED");
+    return self ? "suspend.by_agent" : undefined;
+  }
+
+  /** Снятие приостановления оператором Системы и сверка ядра с реестром — каждое со своим исходом: сбой не маскируется
+   *  причиной остановки покупки (как снятие лимита в сюжете 3). Снятие повторяется один раз: повтор того же действия у
+   *  Платформы идемпотентен и дописывает недостающее событие (РП54 п. 2; ревью № 2). Сверка — при любом исходе снятия:
+   *  возобновлять подпись или нет, решает ядро по реестру, а не сюжет. Ядро после ACTIVE само читает ленту с курсора.
+   *  После close() снятие и сверка идут, а шагов нет (ревью П-11.1б № 6; ревью П-11.1г № 6). */
+  async #reinstate(agentCode: string, suspended: boolean): Promise<void> {
+    const step = (s: string, params: ScenarioStep["params"]) => {
+      if (!this.#ac.signal.aborted) this.#step(s, params);
+    };
+    let failure: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.#d.stand.reinstateAgent(agentCode);
+        failure = undefined;
+        break;
+      } catch (e) {
+        failure = e;
+        // Приостановить не вышло вовсе (агент ACTIVE с допуска): снимать нечего — и сверять нечего.
+        if (!suspended && (e as { name?: unknown } | null)?.name === "StatusTransitionError") return;
+      }
+    }
+    if (failure === undefined) step("operator.reinstated", { agent_code: agentCode });
+    else step("operator.reinstate_failed", { agent_code: agentCode, code: standCode(failure) });
+    try {
+      await this.#d.agent.recheck();
+      step("suspend.resumed", { agent_code: agentCode });
+    } catch (e) {
+      step("suspend.resume_failed", { agent_code: agentCode, code: standCode(e) });
+    }
   }
 
   /** Сюжет 5 (Р-1255 п. 3): на действующем поручении человек сам отзывает его на экране мандатов банка — кнопки
@@ -388,17 +637,59 @@ export class DemoScenarios {
   /** Запрос подтверждения по корзине этой покупки — из ленты ПАО агента: ссылка на страницу УПК стенда и код из банка
    *  (эмулятор SMS). Ссылка страницы от ядра приходит только для https: (Р69 п. 5); у локального стенда — http:, поэтому
    *  ссылку строит сборка демо по confirmation_id. Решения здесь нет: подтверждает человек на странице. */
-  #watchConfirmation(cartId: string): () => void {
+  #watchConfirmation(cartId: string, askDecline = false): { off(): void; approved(): boolean } {
     const seen = new Set<string>();
-    return this.#d.agent.events.listen(async (item) => {
-      if (item.kind !== "event" || item.event.type !== "confirmation.required") return;
+    let approved = false;
+    const off = this.#d.agent.events.listen(async (item) => {
+      if (item.kind !== "event") return;
+      // Клиент подтвердил запрос этой покупки — событие Платформы (запрос уже показан этим сюжетом).
+      if (item.event.type === "confirmation.approved" && item.event.confirmationId !== null && seen.has(item.event.confirmationId)) {
+        approved = true;
+        return;
+      }
+      if (item.event.type !== "confirmation.required") return;
       const id = item.event.confirmationId;
       if (!id || seen.has(id) || (item.event.mandateId !== null && item.event.mandateId !== cartId)) return;
       seen.add(id);
       this.#step("upk.required", { confirmation_id: id, upk_url: `${this.#d.urls.upk}/c/${encodeURIComponent(id)}` });
+      // Сюжет 7: просьба не подтверждать — решает человек на странице УПК; сюжет за него ничего не нажимает (инвариант 3).
+      if (askDecline) this.#step("unconfirmed.ask", { confirmation_id: id });
       const code = await this.#d.stand.issuer.upkCode(id).catch(() => undefined);
       if (code) this.#step("upk.sms", { code });
     });
+    return { off, approved: () => approved };
+  }
+
+  /** Событие Платформы mandate.rejected по мандату — из ленты ПАО агента (сюжет 6): клиент отклонил подпись в банке.
+   *  wait(ms) — дождаться события, если ядро остановилось раньше него (прочитало отказ своим GET до ленты; ревью П-11.1а
+   *  № 2): лента будится с периодом опроса агента, как в #waitRevoked; нет события за срок — false. */
+  #watchRejected(mandateId: string): { wait(ms: number): Promise<boolean>; off(): void } {
+    const events = this.#d.agent.events;
+    let seen = false;
+    let wake: (() => void) | null = null;
+    const off = events.listen((item) => {
+      if (item.kind === "event" && item.event.type === "mandate.rejected" && item.event.mandateId === mandateId) {
+        seen = true;
+        wake?.();
+      }
+    });
+    const wait = (ms: number): Promise<boolean> =>
+      seen
+        ? Promise.resolve(true)
+        : new Promise((ok) => {
+            const poll = setInterval(() => void events.signal().catch(() => undefined), this.#d.agent.params.event_poll_interval_ms);
+            poll.unref();
+            const timer = setTimeout(() => done(false), ms);
+            timer.unref();
+            function done(v: boolean): void {
+              clearInterval(poll);
+              clearTimeout(timer);
+              wake = null;
+              ok(v);
+            }
+            wake = () => done(true);
+          });
+    return { wait, off };
   }
 
   async #intent(card: IntentCard = INTENT_CARD): Promise<void> {
@@ -504,6 +795,12 @@ export class DemoScenarios {
       qtyFor?: (price: Money) => number | { code: string };
       /** Сюжет 4: показывать запрос подтверждения (ссылка УПК, эмулятор SMS). */
       confirmation?: boolean;
+      /** Сюжет 6 (П-03): человек отклоняет корзину в банке; подписанная корзина дальше заказа не идёт. */
+      expectReject?: boolean;
+      /** Сюжет 7 (П-04): человек не подтверждает покупку — «Отклонить» на странице УПК или конец срока запроса. */
+      expectDecline?: boolean;
+      /** Сюжет 8 (П-06): ядро отказывает в корзине у продавца вне поручения; принятая корзина дальше подписи не идёт. */
+      expectScope?: boolean;
     } = {},
   ): Promise<void> {
     const p = this.#purchase!;
@@ -560,17 +857,66 @@ export class DemoScenarios {
     this.#step("cart.agreed", { merchant_id: pick.merchantId, sku: pick.sku });
     // Прервано между «согласен» и запросом — корзину не запрашивать (ревью К2.2а № 4).
     this.#signal.throwIfAborted();
-    if (o.beforeCart && total) await o.beforeCart(total);
+    if (o.beforeCart) {
+      // Итога корзины нет (цена не по форме — cartTotal ядра null): действие перед корзиной (лимит сюжета 3, приостановление
+      // сюжета 9) не выполнить — сюжет не идёт обычной покупкой до оплаты (ревью П-11.1г № 5).
+      if (!total) {
+        this.#step("failed", { code: "PRICE_INVALID", state: p.state });
+        return;
+      }
+      await o.beforeCart(total);
+    }
     this.#signal.throwIfAborted();
     // С этого запроса поручение использовано (разовое): следующая покупка — через новый сюжет 1.
     this.#intentActive = false;
-    const cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
-    // Связка «корзина → поручение-намерение» (П-1.2, Р-1442): транзакция пульта собирается по идентификаторам.
+    // Связка «корзина → поручение-намерение» (П-1.2, Р-1442): транзакция пульта собирается по идентификаторам; и у отказа
+    // сюжета 8 — остановка привязана к поручению (ревью П-11.1в № 8).
     const intentId = p.intentMandate?.id;
+    let cart: Mandate;
+    try {
+      cart = await p.cart({ merchantId: pick.merchantId, lines: [{ sku: pick.sku, qty }], keyTermsShown: true }, this.#key("cart"));
+    } catch (e) {
+      // Продавец выбора вне области поручения (сюжет 8, П-06): ядро остановилось до обращений — своя политика, запись
+      // agent.refused в журнале агента. Только в сюжете 8: тот же код ядро даёт, если Платформа не подтвердила поручение
+      // при сверке (ревью П-11.1в № 1), — в других сюжетах это обычный шаг failed. Сюжет только называет причину ядра.
+      if (o.expectScope && p.reason === "MANDATE_OUT_OF_SCOPE" && !this.#ac.signal.aborted) {
+        this.#step("scope.refused", { merchant_id: pick.merchantId, code: p.reason, state: p.state, ...(intentId !== undefined && { intent_id: intentId }) });
+        return;
+      }
+      throw e;
+    }
+    if (o.expectScope) {
+      // Выбор оказался в области поручения (зависит от витрин стенда; ревью П-11.1в № 3): проверять нечего — сюжет
+      // останавливается до подписи корзины, чтобы на мониторе не дойти до оплаты в сюжете «вне поручения».
+      this.#step("scope.not_refused", { merchant_id: pick.merchantId, mandate_id: cart.id });
+      return;
+    }
     this.#step("cart.created", { mandate_id: cart.id, ...(intentId !== undefined && { intent_id: intentId }), ...(cart.cart ? { total: cart.cart.total } : {}) });
     this.#step("cart.awaiting_signature", { mandate_id: cart.id });
-    const signed = await p.awaitCart(this.#signal);
+    if (o.expectReject) this.#step("reject.ask", { mandate_id: cart.id });
+    // Отказ подписи корзины клиентом (сюжет 6, П-03) — событие Платформы mandate.rejected по этой корзине: ядро по нему
+    // перечитывает корзину и останавливается само (MANDATE_NOT_ACTIVE). Решения здесь нет — сюжет только называет причину.
+    // Ядро может прочитать отказ своим GET раньше, чем событие дойдёт по ленте (ревью П-11.1а № 2): тогда сюжет ждёт
+    // событие не дольше REJECT_WAIT_MS; без события — обычный шаг failed с кодом ядра.
+    const rejection = this.#watchRejected(cart.id);
+    let signed: Mandate;
+    try {
+      signed = await p.awaitCart(this.#signal);
+    } catch (e) {
+      if (p.reason === "MANDATE_NOT_ACTIVE" && !this.#signal.aborted && (await rejection.wait(REJECT_WAIT_MS))) {
+        this.#step("cart.rejected", { mandate_id: cart.id, code: p.reason, state: p.state });
+        return;
+      }
+      throw e;
+    } finally {
+      rejection.off();
+    }
     this.#step("cart.signed", { mandate_id: signed.id, status: signed.status });
+    if (o.expectReject) {
+      // Сюжет 6 ждал отказа, а человек подписал: заказ не делается — сюжет оплату не показывает (паспорт 6 запрещает).
+      this.#step("reject.signed", { mandate_id: signed.id });
+      return;
+    }
     this.#signal.throwIfAborted();
     const order = await p.placeOrder(this.#key("order"));
     // Заказ в витрине продавца (К2.3, п. 5 задачи): номер и сумма — ответ витрины агенту (слова продавца), товар — выбор.
@@ -582,15 +928,24 @@ export class DemoScenarios {
     // С оплаты прерывание не принимается: пакет передан продавцу, итог придёт по событию Платформы (ревью К2.2а № 1–2).
     this.#paying = true;
     this.#payJournalFrom = this.#d.journal.entries.length;
-    const offConfirm = o.confirmation ? this.#watchConfirmation(cart.id) : undefined;
+    const confirm = o.confirmation ? this.#watchConfirmation(cart.id, o.expectDecline === true) : undefined;
     let op: Operation;
     try {
       op = await p.authorize(this.#key("pay"), this.#signal);
     } catch (e) {
       this.#shopReplies(order.orderId);
+      // Покупку не подтвердили (сюжет 7, П-04; и сюжет 4, если человек отклонил): ядро остановилось по решению или сроку
+      // запроса Платформы — CONFIRMATION_REJECTED или CONFIRMATION_EXPIRED. Сюжет только называет причину ядра. Если клиент
+      // подтвердил (confirmation.approved), а срок ссылки истёк до передачи продавцу, ядро тоже даёт CONFIRMATION_EXPIRED —
+      // это не «не подтверждено», а обычный шаг остановки (ревью П-11.1б № 1). После close() шагов нет (№ 6).
+      const reason = p.reason;
+      if ((reason === "CONFIRMATION_REJECTED" || reason === "CONFIRMATION_EXPIRED") && !confirm?.approved() && !this.#ac.signal.aborted) {
+        this.#step("upk.declined", { code: reason, order_id: order.orderId, mandate_id: cart.id, state: p.state });
+        return;
+      }
       throw e;
     } finally {
-      offConfirm?.();
+      confirm?.off();
     }
     this.#shopReplies(order.orderId);
     this.#remember(op);

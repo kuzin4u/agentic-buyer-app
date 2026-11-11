@@ -46,6 +46,14 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
       expect(ids).toEqual(expect.arrayContaining(["no-fraud", "no-owner-verdict", "agent-admitted", "agent-key-valid", "client-sign-only", "client-confirm-only", "client-revoke-only"]));
       const paid = p.expect.some((e) => e.match.ref === "operation.authorized");
       expect(paid || (ids.includes("no-paid") && ids.includes("no-outcome")), `${p.no}`).toBe(true);
+      // Запрет допуска — весь перечень AGENT_CODES; у паспорта 9 «Агент приостановлен» (П-07) — без двух кодов приостановления,
+      // и они там ожидаются (ревью П-11.1г № 9).
+      const admitted = [p.forbid.find((e) => e.id === "agent-admitted")!.match.code ?? []].flat();
+      const suspendedCodes = ["AGENT_SUSPENDED", "DECLINED_AGENT_SUSPENDED"];
+      if (p.name === "suspended") {
+        expect(admitted, `${p.no}`).toEqual(AGENT_CODES.filter((c) => !suspendedCodes.includes(c)));
+        expect(p.expect.some((e) => e.match.code === "AGENT_SUSPENDED")).toBe(true);
+      } else expect(admitted, `${p.no}`).toEqual([...AGENT_CODES]);
     }
   });
 
@@ -103,6 +111,14 @@ describe("паспорта пяти сюжетов (К2.1)", () => {
     const signs = (no: number) => PASSPORTS[no - 1]!.expect.find((e) => e.id === "client-signs")?.times;
     expect([1, 2, 3, 4, 5].map(signs)).toEqual([1, 1, 1, 2, undefined]);
     expect(PASSPORTS[4]!.forbid.some((f) => f.id === "no-sign")).toBe(true);
+  });
+
+  it("сюжет 6 (П-03): одно решение клиента в банке — отказ, тем же маршрутом, что подпись; корзина не подписана, заказа и реквизита нет", () => {
+    const p6 = PASSPORTS.find((p) => p.name === "reject")!;
+    expect(p6.no).toBe(6);
+    expect(p6.expect.find((e) => e.id === "client-signs")).toBeUndefined();
+    expect(p6.expect.find((e) => e.id === "client-decides")).toMatchObject({ times: 1, match: { stream: "monitor", actor: "client", source: ["stand"] } });
+    expect(p6.forbid.map((f) => f.id)).toEqual(expect.arrayContaining(["no-cart-signed", "no-order", "no-credential", "no-paid", "no-outcome"]));
   });
 
   it("сопоставление: заданные признаки совпадают все; «кто ошибся» — код, деталь, вердикт, все стороны", () => {

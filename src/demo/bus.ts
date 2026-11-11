@@ -15,7 +15,10 @@ import type { StandCall } from "agentic-ps-platform/stand";
 import type { JournalEntry } from "agentic-buyer-ref/src/agent/journal/index.js";
 import type { FeedItem } from "agentic-buyer-ref/src/agent/ports/events.js";
 import type { Money } from "agentic-buyer-ref/src/shared/domain.js";
-import { moneyView, type MoneyView } from "./money.js";
+import { moneyView, timeView, type MoneyView, type TimeView } from "./money.js";
+
+/** Параметры шагов сюжета — моменты времени (ISO 8601 от сюжета): в ленту — текстом по языку и машинным значением. */
+const TIME_PARAMS: ReadonlySet<string> = new Set(["valid_to"]);
 import type { ScenarioStep } from "./scenarios.js";
 
 export const MONITOR_CLASSES = ["mandate", "check", "credential", "payment", "outcome", "decline", "other"] as const;
@@ -50,7 +53,7 @@ export interface ScenarioLine {
   readonly seq: number;
   readonly at: string;
   readonly step: string;
-  readonly params: Readonly<Record<string, string | number | MoneyView>>;
+  readonly params: Readonly<Record<string, string | number | MoneyView | TimeView>>;
 }
 
 export interface MonitorEvent {
@@ -371,9 +374,16 @@ export class MonitorBus {
     // Порядок — по времени возникновения (Р-1364): журналы агента и стенда читаются опросом, поэтому до номера шага
     // дочитываются записи, которые уже произошли. Иначе шаг сюжета встаёт выше записей, которые он пересказывает (З4).
     this.#read(false);
-    const params: Record<string, string | number | MoneyView> = {};
+    const params: Record<string, string | number | MoneyView | TimeView> = {};
     for (const [k, v] of Object.entries(s.params)) {
-      if (typeof v === "string" || typeof v === "number") params[k] = v;
+      if (TIME_PARAMS.has(k) && typeof v === "string") {
+        // Момент — текст на обоих языках и машинное значение (П-11.1д-а); не по форме — шаг без него.
+        try {
+          params[k] = timeView(v);
+        } catch {
+          // время не по форме — шаг без него
+        }
+      } else if (typeof v === "string" || typeof v === "number") params[k] = v;
       else {
         try {
           params[k] = moneyView({ minor: v.amount, currency: v.currency });
