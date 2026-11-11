@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
+import { evaluate } from "../../src/pult/engine.js";
 import { createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
 import { graphView } from "../../src/pult/graph.js";
 import { buildTxModel } from "../../src/pult/tx.js";
@@ -233,6 +234,54 @@ describe("лента пульта (П-2.1)", () => {
     await new Promise((r) => setTimeout(r, 40));
     expect(p.board().cards[0]).toMatchObject({ column: "done", since: paid.at });
     expect(p.board().jumps.at(-1)).toEqual({ at: paid.at, id: "C6", from: "pay", to: "done" });
+    p.close();
+  });
+
+  it("П-4.1: в состоянии ленты — «Контроль»: порог из настройки (по умолчанию 15 с), «В работе сейчас» — незавершённые транзакции доски с колонкой и временем входа", async () => {
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0 });
+    expect(p.board().control).toMatchObject({ passports: [], waits: [], waitMs: 15_000, active: [], counts: { txs: 0, wrong: 0 } });
+    const created = step("cart.created", { mandate_id: "CK1", intent_id: "IK1" }, { stage: "cart" });
+    const ask = step("cart.awaiting_signature", { mandate_id: "CK1" }, { stage: "cart" });
+    f.push(created, ask);
+    await tick();
+    const c = p.board().control;
+    expect(c.active).toEqual([{ id: "CK1", column: "cart", since: created.at }]);
+    expect(c.waits).toEqual([{ kind: "consent", cond: "R18", obj: "CK1", since: ask.at }]);
+    expect(c.counts).toEqual({ txs: 1, wrong: 0 });
+    p.close();
+    const q = createPultFeed(fakeFeed().feed, { now: () => new Date(), debounceMs: 0, waitMs: 5_000 });
+    expect(q.board().control.waitMs).toBe(5_000);
+    q.close();
+  });
+
+  it("ревью П-4.1 № 5, № 16: ошибка в движке условий доску не гасит; прежние — только паспорта и число с паспортом, ожидания и «В работе сейчас» — свежие", async () => {
+    const f = fakeFeed();
+    let broken = false;
+    const p = createPultFeed(f.feed, {
+      now: () => new Date("2026-11-12T12:00:00Z"),
+      debounceMs: 0,
+      evaluate: (...a) => {
+        if (broken) throw new Error("сбой условия");
+        return evaluate(...a);
+      },
+    });
+    f.push(step("cart.created", { mandate_id: "CK5", intent_id: "IK5" }, { stage: "cart" }));
+    await tick();
+    const before = p.board().control;
+    expect(before.counts.txs).toBe(1);
+    expect(before.waits).toEqual([]);
+    broken = true;
+    const order = step("order.placed", { order_id: "OK5", mandate_id: "CK5" }, { stage: "payment" });
+    const req = event("confirmation.required", { confirmation_id: "QK5", order_id: "OK5" }, { stage: "confirmation" });
+    f.push(order, req);
+    await tick();
+    const after = p.board().control;
+    expect(p.board().cards[0]).toMatchObject({ id: "CK5", column: "confirmation" });
+    expect(after.passports).toBe(before.passports);
+    expect(after.counts).toEqual({ txs: 1, wrong: before.counts.wrong });
+    expect(after.active).toEqual([{ id: "CK5", column: "confirmation", since: req.at }]);
+    expect(after.waits).toEqual([{ kind: "confirmation", cond: "R21", obj: "CK5", confirmationId: "QK5", since: req.at }]);
     p.close();
   });
 

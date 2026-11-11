@@ -3,7 +3,7 @@
 // раскладка и её хранение, состояние ленты, фокус (крошки, Esc, `pult:select` → `pult:focus`, клавиатурный фокус),
 // доска (колонки, порядок «Завершены», счётчики без перестройки, выбор карточки нажатием).
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
 import { loadBrand } from "../../src/demo/server.js";
 import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
@@ -344,5 +344,74 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect(c.querySelector(".bc-id")!.textContent).toBe("<img src=x>");
     expect(c.querySelector(".bc-e")!.textContent).toContain("<b>en</b>");
     expect(c.querySelectorAll("img, b").filter((x) => x !== c.querySelector(".bc-id"))).toEqual([]);
+  });
+
+  it("П-4.1 «Контроль»: паспорта, «Идёт к нарушению» — только после порога (без новой записи), секунды без перестройки; «В работе сейчас»; ru/en; данные — текстом", () => {
+    const control = {
+      passports: [
+        {
+          obj: "<b>T1</b>",
+          findings: [{ cond: "R27", condText: { ru: "итог — от Платформы", en: "outcome — from the Platform" }, node: "У3", nodeText: { ru: "Итог", en: "Outcome" }, violator: "merchant", protector: "operator" }],
+        },
+      ],
+      waits: [
+        { kind: "confirmation", cond: "R21", obj: "T2", confirmationId: "Q2", since: "2026-11-10T12:00:00.000Z" },
+        { kind: "agent_step", obj: "P9", since: "2026-11-10T12:00:08.000Z" },
+        // R18 — реакции «Напомнить клиенту» нет (ревью П-4.1 № 10); порог пройдёт на 13-й секунде, как у «шага агента».
+        { kind: "consent", cond: "R18", obj: "T3", since: "2026-11-10T12:00:08.000Z" },
+      ],
+      waitMs: 15_000,
+      active: [{ id: "T2", column: "confirmation", since: "2026-11-10T12:00:00.000Z" }],
+      counts: { txs: 2, wrong: 1 },
+    };
+    const t0 = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(t0);
+    try {
+      for (const lang of ["ru", "en"] as const) {
+        const env = start({ lang });
+        env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [card("T2", "confirmation")], jumps: [], control } });
+        const box = $(env, "b-ctl");
+        expect(box.querySelector(".ctl-status")!.textContent).toBe(
+          `${PULT["ctl.status"][lang]}: 2 · ${PULT["ctl.status.wrong"][lang]}: 1 · ${PULT["ctl.status.waits"][lang]}: 0`,
+        );
+        const f = box.querySelector(".passport")!.querySelector(".pp-f")!.textContent;
+        expect(f).toBe(
+          `R27 ${lang === "en" ? "outcome — from the Platform" : "итог — от Платформы"} · ${PULT["ctl.node"][lang]} У3 ${lang === "en" ? "Outcome" : "Итог"} · ` +
+            `${PULT["ctl.violator"][lang]}: ${PULT["subj.merchant"][lang]} · ${PULT["ctl.protector"][lang]}: ${PULT["subj.operator"][lang]}`,
+        );
+        expect(box.querySelector(".pp-h")!.textContent).toBe("<b>T1</b>");
+        expect(box.querySelectorAll("b")).toEqual([]);
+        // 10 с с запроса — порог 15 с не пройден: строк нет.
+        expect(box.querySelectorAll(".wait-row")).toEqual([]);
+        const activeT = box.querySelector(".active-row")!.querySelector(".active-t")!;
+        expect(box.querySelector(".active-row")!.textContent).toBe(`T2 · ${PULT["col.confirmation"][lang]} · ${activeT.textContent}`);
+        const activeAt0 = activeT.textContent;
+        // Через 5 с без новой записи — строка R21 появилась; «шаг агента» (2 с + 5 с) — ещё нет.
+        clock.mockReturnValue(t0 + 5_000);
+        for (const i of env.intervals) i();
+        const rows = box.querySelectorAll(".wait-row");
+        expect(rows.map((r) => r.dataset.wait)).toEqual(["confirmation"]);
+        expect(rows[0]!.textContent).toBe(`R21 · ${PULT["ctl.wait.confirmation"][lang]} · T2 · Q2 · 15 ${PULT["card.sec"][lang]}${PULT["ctl.wait.action"][lang]}`);
+        // Ещё секунда — набор тот же: узел строки прежний, меняются только секунды; «В работе сейчас» тоже тикает.
+        const node = rows[0];
+        clock.mockReturnValue(t0 + 6_000);
+        for (const i of env.intervals) i();
+        expect(box.querySelectorAll(".wait-row")[0]).toBe(node);
+        expect(node!.querySelector(".wait-s")!.textContent).toBe(`16 ${PULT["card.sec"][lang]}`);
+        expect(box.querySelector(".active-t")!.textContent).not.toBe(activeAt0);
+        // Через 13 с — «возможно, чужая операция» (без условия и реакции) и R18 (без реакции «Напомнить клиенту»).
+        clock.mockReturnValue(t0 + 13_000);
+        for (const i of env.intervals) i();
+        const r2 = box.querySelectorAll(".wait-row");
+        expect(r2.map((r) => r.dataset.wait)).toEqual(["confirmation", "agent_step", "consent"]);
+        expect(r2[1]!.textContent).toBe(`${PULT["ctl.wait.agent_step"][lang]} · P9 · 15 ${PULT["card.sec"][lang]} — ${PULT["ctl.wait.agent_step.note"][lang]}`);
+        expect(r2[2]!.textContent).toBe(`R18 · ${PULT["ctl.wait.consent"][lang]} · T3 · 15 ${PULT["card.sec"][lang]}`);
+        // Внутренних кодов задач на экране нет (ревью П-4.1 № 10).
+        expect(box.textContent).not.toMatch(/[ПP]-\d/);
+        clock.mockReturnValue(t0);
+      }
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

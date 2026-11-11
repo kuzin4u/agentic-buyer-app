@@ -4,10 +4,12 @@
 import { describe, expect, it } from "vitest";
 import type { Interpretation, TxIds, Who } from "../../src/dashboards/interpret.js";
 import { evaluate, GUARANTEE_INFO, hasCardNumber, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
-import { CHECKABLE_CONDITIONS, isCheckable, RULES89 } from "../../src/pult/rules89.js";
+import { PULT } from "../../src/pult/phrases.js";
+import { CHECKABLE_CONDITIONS, isCheckable, PARTIES, RULES89 } from "../../src/pult/rules89.js";
 import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
+import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
 import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
 
 let seq = 0;
@@ -699,5 +701,209 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     expect(vs.find((v) => v.cond === "R46")).toMatchObject({ kind: "violation", violator: "undetermined" });
     expect(vs.find((v) => v.cond === "R17")).toMatchObject({ kind: "protection", protector: "undetermined" });
     expect(vs.find((v) => v.cond === "R46")!.violator).not.toBe("agent");
+  });
+});
+
+// П-4.1 (решение владельца — отзыв PR #9 «(чат, 11.11) — ответ на план П-4.1»): «Контроль» пульта — паспорта по правилу
+// паспорта (решение по П-3.3, 3; ревью П-3.3 № 7 — проверка по правилу, не по виду вердикта), «Идёт к нарушению» с порогом
+// 15 с (У-01…У-03), «операция без шага агента — возможно, чужая операция» (условие Р-1478) — предположение, не паспорт.
+describe("«Контроль» пульта (П-4.1)", () => {
+  const vsOf = (items: Interpretation[], log: StandLogEntry[] = []) => {
+    const model = buildTxModel(items);
+    return { model, vs: verdicts(evaluate(model, items, { standLog: log }), model, items) };
+  };
+
+  it("правило паспорта: нарушитель — участник или «не определён» — паспорт есть; нарушителя нет или «решение клиента» — нет", () => {
+    expect(hasPassport({ violator: "agent" })).toBe(true);
+    expect(hasPassport({ violator: "undetermined" })).toBe(true);
+    expect(hasPassport({ violator: "client_decision" })).toBe(false);
+    expect(hasPassport({})).toBe(false);
+  });
+
+  it("паспорта по задаче: Н-03, Н-08 (защита сработала, но нарушитель есть) — с паспортом; П-06, П-08 — без; набор паспортов = вердикты с паспортом по правилу", () => {
+    const cases: [string, () => { items: Interpretation[]; log?: StandLogEntry[] }, boolean][] = [
+      ["Н-03", () => ({ items: purchase("X3"), log: [fault("PAID_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OX3" }, "Н-03")] }), true],
+      [
+        "Н-08",
+        () => ({
+          items: purchase("X8", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OX8", mandate_id: "CX8" }, { code: "MANDATE_SCOPE" })] } }),
+          log: [entry("MARKED", { order_id: "OX8" }, { test: "Н-08" })],
+        }),
+        true,
+      ],
+      ["П-06", () => ({ items: purchase("X6", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OX6", mandate_id: "CX6" }, { code: "MANDATE_SCOPE" })] } }) }), false],
+      [
+        "П-08",
+        () => ({
+          items: purchase("X9", {
+            skip: ["start", "pay", "done"],
+            at: { end: () => [event("mandate.revoked", { mandate_id: "CX9" }, { stage: "revoke" }), step("failed", { order_id: "OX9", mandate_id: "CX9" }, { code: "MANDATE_REVOKED" })] },
+          }),
+        }),
+        false,
+      ],
+    ];
+    for (const [name, make, want] of cases) {
+      const { items, log } = make();
+      const { vs } = vsOf(items, log ?? []);
+      // Вердикты есть (пустой набор дал бы «паспорта нет» даром — ревью П-4.1 № 7).
+      expect(vs.length, name).toBeGreaterThan(0);
+      const ps = passports(vs);
+      expect(ps.length > 0, name).toBe(want);
+      // Без паспорта — нарушителя нет или это «решение клиента»; с паспортом — нарушитель задан и не клиент.
+      if (!want) expect(vs.every((v) => v.violator === undefined || v.violator === "client_decision"), name).toBe(true);
+      else expect(vs.some((v) => v.violator !== undefined && v.violator !== "client_decision"), name).toBe(true);
+    }
+    // По правилу, а не по виду вердикта: Н-03 — вид «защита сработала», нарушитель — продавец, паспорт есть.
+    const n03 = vsOf(purchase("X3b"), [fault("PAID_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OX3b" }, "Н-03")]).vs;
+    expect(n03.find((v) => v.cond === "R27")).toMatchObject({ kind: "protection", violator: "merchant" });
+    expect(passports(n03).flatMap((p) => p.findings).map((f) => f.cond)).toContain("R27");
+    // П-08 — отзыв поручения клиентом: «решение клиента», не нарушение.
+    const p08 = vsOf(cases[3]![1]().items).vs;
+    expect(p08.some((v) => v.violator === "client_decision")).toBe(true);
+  });
+
+  it("находка паспорта: условие и его формулировка ru/en, узел, нарушитель, защитник", () => {
+    const { vs } = vsOf(purchase("X4"), [fault("PAID_BEFORE_OUTCOME", { shop_id: "SHOP-1", merchant_id: "MER-1", order_id: "OX4" }, "Н-03")]);
+    const f = passports(vs).find((p) => p.obj === "CX4")!.findings.find((x) => x.cond === "R27")!;
+    expect(f).toMatchObject({ cond: "R27", node: "У3", violator: "merchant", protector: "operator" });
+    expect(f.condText?.ru.length && f.condText?.en.length).toBeTruthy();
+    expect(f.nodeText?.en).toBe("Outcome — only from the Platform");
+  });
+
+  it("«Идёт к нарушению»: поручение ждёт подписи (R08), корзина — согласия (R18), подтверждение — ответа (R21); порог 15 с; ответ снимает ожидание", () => {
+    const sign = [step("intent.awaiting_signature", { mandate_id: "IY1" }, { stage: "mandate" })];
+    const consent = purchase("Y2", { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [step("cart.awaiting_signature", { mandate_id: "CY2" }, { stage: "cart" })] } });
+    const conf = purchase("Y3", { skip: ["pay", "done"], at: { end: () => [event("confirmation.required", { confirmation_id: "QY3", order_id: "OY3" }, { stage: "confirmation" })] } });
+    const items = [...sign, ...consent, ...conf];
+    const ws = waits(buildTxModel(items), items);
+    expect(ws.map((w) => [w.kind, w.cond, w.obj])).toEqual([
+      ["sign", "R08", "IY1"],
+      ["consent", "R18", "CY2"],
+      ["confirmation", "R21", "CY3"],
+    ]);
+    const since = Date.parse(ws[0]!.since);
+    expect(dueWaits(ws.slice(0, 1), new Date(since + WAIT_MS - 1).toISOString())).toEqual([]);
+    expect(dueWaits(ws.slice(0, 1), new Date(since + WAIT_MS).toISOString())).toHaveLength(1);
+    expect(WAIT_MS).toBe(15_000);
+    expect(ws[2]!.confirmationId).toBe("QY3");
+  });
+
+  // Ревью П-4.1 № 6: ответ и отказ снимают каждое ожидание — без фильтров.
+  const wOf = (items: Interpretation[]) => waits(buildTxModel(items), items).map((w) => [w.kind, w.obj, w.confirmationId]);
+  const ask = (n: string) => step("cart.awaiting_signature", { mandate_id: `C${n}` }, { stage: "cart" });
+  const creq = (q: string, ord: string) => event("confirmation.required", { confirmation_id: q, order_id: ord }, { stage: "confirmation" });
+  const cfin = (q: string, ord: string, ref: string) => event(ref, { confirmation_id: q, order_id: ord }, { stage: "confirmation" });
+
+  it("ответ снимает ожидание: R08 — подпись или отказ клиента (№ 1); R18 — подпись или отказ корзины; R21 — одобрено, отклонено, истекло", () => {
+    const sign = (i: string) => step("intent.awaiting_signature", { mandate_id: i }, { stage: "mandate" });
+    expect(wOf([sign("IZ1"), event("mandate.signed", { mandate_id: "IZ1" })])).toEqual([]);
+    // Отклонил — решение клиента, а не «идёт к нарушению» (ревью П-4.1 № 1).
+    expect(wOf([sign("IZ2"), event("mandate.rejected", { mandate_id: "IZ2" })])).toEqual([]);
+    for (const ref of ["mandate.signed", "mandate.rejected"]) {
+      const n = `Z3${ref.length}`;
+      expect(wOf(purchase(n, { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [ask(n), event(ref, { mandate_id: `C${n}` })] } })), ref).toEqual([]);
+    }
+    for (const ref of ["confirmation.approved", "confirmation.rejected", "confirmation.expired"]) {
+      const n = `Z4${ref.length}`;
+      expect(wOf(purchase(n, { skip: ["pay", "done"], at: { end: () => [creq(`Q${n}`, `O${n}`), cfin(`Q${n}`, `O${n}`, ref)] } })), ref).toEqual([]);
+    }
+  });
+
+  it("ревью П-4.1 № 2: повтор после отказа — его запрос подтверждения ждёт ответа (итог «отказ» не снимает ожидание повтора)", () => {
+    const items = purchase("Z5", {
+      skip: ["done"],
+      at: {
+        end: () => [
+          event("operation.declined", { op_ref: "PZ5", order_id: "OZ5" }, { stage: "outcome" }),
+          step("outcome", { op_ref: "PZ5", order_id: "OZ5", mandate_id: "CZ5" }, { stage: "outcome" }),
+          creq("QZ5b", "OZ5"),
+        ],
+      },
+    });
+    expect(buildTxModel(items).txs[0]!.outcome?.kind).toBe("declined");
+    expect(wOf(items)).toEqual([["confirmation", "CZ5", "QZ5b"]]);
+    // № 15: запрос открыт до отказа операции, закрывающего события нет, повтора нет — ожидания нет (операция уже
+    // отклонена); гарантии, что Платформа закрывает запрос событием, нет.
+    const stale = purchase("Z6", {
+      skip: ["done"],
+      at: {
+        end: () => [
+          creq("QZ6", "OZ6"),
+          event("operation.declined", { op_ref: "PZ6", order_id: "OZ6" }, { stage: "outcome" }),
+          step("outcome", { op_ref: "PZ6", order_id: "OZ6", mandate_id: "CZ6" }, { stage: "outcome" }),
+        ],
+      },
+    });
+    expect(buildTxModel(stale).txs[0]!.outcome?.kind).toBe("declined");
+    expect(wOf(stale)).toEqual([]);
+    // То же с повтором после отказа — виден только запрос повтора.
+    expect(wOf([...stale, creq("QZ6b", "OZ6")])).toEqual([["confirmation", "CZ6", "QZ6b"]]);
+    // № 20: повтор P2 тоже отклонён, его запрос не закрыт — отсечка по последнему отказу, ожидания нет; третий повтор — виден.
+    const second = [
+      ...stale,
+      creq("QZ6b", "OZ6"),
+      event("operation.declined", { op_ref: "PZ6b", order_id: "OZ6" }, { stage: "outcome" }),
+      step("outcome", { op_ref: "PZ6b", order_id: "OZ6", mandate_id: "CZ6" }, { stage: "outcome" }),
+    ];
+    expect(wOf(second)).toEqual([]);
+    expect(wOf([...second, creq("QZ6c", "OZ6")])).toEqual([["confirmation", "CZ6", "QZ6c"]]);
+    // После «оплачено» ждать нечего.
+    const paid = purchase("Z5p", { at: { end: () => [creq("QZ5p", "OZ5p")] } });
+    expect(buildTxModel(paid).txs[0]!.outcome?.kind).toBe("paid");
+    expect(wOf(paid)).toEqual([]);
+  });
+
+  it("ревью П-4.1 № 3 (правило вердикта, решение владельца): при конфликте звеньев R21 по номеру подтверждения — показывается; «шаг агента» — нет", () => {
+    const one = purchase("ZK1", { skip: ["order", "start", "pay", "done"] });
+    const two = purchase("ZK2", { skip: ["order", "start", "pay", "done"] });
+    const tail = [
+      step("order.placed", { order_id: "OZK", mandate_id: "CZK1", merchant_id: "MER-1" }),
+      step("order.placed", { order_id: "OZK", mandate_id: "CZK2", merchant_id: "MER-2" }),
+      creq("QZK", "OZK"),
+      event("operation.authorized", { op_ref: "PZKF", order_id: "OZK" }, { stage: "outcome" }),
+    ];
+    const items = [...one, ...two, ...tail];
+    const t = buildTxModel(items).txs.find((x) => x.linkConflict)!;
+    expect(t).toBeDefined();
+    expect(wOf(items)).toEqual([["confirmation", t.id, "QZK"]]);
+  });
+
+  it("ревью П-4.1 № 4: транзакция без корзины, шаг агента по операции пришёл — «операция без шага агента» не показывается", () => {
+    const items = [event("operation.authorized", { op_ref: "PZN", order_id: "OZN" }, { stage: "outcome" }), step("outcome", { op_ref: "PZN", order_id: "OZN" }, { stage: "outcome" })];
+    const t = buildTxModel(items).txs[0]!;
+    expect(t.cartMandateId).toBeUndefined();
+    expect(t.pendingOps).toEqual(["PZN"]);
+    expect(wOf(items)).toEqual([]);
+    // Без шага — строка есть.
+    expect(wOf(items.slice(0, 1))).toEqual([["agent_step", "PZN", undefined]]);
+  });
+
+  it("ревью П-4.1 № 14: поручение-намерение отозвано — корзина согласия уже не ждёт", () => {
+    const items = purchase("Z7", { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [ask("Z7"), event("mandate.revoked", { mandate_id: "IZ7" }, { stage: "revoke" })] } });
+    expect(buildTxModel(items).mandates.find((m) => m.id === "IZ7")!.status).toBe("revoked");
+    expect(wOf(items)).toEqual([]);
+    expect(wOf(items.slice(0, -1))).toEqual([["consent", "CZ7", undefined]]);
+  });
+
+  it("ревью П-4.1 № 12: у каждого участника — подпись ru и en (новый участник без подписи не пройдёт)", () => {
+    for (const s of [...PARTIES, "undetermined"] as const) {
+      const ph = PULT[`subj.${s}`];
+      expect(ph?.ru.length && ph?.en.length, s).toBeTruthy();
+    }
+  });
+
+  it("условие Р-1478: чужая операция с тем же номером заказа — «возможно, чужая операция» в «Идёт к нарушению», паспорта не даёт", () => {
+    const items = [...purchase("Y5"), event("operation.authorized", { op_ref: "PFOREIGN", order_id: "OY5" })];
+    const { model, vs } = vsOf(items);
+    // Итог транзакции — по своей операции P1 (связана шагом агента), чужая — «ждём шаг агента».
+    expect(model.txs[0]).toMatchObject({ outcome: { kind: "paid" }, pendingOps: ["PFOREIGN"] });
+    const ws = waits(model, items);
+    expect(ws).toEqual([expect.objectContaining({ kind: "agent_step", obj: "PFOREIGN" })]);
+    expect(ws[0]!.cond).toBeUndefined();
+    expect(passports(vs)).toEqual([]);
+    const c = controlView(model, items, vs, []);
+    expect(c.counts).toEqual({ txs: 1, wrong: 0 });
+    expect(c.waitMs).toBe(WAIT_MS);
   });
 });

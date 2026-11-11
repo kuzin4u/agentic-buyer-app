@@ -459,11 +459,89 @@
     });
   }
 
+  // ---- «Контроль» (П-4.1): паспорта по правилу паспорта, «Идёт к нарушению», «В работе сейчас» ----
+  // Порог «Идёт к нарушению» применяет экран по «сейчас» (часы шины + время у экрана): строка появляется и без новой
+  // записи. «Операция без шага агента — возможно, чужая операция» — предположение, не паспорт (условие Р-1478).
+  const ctlBox = document.getElementById("b-ctl");
+  const txt = (t) => (t && typeof t === "object" ? t[lang === "en" ? "en" : "ru"] || t.ru || "" : "");
+  const subj = (s) => label("subj." + s);
+  let ctlDueKey = "";
+  const dueWaits = () => {
+    const c = board && board.control;
+    if (!c || !Array.isArray(c.waits)) return [];
+    const now = nowMs();
+    return c.waits.filter((w) => now - Date.parse(w.since) >= c.waitMs);
+  };
+  // Ключ набора строк: два запроса подтверждения одной транзакции различаются номером (ревью П-4.1 № 9).
+  const dueKey = (ws) => ws.map((w) => w.kind + ":" + w.obj + ":" + (w.confirmationId || "")).join("|");
+  const waitSeconds = (since) => Math.max(0, Math.round((nowMs() - Date.parse(since)) / 1000));
+
+  function renderCtl() {
+    if (!ctlBox || !board || !board.control) return;
+    const c = board.control;
+    const wrap = document.createDocumentFragment();
+    const due = dueWaits();
+    ctlDueKey = dueKey(due);
+    wrap.appendChild(
+      el("p", label("ctl.status") + ": " + c.counts.txs + " · " + label("ctl.status.wrong") + ": " + c.counts.wrong + " · " + label("ctl.status.waits") + ": " + due.length, "ctl-status"),
+    );
+    wrap.appendChild(el("h3", label("ctl.passports"), "ctl-h"));
+    if (c.passports.length === 0) wrap.appendChild(el("p", label("ctl.passports.none"), "muted"));
+    for (const ps of c.passports) {
+      const box = el("div", undefined, "passport");
+      box.dataset.obj = ps.obj || "";
+      box.appendChild(el("div", ps.obj || label("ctl.system"), "pp-h"));
+      for (const f of ps.findings) {
+        const parts = [];
+        if (f.cond) parts.push(f.cond + (f.condText ? " " + txt(f.condText) : ""));
+        if (f.node) parts.push(label("ctl.node") + " " + f.node + (f.nodeText ? " " + txt(f.nodeText) : ""));
+        parts.push(label("ctl.violator") + ": " + subj(f.violator));
+        if (f.protector) parts.push(label("ctl.protector") + ": " + subj(f.protector));
+        if (f.note === "race_c28") parts.push(label("ctl.race_c28"));
+        box.appendChild(el("div", parts.join(" · "), "pp-f"));
+      }
+      wrap.appendChild(box);
+    }
+    wrap.appendChild(el("h3", label("ctl.waits"), "ctl-h"));
+    if (due.length === 0) wrap.appendChild(el("p", label("ctl.waits.none"), "muted"));
+    for (const w of due) {
+      const row = el("div", undefined, "wait-row");
+      row.dataset.wait = w.kind;
+      row.appendChild(el("span", (w.cond ? w.cond + " · " : "") + label("ctl.wait." + w.kind) + " · " + w.obj + (w.confirmationId ? " · " + w.confirmationId : "") + " · "));
+      const s = el("span", waitSeconds(w.since) + " " + label("card.sec"), "wait-s");
+      s.dataset.since = w.since;
+      row.appendChild(s);
+      // «Возможно, чужая операция» — предположение, не нарушение: реакции нет (условие Р-1478). Реакция «Напомнить
+      // клиенту» — только у подтверждения: стенд продлевает срок запроса подтверждения (ревью П-4.1 № 10).
+      if (w.kind === "agent_step") row.appendChild(el("span", " — " + label("ctl.wait.agent_step.note")));
+      else if (w.kind === "confirmation") row.appendChild(el("div", label("ctl.wait.action"), "muted"));
+      wrap.appendChild(row);
+    }
+    wrap.appendChild(el("h3", label("ctl.active"), "ctl-h"));
+    if (!Array.isArray(c.active) || c.active.length === 0) wrap.appendChild(el("p", label("ctl.active.none"), "muted"));
+    for (const a of c.active || []) {
+      const row = el("div", a.id + " · " + label("col." + a.column) + " · ", "active-row");
+      // Время в стадии тикает раз в секунду, как на карточках доски (ревью П-4.1 № 8).
+      const t = el("span", stageText(a.since), "active-t");
+      t.dataset.since = a.since;
+      row.appendChild(t);
+      wrap.appendChild(row);
+    }
+    while (ctlBox.firstChild) ctlBox.removeChild(ctlBox.firstChild);
+    ctlBox.appendChild(wrap);
+  }
+
   document.addEventListener("pult:focus", renderProc);
   // Раз в секунду — только текст счётчиков доски и положения «Графика»: узлы не пересоздаются, фокус и щелчок не теряются
   // (ревью П-2.1 № 4).
   setInterval(() => {
     if (!board) return;
+    // «Контроль»: набор строк «Идёт к нарушению» сменился (порог пройден) — перестроить; иначе — только секунды.
+    if (dueKey(dueWaits()) !== ctlDueKey) renderCtl();
+    else if (ctlBox) {
+      for (const s of ctlBox.querySelectorAll(".wait-s")) s.textContent = waitSeconds(s.dataset.since) + " " + label("card.sec");
+      for (const t of ctlBox.querySelectorAll(".active-t")) t.textContent = stageText(t.dataset.since);
+    }
     if (state.mode === "graph") {
       layoutGraph();
       return;
@@ -492,6 +570,7 @@
       boardAt = Date.now();
       syncMerchants();
       renderProc();
+      renderCtl();
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если
