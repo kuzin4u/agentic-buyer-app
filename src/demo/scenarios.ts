@@ -201,10 +201,14 @@ export class DemoScenarios {
   /** Срок поручения сюжета 10, секунд. */
   readonly #expirySec: number;
 
-  constructor(d: DemoStand, emit: StepSink, o: { expirySec?: number } = {}) {
+  /** Занят ли драйвер нарушителя «ПР» (П7): он ходит тем же ключом агента — сюжет одновременно с ним не стартует. */
+  readonly #otherBusy: () => boolean;
+
+  constructor(d: DemoStand, emit: StepSink, o: { expirySec?: number; otherBusy?: () => boolean } = {}) {
     this.#d = d;
     this.#emit = emit;
     this.#expirySec = o.expirySec ?? EXPIRY_SEC;
+    this.#otherBusy = o.otherBusy ?? (() => false);
   }
 
   /** Сумма и причина отказа операции, как их вернуло ядро (GET операции после события), — для строки события в мониторе:
@@ -272,7 +276,7 @@ export class DemoScenarios {
 
   /** Запустить сюжет; ход — в консоль шагами. Возвращает сразу: подпись человека может занять минуты. */
   start(name: ScenarioName): ScenarioStart {
-    if (this.#running) return { ok: false, code: "BUSY" };
+    if (this.#running || this.#otherBusy()) return { ok: false, code: "BUSY" };
     if (NEEDS_INTENT.has(name) && (!this.#purchase || !this.#intentActive)) return { ok: false, code: "NEED_INTENT" };
     // У каждого сюжета — свой сигнал отмены (кнопка «прервать»), вместе с общим (close).
     const run = new AbortController();

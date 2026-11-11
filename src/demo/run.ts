@@ -46,7 +46,11 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
   let driver: FaultyDriver | undefined;
   try {
     // Сюжеты пишут шаги в шину; шина берёт у сюжетов сумму операции для строки итога. Связь — через замыкания.
-    const sc = new DemoScenarios(stand, (s) => bus?.scenario(s), { ...(o.expirySec !== undefined && { expirySec: o.expirySec }) });
+    // Сюжет и нарушитель «ПР» — взаимно исключаются (ревью П-11.3а № 4): оба ходят ключом агента.
+    const sc = new DemoScenarios(stand, (s) => bus?.scenario(s), {
+      ...(o.expirySec !== undefined && { expirySec: o.expirySec }),
+      otherBusy: () => driver?.busy ?? false,
+    });
     scenarios = sc;
     const b = new MonitorBus({
       calls: () => stand.stand.calls(),
@@ -74,7 +78,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
     bus = b;
     b.start();
     // Драйвер нарушителя «ПР» (П7): только при режиме сбоев — без флага экземпляр не создаётся и ключ не загружается.
-    const faulty = stand.faults ? new FaultyDriver(stand, (s) => b.scenario(s)) : undefined;
+    const faulty = stand.faults ? new FaultyDriver(stand, (s) => b.scenario(s), { otherBusy: () => sc.busy }) : undefined;
     driver = faulty;
     const monitor = await startMonitorServer({
       bus: b,

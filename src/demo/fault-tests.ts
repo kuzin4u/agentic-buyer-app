@@ -8,4 +8,4 @@ export type FaultTest = (typeof FAULT_TESTS)[number];
 
 export const isFaultTest = (s: string): s is FaultTest => (FAULT_TESTS as readonly string[]).includes(s);
 
-export type FaultStart = { ok: true } | { ok: false; code: "BUSY" | "NOT_READY" };
+export type FaultStart = { ok: true } | { ok: false; code: "BUSY" | "NOT_READY" | "CLOSED" };

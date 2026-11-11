@@ -55,7 +55,7 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "run.unconfirmed": p("Начат сюжет 7 «Клиент не подтвердил покупку»", "Scenario 7 “The client did not confirm the purchase” started"),
   "run.scope": p("Начат сюжет 8 «Продавец вне поручения»", "Scenario 8 “Merchant outside the mandate” started"),
   "run.suspended": p("Начат сюжет 9 «Агент приостановлен»", "Scenario 9 “The agent is suspended” started"),
-  "fault.start": p("Нарушитель (ПР) — драйвер приложения: нарушение {test}", "Violator (ПР) — app driver: violation {test}"),
+  "run.fault": p("Нарушитель (ПР) — драйвер приложения: начато нарушение {test}", "Violator (ПР) — app driver: violation {test} started"),
   "fault.refused": p("Нарушитель (ПР): нарушение {test} остановлено защитой — {code}", "Violator (ПР): violation {test} stopped by a safeguard — {code}"),
   "fault.marked": p("Нарушитель (ПР): нарушение {test} совершено и помечено на стенде", "Violator (ПР): violation {test} committed and marked on the stand"),
   "fault.failed": p("Нарушитель (ПР): нарушение {test} не разыграно — {code}", "Violator (ПР): violation {test} not played — {code}"),
