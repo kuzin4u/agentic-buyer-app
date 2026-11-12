@@ -12,6 +12,7 @@ import type { Role } from "../dashboards/interpret.js";
 import { localStandSource } from "../dashboards/source.js";
 import { INSTANCE_HEADER, STAND_LOG_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
 import type { BusItem, MonitorBus } from "./bus.js";
+import { isStandFaultTest, type StandFaultResult, type StandFaultTest } from "./stand-faults.js";
 import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
@@ -75,6 +76,9 @@ export interface MonitorServerOptions {
   /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
    *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
   clientEmulator?: { setAuto(on: boolean): boolean };
+  /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев: маршрут
+   *  `POST /stand-fault/<Н-xx>/arm|disarm`. Нет — маршрута нет (404). */
+  standFaults?: { arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult; disarm(test: StandFaultTest): StandFaultResult };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -341,6 +345,24 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       }
       // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
       return send(res, 404, plain, t(lang, "http.not_found"));
+    }
+    // Сбой стенда «П» человеком (П-11.2б, В10): только POST, только при режиме сбоев, только со страниц этого сервера (Origin);
+    // тест — только из перечня «П», настройки — параметрами адреса из перечня теста. Всё прочее под `/stand-fault/` — 404; без
+    // режима сбоев — 404 на любой путь, до разбора (как `/fault/`). Путь сверяется сырым — раскодируется только сегмент теста,
+    // `%2F` разделителем не становится (ревью П-11.2б № 3).
+    if (u.pathname.startsWith("/stand-fault/")) {
+      if (!o.standFaults) return send(res, 404, plain, t(lang, "http.not_found"));
+      const m = /^\/stand-fault\/([^/]+)\/(arm|disarm)$/.exec(u.pathname);
+      let test: string | undefined;
+      try {
+        test = m ? decodeURIComponent(m[1]!) : undefined;
+      } catch {
+        test = undefined;
+      }
+      if (req.method !== "POST" || !m || test === undefined || !isStandFaultTest(test)) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const r = m[2] === "arm" ? o.standFaults.arm(test, u.searchParams) : o.standFaults.disarm(test);
+      return send(res, r.ok ? 200 : r.code === "BAD_OPTION" ? 400 : 409, "application/json; charset=utf-8", JSON.stringify(r));
     }
     // «Решения людей: Авто» (П5 п. 4, доп. 1; Р-1499): только POST, только при эмуляторе (его создаёт лишь сборка `run.ts` при
     // режиме сбоев), только со страниц этого сервера (Origin), без тела. Всё прочее под `/client/` — 404 на любой метод, и при

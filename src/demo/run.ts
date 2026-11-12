@@ -3,6 +3,7 @@ import { LOCAL_STAND_EMULATED } from "../dashboards/interpret.js";
 import { MonitorBus } from "./bus.js";
 import { ClientEmulator } from "./client-emulator.js";
 import { FaultyDriver } from "./faulty.js";
+import { lastCardMerchant, StandFaults } from "./stand-faults.js";
 import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
@@ -91,6 +92,17 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       ? new ClientEmulator({ issuer: stand.stand.issuer, answerCart: (agree) => sc.answerCart(agree), subscribe: (fn) => b.subscribe(fn), emit: (s) => b.scenario(s) })
       : undefined;
     emulator = clientEmulator;
+    // Сбои стенда «П» человеком (П-11.2б): только при режиме сбоев; витрина по умолчанию — карточка идущего прогона (В8).
+    const standFaults =
+      stand.faults && stand.stand.demo
+        ? new StandFaults({
+            demo: stand.stand.demo,
+            // «Идущего прогона» (В8) — только пока сюжет идёт: после итога или «прервать» продавец прошлого прогона не берётся
+            // (ревью П-11.2б № 1). У драйвера «ПР» карточек нет — и так SHOP_REQUIRED.
+            currentMerchant: () => (sc.busy ? lastCardMerchant(b.history()) : undefined),
+            emit: (s) => b.scenario(s),
+          })
+        : undefined;
     const monitor = await startMonitorServer({
       bus: b,
       urls: stand.urls,
@@ -114,6 +126,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       faults: stand.faults,
       ...(faulty && { faulty }),
       ...(clientEmulator && { clientEmulator }),
+      ...(standFaults && { standFaults }),
     });
     return {
       stand,

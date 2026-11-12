@@ -203,6 +203,9 @@ const ru = {
   "step.client.confirm_failed": "Эмулятор клиента: решение по запросу {confirmation_id} не прошло — {status}, {code}.",
   "step.client.revoked": "Эмулятор клиента: отозвал поручение {mandate_id} в банке — по сценарию теста.",
   "step.client.revoke_failed": "Эмулятор клиента: отзыв поручения {mandate_id} не прошёл — {status}, {code}.",
+  // Сбой стенда «П», взведённый человеком (П-11.2б): не нарушитель (ПР) и не эмулятор клиента.
+  "step.stand_fault.armed": "Сбой стенда (П) {test} взведён человеком — витрина {shop_id}, продавец {merchant_id}.",
+  "step.stand_fault.disarmed": "Сбой стенда (П) {test} снят человеком.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
     "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
@@ -469,6 +472,8 @@ const en: Record<MessageKey, string> = {
   "step.client.confirm_failed": "Client emulator: the decision on request {confirmation_id} failed — {status}, {code}.",
   "step.client.revoked": "Client emulator: revoked mandate {mandate_id} in the bank — per the test scenario.",
   "step.client.revoke_failed": "Client emulator: revoking mandate {mandate_id} failed — {status}, {code}.",
+  "step.stand_fault.armed": "Stand fault (П) {test} armed by a person — shop {shop_id}, merchant {merchant_id}.",
+  "step.stand_fault.disarmed": "Stand fault (П) {test} disarmed by a person.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":
     "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",

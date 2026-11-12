@@ -96,6 +96,9 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "client.confirm_failed": p("Эмулятор клиента: решение по запросу[ {confirmation_id}] не прошло[ — {code}]", "Client emulator: the decision on request[ {confirmation_id}] failed[ — {code}]"),
   "client.revoked": p("Эмулятор клиента: отозвал поручение[ {mandate_id}] в банке", "Client emulator: revoked mandate[ {mandate_id}] in the bank"),
   "client.revoke_failed": p("Эмулятор клиента: отзыв поручения[ {mandate_id}] не прошёл[ — {code}]", "Client emulator: revoking mandate[ {mandate_id}] failed[ — {code}]"),
+  // Сбой стенда «П», взведённый человеком (П-11.2б).
+  "stand_fault.armed": p("Сбой стенда (П) {test} взведён человеком[ — продавец {merchant_id}]", "Stand fault (П) {test} armed by a person[ — merchant {merchant_id}]"),
+  "stand_fault.disarmed": p("Сбой стенда (П) {test} снят человеком", "Stand fault (П) {test} disarmed by a person"),
   "fault.failed": p("Нарушитель (ПР): нарушение {test} не разыграно — {code}", "Violator (ПР): violation {test} not played — {code}"),
   "run.expired": p("Начат сюжет 10 «Срок поручения истёк»", "Scenario 10 “The mandate has expired” started"),
   "expiry.wait": p("Поручение[ {mandate_id}] действует до {valid_to} — сюжет ждёт конца срока", "Mandate[ {mandate_id}] is valid until {valid_to} — the scenario waits for it to expire"),

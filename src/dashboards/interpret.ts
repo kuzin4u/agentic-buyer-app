@@ -375,6 +375,8 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   fault: "service",
   // Эмулятор клиента «Авто» (П5, доп. 1): пометка действия за клиента; сам факт (подпись, решение) — запись стенда.
   client: "service",
+  // Сбой стенда «П», взведённый человеком (П-11.2б): настройка стенда, не стадия покупки.
+  stand_fault: "service",
   failed: "outcome",
   aborted: "service",
 };
@@ -430,7 +432,10 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   // квалификации не получает. Признак — имя шага: параметр `source: "client-emulator"` есть на шине, но линия дашбордов его не
   // несёт (WIRE_SCENARIO_PARAMS), поэтому префикс `client.` закреплён за эмулятором — шагов сюжета с ним нет.
   const byEmulator = head === "client";
-  const actor = byEmulator ? "client" : own(STEP_ACTOR, l.step) ?? "agent";
+  // Сбой стенда «П» человеком (П-11.2б) — не действие агента: участник — Платформа (эмулятор), потому что стенд сам называет
+  // сбои своего перечня «сбоем Платформы» (РП75 п. 3, `dist/stand/demo.js`); образец — шаги оператора Системы `operator.*`.
+  const byStand = head === "stand_fault";
+  const actor = byEmulator ? "client" : byStand ? "platform" : own(STEP_ACTOR, l.step) ?? "agent";
   const p = own(PHRASES.scenario, l.step);
   const phrase = p ? fill(p, l.params) : fallback("Шаг сюжета", "Scenario step", l.step);
   let kind: Kind = "norm";
@@ -466,7 +471,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
     stage: (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
     actor,
-    emulated: byEmulator || env.emulated.includes(actor),
+    emulated: byEmulator || byStand || env.emulated.includes(actor),
     kind,
     phrase,
     ...(who && { who }),
