@@ -271,7 +271,7 @@ export interface BusSources {
   /** keyid принадлежит нашему агенту. */
   isAgentKid(kid: string): boolean;
   /** Запись подтверждения стенда только для чтения — источник суммы. */
-  confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
+  confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string; mandate_id?: string } | undefined>;
   /** Сумма (у ядра), причина отказа (ответ ADP) и чей предел (уведомление банку) по операции; нет — событие без них. */
   operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string; orderRef?: string } | undefined>;
   /** Журнал сбоев и действий стенда (`stand.demo.log()`) — только при режиме сбоев; нет — потока `stand` на шине нет. */
@@ -455,8 +455,16 @@ export class MonitorBus {
       try {
         const rec = await this.#src.confirmation(rest.ids.confirmation_id);
         if (rec) {
-          // Из записи П6 — только сумма, валюта и номер заказа; остальные поля записи не читаются.
-          ids = { ...ids, order_id: rec.order_ref };
+          // Из записи П6 — только сумма, валюта, номер заказа и поручение корзины; остальные поля записи не читаются.
+          // Поручение корзины (П-11.5в) — связка «подтверждение → корзина» для модели транзакций, как `order_id` (П-1.2,
+          // Р-1442): `confirmation.expired` / `rejected` по ПАО несут только `confirmation_id`, без него транзакция — «связь не
+          // подтверждена» и итога «истёк» нет (ревью П-2.1 № 12, П-8.1). Уточняет Р-1460: связь подтверждения с корзиной —
+          // `mandate_id` события **или записи подтверждения Платформы** (данные Платформы, не витрины); номер заказа витрины
+          // связью по-прежнему не считается. Своё поле события важнее записи; по ПАО 1.4.0 своего поручения у событий
+          // подтверждения нет — при подъёме тега сверить, не разойдутся ли они (тогда — не дописывать). Источник — запись
+          // стенда (П6, чтение): в песочнице ACC-2 связь нужна полем события ПАО или чтением подтверждения через порт.
+          const cart = typeof rec.mandate_id === "string" && rec.mandate_id !== "" && ids.mandate_id === undefined ? { mandate_id: rec.mandate_id } : {};
+          ids = { ...ids, order_id: rec.order_ref, ...cart };
           amount = moneyView({ minor: rec.amount, currency: rec.currency });
         }
       } catch {
