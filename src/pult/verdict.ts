@@ -55,6 +55,10 @@ const BY_RULE: Readonly<Record<RuleCause, Row>> = {
   expired_platform_decline: { protector: "platform" },
   inactive_agent_stop: { violator: "undetermined", protector: "agent" }, // MANDATE_NOT_ACTIVE: отзыв или срок — не различить
   inactive_platform_decline: { violator: "undetermined", protector: "platform" },
+  // П-03 (Р-1538): MANDATE_NOT_ACTIVE после отказа клиента от корзины в банке — решение клиента, паспорта нет.
+  rejected_agent_stop: { violator: "client_decision", protector: "agent" },
+  rejected_platform_decline: { violator: "client_decision", protector: "platform" },
+  rejected_undetermined: { violator: "client_decision", protector: "undetermined" },
   // Остановка только в шаге сюжета — рассказ стенда, не доказательство: защитник «не определён» (П-5.1, Р-1519).
   revoked_undetermined: { violator: "client_decision", protector: "undetermined" },
   expired_undetermined: { protector: "undetermined" },
@@ -210,7 +214,9 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
   // П-03: клиент отказался подписать корзину — событие Платформы `mandate.rejected` по поручению корзины.
   for (const t of model.txs) {
     const rej = t.seqs.map((s) => bySeq.get(s)).find((x) => x?.source === "pao_event" && x.ref === "mandate.rejected" && x.ids?.mandate_id === t.cartMandateId);
-    if (rej) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
+    // Остановка после отказа уже дала R09 «решение клиента» (Р-1538) — тот же отказ второй раз не считается.
+    const viaR09 = out.some((v) => v.obj === t.id && v.cond === "R09" && v.cause?.kind === "rule" && v.cause.rule.startsWith("rejected_"));
+    if (rej && !viaR09) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
   }
   return out;
 }

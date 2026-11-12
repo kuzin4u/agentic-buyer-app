@@ -426,7 +426,9 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
 
 /** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
  *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
-const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped", "expiry.refused"]);
+/** Шаги остановки сюжета. Второй потребитель — R26 пульта (`src/pult/engine.ts`, Р-1537): шаг, добавленный сюда не как
+ *  остановка, изменит и R26. */
+export const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped", "expiry.refused"]);
 
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;

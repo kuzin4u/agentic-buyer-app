@@ -9,7 +9,7 @@
 // П-3.2в: R20, R23, R25, R27, R31, R32, R47 — по журналу сбоев стенда (`standlog.ts`, В9), пометки «ПР» (`MARKED`) —
 // к R17, R18, R26, R37, R46, R47 (В8; решение владельца — PR #9 #pullrequestreview-5861020062); срок R31 — от «сейчас»,
 // переданного аргументом.
-import type { Interpretation } from "../dashboards/interpret.js";
+import { STOP_STEPS, type Interpretation } from "../dashboards/interpret.js";
 import type { Phrase } from "./phrases.js";
 import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Party, type Rule89 } from "./rules89.js";
 import { STAND_DELAY_MAX_MS, type StandLogEntry, type StandLogWhat, type StandTest } from "./standlog.js";
@@ -38,7 +38,7 @@ export const worstStatus = (list: readonly CondStatus[], empty: CondStatus = "na
   list.reduce<CondStatus | undefined>((a, s) => (a === undefined || RANK[s] < RANK[a] ? s : a), undefined) ?? empty;
 
 /** Пометка к статусу: почему он такой. */
-export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction", "scope_or_expiry"] as const;
+export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction", "scope_or_expiry", "late_unlinked"] as const;
 export type Note = (typeof NOTES)[number];
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
@@ -61,6 +61,11 @@ export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   scope_or_expiry: p(
     "отказ «вне области поручения», срока поручения на шине нет — вне пределов или срок, не различить",
     "a refusal as “outside the mandate”, the mandate term is not on the bus — outside the mandate or expired, cannot tell",
+  ),
+  // Р-1537: запись стенда о задержанном итоге без номера операции — после срока не «ждёт» навсегда.
+  late_unlinked: p(
+    "стенд задержал итог без номера операции — срок прошёл, сверить не с чем",
+    "the stand delayed an outcome without an operation number — the deadline has passed, nothing to match it against",
   ),
 };
 /** Записи журнала стенда о напоминании клиенту (кнопка «Напомнить клиенту», `remindClient`): первое — с продлением срока,
@@ -93,10 +98,15 @@ export const RULE_CAUSES = [
   "expired_platform_decline", // R09: срок поручения истёк — отказала Платформа
   "inactive_agent_stop", // R09: MANDATE_NOT_ACTIVE без признака отзыва или срока — агент остановился сам
   "inactive_platform_decline", // R09: то же — отказала Платформа
+  // R09: MANDATE_NOT_ACTIVE после отказа клиента от корзины в банке (`mandate.rejected` этой корзины) — решение клиента
+  // (П-03; Р-1538): поручение не вступило в силу по выбору клиента, нарушителя нет
+  "rejected_agent_stop",
+  "rejected_platform_decline",
   // R09: остановка видна только в шаге сюжета (рассказ стенда) — кто остановил, не доказано (П-5.1, Р-1519)
   "revoked_undetermined",
   "expired_undetermined",
   "inactive_undetermined",
+  "rejected_undetermined",
   // R17: остановка вне пределов поручения (MANDATE_SCOPE); кто остановил — `stoppedBy` (П-5.1, ревью П-5.1 № 1, Р-1519)
   "mandate_scope_platform", // отказ Платформы на запрос
   "mandate_scope_agent", // журнал агента
@@ -421,10 +431,22 @@ function txConds(
   const stopCause = (): RuleCause => {
     const codes = new Set(notActiveRecs.map((x) => x.who!.code));
     const revokedEv = all.some((x) => isEvent(x, "mandate.revoked") && [t.cartMandateId, t.intentId].includes(mid(x)));
+    // П-03 (Р-1538): клиент отказался от корзины в банке — событие Платформы `mandate.rejected` этой корзины не позже первой
+    // остановки (по времени записей, не по порядку шины: событие ленты может прийти на шину позже журнала агента — Нюансы
+    // STATUS); без события — как раньше («не определён»). Только если оплата не начиналась и «оплачено» нет: оплата после
+    // отказа клиента — не его решение, след нарушения остаётся (ревью блока ложных вердиктов № 1). Часы: время события —
+    // лента ПАО (часы стенда), журнала агента — часы процесса; сейчас одни системные часы, пока стенд их не сдвигает
+    // (STATUS «Открыто», ревью П-5.1а № 2).
+    const firstStop = Math.min(...notActiveRecs.map((x) => Date.parse(x.at)));
+    const rejectedEv =
+      !paid &&
+      !started &&
+      t.cartMandateId !== undefined &&
+      all.some((x) => isEvent(x, "mandate.rejected") && mid(x) === t.cartMandateId && Date.parse(x.at) <= firstStop);
     // По всем записям транзакции и её намерения: журнал агента может сослаться на поручение-намерение (ревью П-5.1 № 2).
     const s = stoppedBy(all.filter((x) => x.who?.code !== undefined && NOT_ACTIVE.has(x.who.code)), STOP_CODES_NOT_ACTIVE);
     const by = s === "platform" ? "platform_decline" : s === "agent" ? "agent_stop" : "undetermined";
-    const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : "inactive";
+    const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : rejectedEv ? "rejected" : "inactive";
     return `${why}_${by}` as RuleCause;
   };
   out.R09 = t.afterRevoke
@@ -505,7 +527,17 @@ function txConds(
 
   // R26: оплата — тому продавцу, у которого заказ: все обращения к витрине по заказу (номер в пути) — одна витрина.
   // Номер витрины в шаге заказа — merchant_id (другое пространство номеров), поэтому сверка — по shop_id обращений.
-  if (pays.length === 0) out.R26 = t.orderIds.length > 0 ? r("wait") : r("na");
+  // Оплаты нет, а покупка закончилась без неё — итог Платформы не «оплачено» (отказ, отклонение, отзыв — и кнопкой
+  // «Остановить покупку»), остановка в журнале агента или шаг остановки сюжета — «не применяется», а не «ждёт» навсегда
+  // (Р-1537; ревью П-3.2б № 10).
+  // «Оплачено» от Платформы или операция без итога — не остановка, даже при записи остановки (обращение к витрине могло
+  // уйти за окно или быть чужим ключом): R26 тогда «ждёт», а не прячет оплату (повторное ревью блока № 1).
+  const stoppedUnpaid =
+    !paid &&
+    t.ops.every((op) => op.kind !== undefined) &&
+    (t.outcome !== undefined ||
+      recs.some((x) => (x.stream === "console" && (x.ref === "agent.refused" || x.ref === "purchase.unfinished")) || (x.stream === "scenario" && STOP_STEPS.has(x.ref))));
+  if (pays.length === 0) out.R26 = t.orderIds.length > 0 && !stoppedUnpaid ? r("wait") : r("na");
   else {
     const byOrder = new Map<string, Set<string>>();
     for (const x of recs) {
@@ -604,7 +636,8 @@ function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: read
  *  «Открыто». Уровни по старшинству, решает первый, на котором нашёлся кандидат: операция (`op_ref`) → запрос
  *  подтверждения (`confirmation_id`) → заказ (`order_id`, `order_ref` — номер заказа в запросе реквизита; при `shop_id` в
  *  записи — только транзакции, где заказ с этим номером был у этой витрины) → поручение корзины → поручение-намерение →
- *  поручение без покупки. Неточная привязка (`weak`): кандидатов несколько — запись ко всем, но статус не выше «ждёт»;
+ *  поручение без покупки. На уровне заказа при `mandate_id` в записи — без транзакций, чьё поручение ему противоречит
+ *  (Р-1537, Н-02). Неточная привязка (`weak`): кандидатов несколько — запись ко всем, но статус не выше «ждёт»;
  *  привязка только номером заказа к транзакции с конфликтом звеньев — тоже. Не нашлось — запись системы. */
 function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly string[]; readonly weak: boolean } {
   const { op_ref: p, confirmation_id: q, mandate_id: md, shop_id: sh } = e.ids;
@@ -617,8 +650,16 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
   for (const c of levels) if (c.length > 0) return pack(c);
   if (ord !== undefined) {
     // Номера заказов разных витрин могут совпасть: при `shop_id` — только транзакции, где этот заказ был у этой витрины
-    // (обращений к витрине по заказу нет — судить не по чему, транзакция остаётся кандидатом).
-    const c = model.txs.filter((t) => t.orderIds.includes(ord) && (sh === undefined || !t.shopsByOrder[ord] || t.shopsByOrder[ord]!.includes(sh)));
+    // (обращений к витрине по заказу нет — судить не по чему, транзакция остаётся кандидатом). При `mandate_id` в записи —
+    // без транзакций, чьё поручение ему противоречит: у Н-02 `shop_id` нет, и номер заказа нашей покупки с чужим
+    // поручением давал «нарушено» у нашей (Р-1537; ревью П-3.2г № 3); такая запись привязывается ниже — по поручению.
+    // Поручений у транзакции нет (только заказ) — противоречить нечему, кандидат остаётся.
+    const fits = (t: PultTx) => {
+      if (md === undefined) return true;
+      const own = [t.cartMandateId, t.intentId, ...(t.linkConflict?.carts ?? []), ...(t.linkConflict?.intents ?? [])].filter((x): x is string => x !== undefined);
+      return own.length === 0 || own.includes(md);
+    };
+    const c = model.txs.filter((t) => t.orderIds.includes(ord) && (sh === undefined || !t.shopsByOrder[ord] || t.shopsByOrder[ord]!.includes(sh)) && fits(t));
     if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
   }
   if (md !== undefined) {
@@ -728,16 +769,26 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     // Окно записей конечно (лента пульта, шина), журнал стенда — нет: запись старше первой записи окна не судится — её
     // транзакция могла уйти из окна, «нет на шине» тогда ложно (повторное ревью П-3.2в № A).
     const windowFrom = items.length > 0 ? Math.min(...items.map((x) => Date.parse(x.at))) : undefined;
+    // Записи позднего итога без `op_ref` после срока: судить не по чему — не «ждёт» навсегда, а пометка (Р-1537; повторное
+    // ревью П-3.2в № D). Статус условия — от объектов и других записей («соблюдено» или «не применяется»), не выше.
+    const unlinked: number[] = [];
     for (const e of systemLog) {
       for (const [c, st] of effectsOf(e)) raise(system, c, st, e);
       if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
       const p = e.ids.op_ref;
       const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
+      if (p === undefined && overdue) {
+        unlinked.push(e.seq);
+        continue;
+      }
       const lost = p !== undefined && overdue && !seenOps.has(p);
       raise(system, "R31", lost ? "bad" : "wait", e);
       // Причина R31 «нарушено» — потерянный итог (пульт), а не сам сбой задержки стенда.
       if (lost && system.R31!.status === "bad") system.R31 = { ...system.R31!, cause: { kind: "rule", rule: "late_lost" } };
     }
+    // Записи — в доказательствах при любом статусе; пометка — только когда статус лучше «ждёт» (ревью блока № 6).
+    const r31 = system.R31!;
+    if (unlinked.length > 0) system.R31 = { ...r31, ...(RANK[r31.status] > RANK.wait && { note: "late_unlinked" as const }), log: [...(r31.log ?? []), ...unlinked] };
   }
   // Остановка, записанная по поручению-намерению с одной покупкой, — остановка этой покупки: одна остановка — одна защита
   // (ревью П-5.1 № 2).
