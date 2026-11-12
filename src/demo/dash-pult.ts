@@ -1,11 +1,14 @@
 // Страница пульта DEMO-2 (П-1.1, модель пульта 1.23): каркас — четыре панели в сетке 2×2 или вкладками, разворот
 // панели, переключатель «Пульт · Экран · Монитор». Разметка без данных шины — панели наполняет скрипт
 // `public/pult/pult.js` через createElement и textContent (инвариант 4, П2 п. 2). Язык ru/en, бренд из конфигурации
-// (правило совместимости 3, инвариант 7).
+// (правило совместимости 3, инвариант 7). Скрипты окна Б (П-9.4, Р-1523 В16 (а)): «Ленты» `feeds.js` (П-5.2) — после
+// `pult.js`, с подписями на языке страницы сразу (без них до первого сообщения ленты видны были бы ключи). Клавиши `keys.js`
+// (П-9.1) подключаются вместе со справкой П-9.2 — в ней переключатель, которым клавиши выключаются (WCAG 2.1.4).
 import type { Brand } from "../brand.js";
 import type { WireLang } from "../dashboards/wire.js";
 import { BOARD_COLUMNS } from "../pult/board.js";
 import { rulesForPage } from "../pult/conditions.js";
+import { feedsLabels } from "../pult/feeds.js";
 import { PANES, PULT, type Pane } from "../pult/phrases.js";
 import type { Rule89 } from "../pult/rules89.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -81,6 +84,8 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
 <script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>
+<script id="feeds-i18n" type="application/json">${jsonForScript(feedsLabels(lang))}</script>
+<script src="/pult/feeds.js"></script>
 </body>
 </html>`;
 }

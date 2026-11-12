@@ -19,8 +19,17 @@
   } catch {
     // словарь страницы не по форме — русский
   }
+  // Подписи — сразу со страницей (`#feeds-i18n`, П-9.4): до первого сообщения ленты и при оборванной ленте не видны ключи;
+  // первое сообщение `hello` их подтверждает.
   let L = {};
-  const label = (k) => (Object.prototype.hasOwnProperty.call(L, k) && typeof L[k] === "string" ? L[k] : k);
+  try {
+    const own = document.getElementById("feeds-i18n");
+    const v = own ? JSON.parse(own.textContent) : null;
+    if (v && typeof v === "object") L = v;
+  } catch {
+    // нет подписей со страницей — до `hello` ключи
+  }
+  const label =(k) => (Object.prototype.hasOwnProperty.call(L, k) && typeof L[k] === "string" ? L[k] : k);
   const str = (v) => (typeof v === "string" ? v : "");
 
   const VIEWS = ["plain", "bus"];

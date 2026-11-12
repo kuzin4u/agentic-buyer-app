@@ -34,6 +34,9 @@ describe("клавиши пульта (П-9.1)", () => {
     key(env, "2");
     expect(grid.classList.contains("max")).toBe(true);
     expect(env.document.getElementById("p-ctl")!.classList.contains("is-max")).toBe(true);
+    // П-9.4 (ревью П-9.1 № 6): фокус клавиатуры — на заголовок выбранной панели.
+    expect(env.document.activeElement).toBe(env.document.getElementById("h-ctl"));
+    expect(env.document.getElementById("h-ctl")!.getAttribute("tabindex")).toBe("-1");
     key(env, "2");
     expect(grid.classList.contains("max")).toBe(false);
     // При развёрнутой панели клавиша другой панели разворачивает её.

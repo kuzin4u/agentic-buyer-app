@@ -54,7 +54,9 @@
    *  своей панели не нужна (иначе при развёрнутой панели нельзя было бы развернуть другую). */
   const press = (selector, view) => {
     const b = document.querySelector(selector);
-    if (b && !b.hidden && !b.disabled && b.closest("[hidden]") === null && (!view || paneShown(b))) b.click();
+    if (!b || b.hidden || b.disabled || b.closest("[hidden]") !== null || (view && !paneShown(b))) return false;
+    b.click();
+    return true;
   };
 
   document.addEventListener("keydown", (ev) => {
@@ -63,7 +65,14 @@
     if (k >= "1" && k <= "4" && k.length === 1) {
       const pane = PANES[Number(k) - 1];
       const grid = document.getElementById("grid");
-      press(grid && grid.classList.contains("tabs") ? "[data-tab='" + pane + "']" : "[data-max='" + pane + "']", false);
+      const done = press(grid && grid.classList.contains("tabs") ? "[data-tab='" + pane + "']" : "[data-max='" + pane + "']", false);
+      // Фокус клавиатуры — на заголовок выбранной панели, только если нажатие сработало: чтец экрана называет, куда перешли
+      // (ревью П-9.1 № 6, П-9.4 № 5).
+      const h = done ? document.getElementById("h-" + pane) : null;
+      if (h) {
+        if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+        h.focus();
+      }
     } else if (k >= "5" && k <= "8" && k.length === 1) {
       press(VIEWS[Number(k) - 5], true);
     } else if (k === "?") {
