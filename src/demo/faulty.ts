@@ -409,6 +409,10 @@ export class FaultyDriver {
   /** Снять сбой стенда, взведённый драйвером на время ветки (`arm` таблицы); null — снимать нечего. Вызывается при любом
    *  исходе: конец ветки, «прервать», закрытие драйвера — и только один раз. */
   #disarm: (() => void) | null = null;
+  /** Тест, чей сбой стенда держит ветка (взвела драйвер и ещё не сняла); null — не держит. Пока держит, взвод и снятие этого
+   *  теста человеком отклоняются (П-11.2в, П7 доп. 2): у стенда один взвод на тест, чужой взвод перезаписал бы витрину
+   *  нарушителя, а снятие драйвером в конце ветки сняло бы и сбой человека. */
+  #held: FaultTest | null = null;
 
   constructor(d: DemoStand, emit: StepSink, o: FaultyOptions = {}) {
     // Без режима сбоев драйвера нет (П7 п. 2): ни ключа, ни клиента.
@@ -437,6 +441,11 @@ export class FaultyDriver {
   /** Занят — пока идёт ветка и пока не пришли ответы на все её запросы. */
   get busy(): boolean {
     return this.#running !== null;
+  }
+
+  /** Держит ли ветка взвод сбоя стенда этого теста (П-11.2в): взвод драйвером на время ветки, до снятия. */
+  holds(test: string): boolean {
+    return this.#disarm !== null && this.#held === test;
   }
 
   /** Есть ли у теста ветка (кирпичи П-11.3б–д). */
@@ -653,7 +662,10 @@ export class FaultyDriver {
           const disarm = (): void => {
             if (done) return;
             done = true;
-            if (this.#disarm === disarm) this.#disarm = null;
+            if (this.#disarm === disarm) {
+              this.#disarm = null;
+              this.#held = null;
+            }
             // `disarm` стенда бросает только при выключенных сбоях или чужом тесте — здесь недостижимо; если всё же бросил,
             // шага «снят» нет — несоответствие видно на шине (№ 6). Шаг на шину после снятия: его сбой снятие не отменяет.
             try {
@@ -664,6 +676,7 @@ export class FaultyDriver {
             }
           };
           this.#disarm = disarm;
+          this.#held = test;
           this.#step("fault.note.armed", { test, shop_id: VIOLATOR_SHOP.id });
         }
       }

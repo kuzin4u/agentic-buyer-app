@@ -9,6 +9,10 @@
 // Настройки — только из перечня стенда для этого теста (`OPTIONS_BY_TEST`, `dist/stand/demo.js` v0.48.0): иное — 400
 // BAD_OPTION до обращения к стенду. Отказ стенда (неизвестная витрина, срок вне 1…60 000) — 409 ARM_REJECTED: текст исключения
 // стенда наружу не идёт. Каждый взвод и снятие — шаг на шине `stand_fault.*` с пометкой «человеком».
+//
+// Человек и драйвер «ПР» (П-11.2в, П7 доп. 2): у стенда один взвод на тест. Пока ветка драйвера держит взвод своего теста,
+// взвод и снятие этого теста человеком — 409 HELD_BY_DRIVER (иначе взвод человека перезаписал бы витрину нарушителя, а снятие
+// драйвером в конце ветки сняло бы и сбой человека). Взвод человека до ветки драйвер не трогает и не «держит».
 import type { StandDemo } from "agentic-ps-platform/stand";
 import type { BusItem } from "./bus.js";
 import type { StepSink } from "./scenarios.js";
@@ -84,6 +88,9 @@ export interface StandFaultPorts {
   /** Продавец карточки идущего прогона (по умолчанию для Н-03, Н-04, Н-05). */
   readonly currentMerchant: () => string | undefined;
   readonly emit: StepSink;
+  /** Держит ли ветка драйвера «ПР» взвод этого теста (П-11.2в, П7 доп. 2): тогда взвод и снятие человеком — 409
+   *  HELD_BY_DRIVER. Нет драйвера — не держит. */
+  readonly held?: (test: StandFaultTest) => boolean;
 }
 
 export class StandFaults {
@@ -94,6 +101,7 @@ export class StandFaults {
   }
 
   arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult {
+    if (this.#p.held?.(test)) return { ok: false, code: "HELD_BY_DRIVER" };
     const parsed = parseOptions(test, q);
     if (!parsed) return { ok: false, code: "BAD_OPTION" };
     let options = parsed;
@@ -121,6 +129,7 @@ export class StandFaults {
   }
 
   disarm(test: StandFaultTest): StandFaultResult {
+    if (this.#p.held?.(test)) return { ok: false, code: "HELD_BY_DRIVER" };
     let removed: boolean;
     try {
       removed = this.#p.demo.disarm(test);

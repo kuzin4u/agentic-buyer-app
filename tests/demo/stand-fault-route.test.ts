@@ -6,6 +6,8 @@ import type { StandDemo } from "agentic-ps-platform/stand";
 import type { BusItem } from "../../src/demo/bus.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import type { ScenarioStep } from "../../src/demo/scenarios.js";
+import { FaultyDriver } from "../../src/demo/faulty.js";
+import { MASSA_MADRE as VIOLATOR_SHOP } from "../../src/demo/shops.js"; // витрина нарушителя драйвера (faulty.ts)
 import { lastCardMerchant, OPTIONS_BY_TEST, parseOptions, STAND_FAULT_TESTS, StandFaults } from "../../src/demo/stand-faults.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { PHRASES } from "../../src/dashboards/phrases.js";
@@ -193,6 +195,95 @@ describe("П-11.2б: маршрут при режиме сбоев (живой �
     const after = await call(`/stand-fault/${encodeURIComponent("Н-03")}/arm`);
     expect(await after.json()).toEqual({ ok: false, code: "SHOP_REQUIRED" });
   }, 90_000);
+});
+
+describe("П-11.2в: человек и драйвер «ПР» не мешают друг другу (П7 доп. 2; STATUS — один сбой «П» на тест)", { timeout: 60_000 }, () => {
+  let demo: Demo;
+  beforeAll(async () => {
+    demo = await startDemo({ faults: true });
+  }, 30_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("пока ветка Н-05 держит свой взвод — взвод и снятие Н-05 человеком 409 HELD_BY_DRIVER, витрина нарушителя цела; после ветки — 200", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((ok) => (release = ok));
+    const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+      branches: { "Н-05": { run: async () => gate } },
+      otherBusy: () => demo.scenarios.busy,
+    });
+    const human = new StandFaults({ demo: demo.stand.stand.demo!, currentMerchant: () => undefined, emit: (s) => demo.bus.scenario(s), held: (t) => d.holds(t) });
+    const log = () => demo.stand.stand.demo!.log();
+    const shop = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+    const from = log().length;
+    expect(d.holds("Н-05")).toBe(false);
+    expect(d.start("Н-05")).toEqual({ ok: true });
+    // Удержание — сразу после start(), в том же такте: окна между взводом и удержанием нет (ревью П-11.2в № 3).
+    expect(d.holds("Н-05")).toBe(true);
+    expect(d.holds("Н-03")).toBe(false); // держит только свой тест
+    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
+    expect(human.disarm("Н-05")).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
+    // Стенд видел только взвод драйвера — на витрину нарушителя; ни перезаписи, ни снятия человеком.
+    expect(log().slice(from).map((e) => `${e.what} ${e.test}`)).toEqual(["ARMED Н-05"]);
+    release();
+    await d.settled();
+    expect(d.holds("Н-05")).toBe(false);
+    expect(log().slice(from).map((e) => `${e.what} ${e.test}`)).toEqual(["ARMED Н-05", "DISARMED Н-05"]);
+    // После ветки — человек снова может.
+    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toMatchObject({ ok: true });
+    expect(human.disarm("Н-05")).toMatchObject({ ok: true });
+    await d.close();
+  });
+
+  it("сборка: взвод человеком через сборку видит ветку драйвера сборки — сразу после start() 409, после ветки 200 (ревью П-11.2в № 2)", async () => {
+    const shop = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+    await demo.faulty!.settled();
+    expect(demo.faulty!.start("Н-05")).toEqual({ ok: true });
+    // В том же такте: настоящая ветка Н-05 ещё не дошла до первого запроса, взвод драйвера уже держится.
+    expect(demo.standFaults!.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
+    expect(demo.standFaults!.disarm("Н-05")).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
+    await demo.faulty!.settled();
+    expect(demo.standFaults!.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toMatchObject({ ok: true });
+    expect(demo.standFaults!.disarm("Н-05")).toMatchObject({ ok: true });
+  });
+
+  for (const how of ["abort", "close"] as const)
+    it(`«${how === "abort" ? "прервать" : "закрытие драйвера"}» снимает удержание сразу: человек взводит, запоздалое снятие ветки его сбой не трогает (ревью № 3)`, async () => {
+      const shop = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+      let release!: () => void;
+      const gate = new Promise<void>((ok) => (release = ok));
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches: { "Н-05": { run: async () => gate } }, otherBusy: () => demo.scenarios.busy, closeWaitMs: 50 });
+      const human = new StandFaults({ demo: demo.stand.stand.demo!, currentMerchant: () => undefined, emit: (s) => demo.bus.scenario(s), held: (t) => d.holds(t) });
+      const log = () => demo.stand.stand.demo!.log();
+      expect(d.start("Н-05")).toEqual({ ok: true });
+      expect(d.holds("Н-05")).toBe(true);
+      if (how === "abort") expect(d.abort()).toEqual({ ok: true });
+      else await d.close();
+      expect(d.holds("Н-05")).toBe(false);
+      expect(human.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toMatchObject({ ok: true });
+      const from = log().length;
+      release();
+      await d.settled();
+      expect(log().slice(from).filter((e) => e.test === "Н-05" && e.what === "DISARMED")).toEqual([]); // сбой человека цел
+      expect(human.disarm("Н-05")).toMatchObject({ ok: true });
+      if (how === "abort") await d.close();
+    });
+
+  it("взвод человека до ветки драйвер не трогает и не «держит» — человек снимает его сам", async () => {
+    const shop = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+    let release!: () => void;
+    const gate = new Promise<void>((ok) => (release = ok));
+    const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches: { "Н-05": { run: async () => gate } }, otherBusy: () => demo.scenarios.busy });
+    const human = new StandFaults({ demo: demo.stand.stand.demo!, currentMerchant: () => undefined, emit: (s) => demo.bus.scenario(s), held: (t) => d.holds(t) });
+    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toMatchObject({ ok: true });
+    expect(d.start("Н-05")).toEqual({ ok: true });
+    expect(d.holds("Н-05")).toBe(false); // взвод человека уже был — драйвер его не взводил и не держит (сразу, без ожидания)
+    release();
+    await d.settled();
+    expect(human.disarm("Н-05")).toMatchObject({ ok: true }); // сбой человека цел — драйвер его не снял
+    await d.close();
+  });
 });
 
 describe("П-11.2б: без режима сбоев маршрута нет", () => {

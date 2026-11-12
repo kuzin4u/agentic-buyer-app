@@ -33,6 +33,8 @@ export interface Demo {
   readonly faulty?: FaultyDriver;
   /** Эмулятор клиента «Авто» — только при режиме сбоев (П5); без флага его нет. */
   readonly clientEmulator?: ClientEmulator;
+  /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев. */
+  readonly standFaults?: StandFaults;
   readonly monitor: MonitorServer;
   close(): Promise<void>;
 }
@@ -101,6 +103,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
             // (ревью П-11.2б № 1). У драйвера «ПР» карточек нет — и так SHOP_REQUIRED.
             currentMerchant: () => (sc.busy ? lastCardMerchant(b.history()) : undefined),
             emit: (s) => b.scenario(s),
+            // Взвод, который держит ветка драйвера «ПР», человек не трогает (П-11.2в, П7 доп. 2).
+            held: (t) => faulty?.holds(t) ?? false,
           })
         : undefined;
     const monitor = await startMonitorServer({
@@ -134,6 +138,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       scenarios: sc,
       ...(faulty && { faulty }),
       ...(clientEmulator && { clientEmulator }),
+      ...(standFaults && { standFaults }),
       monitor,
       close: async () => {
         await clientEmulator?.close().catch(() => undefined);
