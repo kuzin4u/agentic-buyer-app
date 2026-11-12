@@ -18,6 +18,7 @@ import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
 import { pultPage } from "./dash-pult.js";
 import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
+import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -274,6 +275,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const controlJs = o.dashboards ? PUBLIC("dash/control.js") : "";
   const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
   const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
+  const pultFeedsJs = o.dashboards ? PUBLIC("pult/feeds.js") : "";
   const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
   const scenarioNames: ReadonlySet<string> = new Set([...BASE_SCENARIOS, ...(o.moreScenarios ?? []).map((s) => s.name)]);
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
@@ -282,6 +284,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   let control: (ControlFeed & { recompute(): void }) | undefined;
   /** Лента пульта поверх ленты «Интерпретации» (П-2.1): модель транзакций и доска. */
   let pult: PultFeed | undefined;
+  /** «Ленты» пульта (П-5.2) поверх ленты «Интерпретации»: своя лента `/pult/feeds`, логику ленты пульта не трогает. */
+  let feeds: FeedsFeed | undefined;
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
     res.writeHead(status, {
@@ -462,6 +466,28 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return send(res, 200, "text/javascript; charset=utf-8", pultJs);
         case "/pult/focus.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultFocusJs);
+        case "/pult/feeds.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultFeedsJs);
+        case "/pult/feeds": {
+          // «Ленты» (П-5.2, Р-1523 В17 (а)): подписи на языке страницы, текущий вид, затем новые виды. Только чтение; запись —
+          // только в открытый поток (sseWrite). Журнала стенда и полей вне интерпретаций здесь нет.
+          const fd = feeds!;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          sseWrite(res, { type: "hello", labels: feedsLabels(lang) });
+          sseWrite(res, { type: "feeds", view: fd.view() });
+          const off = fd.subscribe((e: FeedsEvent) => void sseWrite(res, e));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
         case "/pult/pult.css":
           return send(res, 200, "text/css; charset=utf-8", pultCss);
         case "/pult/events": {
@@ -561,6 +587,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     });
     control = createControlFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
     pult = createPultFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
+    feeds = createFeedsFeed(feed);
   }
   return {
     url,
@@ -572,6 +599,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       // чтение /events сам (reader.cancel, К1.4г) — иначе на Node 20 и 22 закрытие ждало бы само себя.
       control?.close();
       pult?.close();
+      feeds?.close();
       await feed?.close().catch(() => undefined);
       await new Promise<void>((ok) => {
         for (const r of sse) r.end();
