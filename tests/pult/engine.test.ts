@@ -77,6 +77,25 @@ const tx = (items: Interpretation[]): CondResults => run(items).objs.find((o) =>
 const statuses = (c: CondResults) => Object.fromEntries(CHECKABLE_CONDITIONS.map((k) => [k, c[k].status]));
 const seqOf = (items: Interpretation[], ref: string) => items.find((x) => x.ref === ref)!.seq;
 
+/** Стендовая форма П-06 / П-09 (сюжеты 8 и 10; П-5.1а, Р-1536): поручение без покупки, срок — в шаге `intent.created`
+ *  (`validTo`, П-11.5б окна Б), отказ ядра `MANDATE_OUT_OF_SCOPE` — запись журнала агента и шаг сюжета. Шаг сюжета 8
+ *  (`scope.refused`) несёт только `intent_id`, сюжета 10 (`expiry.refused`) — `mandate_id`, как на живой шине. `term` —
+ *  срок относительно записи журнала агента: `later` — срок позже отказа (П-06), `same` — ровно в момент отказа,
+ *  `earlier` — срок раньше отказа (П-09), `none` — срока нет. `journal: false` — остановка только в шаге сюжета. */
+function coreRefusal(id: string, term: "later" | "same" | "earlier" | "none", o: { journal?: boolean; kind?: "scope" | "expiry" } = {}): Interpretation[] {
+  const created = step("intent.created", { mandate_id: id }, { stage: "mandate" });
+  const head = [step("intent.awaiting_signature", { mandate_id: id }, { stage: "mandate" }), call(SIGN, { mandate_id: id }, "stand"), event("mandate.signed", { mandate_id: id })];
+  const j = o.journal === false ? [] : [journal("agent.refused", { mandate_id: id }, "MANDATE_OUT_OF_SCOPE")];
+  const tail =
+    o.kind === "expiry"
+      ? step("expiry.refused", { mandate_id: id }, { code: "MANDATE_OUT_OF_SCOPE", stage: "mandate" })
+      : step("scope.refused", { intent_id: id, merchant_id: "MER-2" }, { code: "MANDATE_OUT_OF_SCOPE", stage: "outcome" });
+  // Момент отказа — запись журнала агента; её нет — первая запись с кодом (шаг сюжета).
+  const t = Date.parse((j[0] ?? tail).at);
+  const validTo = term === "later" ? t + 1 : term === "same" ? t : term === "earlier" ? t - 1 : undefined;
+  return [{ ...created, ...(validTo !== undefined && { validTo: new Date(validTo).toISOString() }) }, ...head, ...j, tail];
+}
+
 describe("движок условий пульта (П-3.2б)", () => {
   it("обычная покупка: соблюдены R08, R09, R18, R26, R28, R30, R41, R46; R21, R37 не применяются; R17 и журнал сбоев — «на стенде не проверяется» с пометкой", () => {
     const c = tx(purchase("1"));
@@ -625,7 +644,6 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
   })();
   const mk = (test: StandTest, ids: StandLogEntry["ids"]) => entry("MARKED", ids, { test });
   const req = (n: string) => event("confirmation.required", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" });
-  const intentOnly = (id: string, tail: () => Interpretation[]) => [step("intent.awaiting_signature", { mandate_id: id }, { stage: "mandate" }), event("mandate.signed", { mandate_id: id }), ...tail()];
   type Want = Partial<Pick<Verdict, "kind" | "violator" | "protector" | "node" | "cond" | "guarantee">>;
   type Row = { readonly test: string; readonly items: () => Interpretation[]; readonly log?: () => StandLogEntry[]; readonly now?: number; readonly want: readonly Want[] };
   const rows: readonly Row[] = [
@@ -731,10 +749,43 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
       want: [{ cond: "R09", kind: "protection", protector: "agent" }],
     },
     {
-      // Настоящая форма П-09 стенда (сюжет 10 окна Б): поручение без покупки, отказ MANDATE_OUT_OF_SCOPE до корзины —
-      // R09 у поручения без покупки не считается, вердикта нет, паспорта нет.
-      test: "П-09 срок поручения истёк (форма стенда: поручение без покупки, MANDATE_OUT_OF_SCOPE) — вердиктов нет",
-      items: () => intentOnly("IV9", () => [step("failed", { mandate_id: "IV9" }, { code: "MANDATE_OUT_OF_SCOPE" })]),
+      // Настоящая форма П-09 стенда (сюжет 10 окна Б): поручение без покупки, отказ ядра MANDATE_OUT_OF_SCOPE не раньше
+      // срока поручения из его данных — срок: R09 «сработало», защитил агент (журнал), нарушителя нет (П-5.1а, Р-1536;
+      // было — «вердиктов нет»).
+      test: "П-09 срок поручения истёк (форма стенда: MANDATE_OUT_OF_SCOPE после valid_to) — R09 сработало, защитил агент",
+      items: () => coreRefusal("IV9", "earlier", { kind: "expiry" }),
+      want: [{ cond: "R09", kind: "protection", protector: "agent" }],
+    },
+    {
+      // Р-1536 п. 2: поручение действует строго до valid_to, как у Платформы — отказ в момент срока — срок.
+      test: "П-09 отказ ровно в момент valid_to — срок: R09 сработало, защитил агент",
+      items: () => coreRefusal("IV9s", "same", { kind: "expiry" }),
+      want: [{ cond: "R09", kind: "protection", protector: "agent" }],
+    },
+    {
+      // Настоящая форма П-06 стенда (сюжет 8): отказ ядра раньше срока поручения — вне пределов, защитил агент (Р-1524).
+      test: "П-06 на стенде (MANDATE_OUT_OF_SCOPE раньше valid_to) — R17 сработало, защитил агент",
+      items: () => coreRefusal("IV6", "later"),
+      want: [{ cond: "R17", kind: "protection", protector: "agent" }],
+    },
+    {
+      // Р-1519: без журнала агента — только рассказ стенда: защитник «не определён». Форма шага сюжета 10 (`mandate_id`);
+      // у шага сюжета 8 (`scope.refused`) поручения нет — строка ниже (ревью П-5.1а № 1).
+      test: "отказ ядра только в шаге сюжета с поручением, раньше срока — R17 сработало, защитник не определён",
+      items: () => coreRefusal("IV6s", "later", { journal: false, kind: "expiry" }),
+      want: [{ cond: "R17", kind: "protection", protector: "undetermined" }],
+    },
+    {
+      // Ревью П-5.1а № 1: шаг `scope.refused` несёт только `intent_id` — модель транзакций его к поручению не привязывает;
+      // без журнала агента отказ пульту не виден — вердикта нет (не ложный «вне пределов»).
+      test: "П-06 на стенде без журнала агента (шаг scope.refused только с intent_id) — вердиктов нет",
+      items: () => coreRefusal("IV6n", "later", { journal: false }),
+      want: [],
+    },
+    {
+      // Р-1524: срока поручения нет — признак не определить — не «вне пределов» и не «срок»: вердикта нет.
+      test: "П-06 / П-09 без срока поручения на шине — вердиктов нет",
+      items: () => coreRefusal("IV0", "none"),
       want: [],
     },
     {
@@ -855,6 +906,47 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
       if (row.test.startsWith("П-")) expect(vs.filter((v) => v.kind === "violation")).toEqual([]);
     });
 
+  it("П-5.1а: отказ ядра MANDATE_OUT_OF_SCOPE у поручения без покупки — признак по сроку из данных поручения; ровно один вердикт, без нарушителя и паспорта; срока нет — пометка", () => {
+    const one = (items: Interpretation[], id: string) => {
+      const model = buildTxModel(items);
+      const view = evaluate(model, items, { standLog: [] });
+      const vs = verdicts(view, model, items);
+      return { conds: view.objs.find((o) => o.id === id)!.conds, vs };
+    };
+    // П-06: до срока — R17 «сработало» (вне пределов), R09 не применяется; доказательства — срок и журнал агента.
+    const p06 = coreRefusal("IA6", "later");
+    const a = one(p06, "IA6");
+    expect(a.conds.R17).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "mandate_scope_agent" } });
+    expect(a.conds.R17.seqs).toEqual([seqOf(p06, "intent.created"), seqOf(p06, "agent.refused")]);
+    expect(a.conds.R09.status).toBe("na");
+    expect(a.vs.map((v) => [v.obj, v.cond, v.kind, v.violator, v.protector])).toEqual([["IA6", "R17", "protection", undefined, "agent"]]);
+    expect(passports(a.vs)).toEqual([]);
+    // П-09: в момент срока и позже — R09 «сработало» (срок), R17 не «вне пределов» (поломка С3 «не смотреть признак»).
+    for (const term of ["same", "earlier"] as const) {
+      const b = one(coreRefusal(`IA9${term}`, term, { kind: "expiry" }), `IA9${term}`);
+      expect(b.conds.R09, term).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "expired_agent_stop" } });
+      expect(b.conds.R17, term).toMatchObject({ status: "none", note: "amounts_after_mvp" });
+      expect(b.vs.map((v) => [v.cond, v.kind, v.violator, v.protector, v.node]), term).toEqual([["R09", "protection", undefined, "agent", undefined]]);
+      expect(passports(b.vs), term).toEqual([]);
+    }
+    // Момент отказа — запись журнала агента, а не первая запись с кодом (ревью П-5.1а № 5): шаг сюжета раньше срока,
+    // журнал — в момент срока: срок, а не «вне пределов».
+    const created = step("intent.created", { mandate_id: "IAJ" }, { stage: "mandate" });
+    const early = step("expiry.refused", { mandate_id: "IAJ" }, { code: "MANDATE_OUT_OF_SCOPE", stage: "mandate" });
+    const late = journal("agent.refused", { mandate_id: "IAJ" }, "MANDATE_OUT_OF_SCOPE");
+    const j = one([{ ...created, validTo: late.at }, early, late], "IAJ");
+    expect(Date.parse(early.at)).toBeLessThan(Date.parse(late.at));
+    expect(j.conds.R09).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "expired_agent_stop" } });
+    expect(j.conds.R17.status).toBe("none");
+    // Срока нет — «не определён»: ни «вне пределов», ни «срок»; пометка у R17 (ru/en).
+    const c = one(coreRefusal("IA0", "none"), "IA0");
+    expect(c.conds.R17).toMatchObject({ status: "none", note: "scope_or_expiry" });
+    expect(c.conds.R09.status).toBe("na");
+    expect(c.vs).toEqual([]);
+    expect(NOTE_LABEL.scope_or_expiry.ru).not.toBe("");
+    expect(NOTE_LABEL.scope_or_expiry.en).not.toBe("");
+  });
+
   it("причина без строки в таблице субъектов — «не определён», а не субъект по умолчанию", () => {
     const cause = { kind: "mark", test: "Н-02" } as const;
     expect(subjectsOf(cause)).toBeUndefined();
@@ -909,6 +1001,9 @@ describe("«Контроль» пульта (П-4.1)", () => {
         }),
         false,
       ],
+      // П-5.1а (Р-1536 п. 1): стендовая форма П-06 и П-09 — защита без нарушителя, паспорта нет.
+      ["П-06 на стенде", () => ({ items: coreRefusal("X6s", "later") }), false],
+      ["П-09 на стенде", () => ({ items: coreRefusal("X9s", "earlier", { kind: "expiry" }) }), false],
     ];
     for (const [name, make, want] of cases) {
       const { items, log } = make();

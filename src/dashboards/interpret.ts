@@ -73,6 +73,10 @@ export interface Interpretation {
   /** Код из поля шага `code` целиком, у шага с кодом теста (`test`): составной — через запятую (`PREP_FAILED,NO_RESPONSE`);
    *  каждая часть — по форме кода (П-4.1а, ревью № 2: в `who.code` — только первая часть). */
   readonly testCode?: string;
+  /** Срок поручения (ISO) — только у шага `intent.created`, из поля `valid_to` (данные поручения ядра, П-11.5б окна Б);
+   *  по нему пульт различает «вне пределов» и «срок» у отказа `MANDATE_OUT_OF_SCOPE` (П-5.1а, Р-1524, Р-1525, Р-1536).
+   *  Другие шаги (`expiry.wait` — рассказ сюжета) признаком не служат. */
+  readonly validTo?: string;
 }
 
 /** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаги `cart.created`, `cart.card`
@@ -459,9 +463,12 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
   const test = typeof l.params.test === "string" && TEST_RE.test(l.params.test) ? l.params.test : undefined;
   const testCode = test !== undefined && typeof l.params.code === "string" && l.params.code.split(",").every((c) => CODE_RE.test(c)) ? l.params.code : undefined;
+  const vt = l.step === "intent.created" ? l.params.valid_to : undefined;
+  const validTo = typeof vt === "object" && vt !== null && "iso" in vt && typeof vt.iso === "string" && Number.isFinite(Date.parse(vt.iso)) ? new Date(vt.iso).toISOString() : undefined;
   return {
     ...(test !== undefined && { test }),
     ...(testCode !== undefined && { testCode }),
+    ...(validTo !== undefined && { validTo }),
     seq: l.seq,
     at: l.at,
     stream: "scenario",

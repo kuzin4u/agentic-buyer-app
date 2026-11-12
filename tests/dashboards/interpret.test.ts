@@ -10,6 +10,7 @@ import { FAULT_OUTCOMES, faultOf, splitRuns } from "../../src/dashboards/control
 import { rawInHumanText } from "./human-text.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { timeView } from "../../src/demo/money.js";
 import { parseWireItem, WIRE_SCENARIO_HIDDEN_STEPS, type DiagEntryWire, type DiagSnapshot, type WireItem, type WireMonitorEvent } from "../../src/dashboards/wire.js";
 
 const entry = (code: string, component: DiagEntryWire["component"], source: DiagEntryWire["source"], action: DiagEntryWire["action"]): DiagEntryWire => ({
@@ -336,5 +337,22 @@ describe("К1.4а: текст человека без кодов и имён п�
     expect(interpret(con("offer.excluded", { reason: "REQUIRED", merchant: "MER-5501" }), ENV).training).toBeUndefined();
     expect(TRAINING_MERCHANTS).toMatchObject({ "MER-5501": ["REQUIRED", "BAD_"], "MER-3301": ["A5_"] });
     expect(Object.hasOwn(TRAINING_MERCHANTS, "MER-4401")).toBe(false);
+  });
+});
+
+// П-5.1а (Р-1524, Р-1525, Р-1536): срок поручения — только из шага `intent.created` (данные поручения ядра, П-11.5б окна Б),
+// через разбор линии (`parseWireItem`), как на шине; шаг `expiry.wait` (рассказ сюжета) признаком не служит.
+describe("срок поручения validTo (П-5.1а)", () => {
+  const ISO = "2026-11-13T09:30:00.000Z";
+  const line = (name: string, params: Record<string, unknown>) => parseWireItem({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+  it("intent.created с valid_to — validTo из машинного значения; expiry.wait и шаг без срока — без validTo", () => {
+    const created = line("intent.created", { mandate_id: "mnd_1", valid_to: timeView(ISO) });
+    expect(created).toBeDefined();
+    expect(interpret(created!, ENV).validTo).toBe(ISO);
+    const wait = line("expiry.wait", { mandate_id: "mnd_1", valid_to: timeView(ISO) });
+    expect(interpret(wait!, ENV).validTo).toBeUndefined();
+    expect(interpret(line("intent.created", { mandate_id: "mnd_1" })!, ENV).validTo).toBeUndefined();
+    // Строкой (не по форме TimeView) — запись отбрасывается разбором линии целиком.
+    expect(line("intent.created", { mandate_id: "mnd_1", valid_to: ISO })).toBeUndefined();
   });
 });

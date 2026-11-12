@@ -38,7 +38,7 @@ export const worstStatus = (list: readonly CondStatus[], empty: CondStatus = "na
   list.reduce<CondStatus | undefined>((a, s) => (a === undefined || RANK[s] < RANK[a] ? s : a), undefined) ?? empty;
 
 /** Пометка к статусу: почему он такой. */
-export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction"] as const;
+export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction", "scope_or_expiry"] as const;
 export type Note = (typeof NOTES)[number];
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
@@ -56,6 +56,11 @@ export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   preempted_by_reaction: p(
     "упреждено реакцией: напоминание было до подтверждения — нарушения нет",
     "pre-empted by a reaction: the reminder came before the confirmation — no breach",
+  ),
+  // П-5.1а (Р-1524): без срока поручения отказ ядра MANDATE_OUT_OF_SCOPE — «не определён», а не «вне пределов».
+  scope_or_expiry: p(
+    "отказ «вне области поручения», срока поручения на шине нет — вне пределов или срок, не различить",
+    "a refusal as “outside the mandate”, the mandate term is not on the bus — outside the mandate or expired, cannot tell",
   ),
 };
 /** Записи журнала стенда о напоминании клиенту (кнопка «Напомнить клиенту», `remindClient`): первое — с продлением срока,
@@ -554,6 +559,34 @@ function txConds(
   return out as CondResults;
 }
 
+/** Код ядра «продавец вне области поручения»: ядро agentic-buyer-ref 4a4ee7c отдаёт его и на истёкшем поручении (сверка
+ *  ПАО 1.4.0 отвечает OUT_OF_SCOPE на любой статус, кроме ACTIVE; расхождения № 7, № 8; Р-1486). */
+const CORE_OUT_OF_SCOPE = "MANDATE_OUT_OF_SCOPE";
+
+/** Отказ ядра `MANDATE_OUT_OF_SCOPE` у поручения без покупки (П-06 и П-09 на стенде; П-5.1а, Р-1524, Р-1525, Р-1536): что
+ *  это — вне пределов или срок — решает срок из данных поручения (`validTo` шага `intent.created`), а не текст и не шаг
+ *  сюжета `expiry.wait`. Отказ раньше срока — R17 «сработало», вне пределов; в момент срока и позже — R09 «сработало», срок:
+ *  поручение действует строго до `valid_to`, как у Платформы (Р-1536 п. 2). Срока нет — вердикта нет, пометка у R17.
+ *  Момент отказа — запись журнала агента (доказательство остановки, Р-1519), её нет — первая запись с кодом. Кто остановил —
+ *  `stoppedBy`: журнал агента — агент, только шаг сюжета — «не определён». В перечень защит код не входит: иначе П-09
+ *  засчитался бы как «вне пределов». Причину «срок» ядро 4a4ee7c не сообщает — её утверждает пульт по сроку поручения
+ *  (Р-1536). Время записи журнала агента — часы ядра (`compose.ts`: `new Date()`), срок — от `new Date()` сюжета, время
+ *  шага — `stand.now()`: сейчас одни системные часы, пока стенд их не сдвигает (ревью П-5.1а № 2, STATUS «Открыто»). */
+function coreScopeRefusal(m: PultMandate, recs: readonly Interpretation[]): Partial<Record<CheckableCondition, CondResult>> {
+  const refused = recs.filter((x) => x.who?.code === CORE_OUT_OF_SCOPE);
+  if (refused.length === 0) return {};
+  const seqs = refused.map((x) => x.seq);
+  const created = recs.find((x) => x.stream === "scenario" && x.ref === "intent.created" && mid(x) === m.id && x.validTo !== undefined);
+  if (created === undefined) return { R17: r("none", seqs, "scope_or_expiry") };
+  const journal = refused.filter((x) => x.stream === "console");
+  const at = Math.min(...(journal.length > 0 ? journal : refused).map((x) => Date.parse(x.at)));
+  const by = stoppedBy(refused, [CORE_OUT_OF_SCOPE]);
+  const evidence = [created.seq, ...seqs].sort((a, b) => a - b);
+  if (at >= Date.parse(created.validTo!))
+    return { R09: rc("fired", by === "agent" ? "expired_agent_stop" : by === "platform" ? "expired_platform_decline" : "expired_undetermined", evidence) };
+  return { R17: rc("fired", `mandate_scope_${by === "platform" || by === "agent" ? by : "undetermined"}`, evidence) };
+}
+
 function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: readonly StandLogEntry[] | undefined): CondResults {
   const out: Partial<Record<CheckableCondition, CondResult>> = {};
   for (const c of CHECKABLE_CONDITIONS) out[c] = r("na");
@@ -561,6 +594,7 @@ function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: read
   out.R37 = r37([m.id], recs, false);
   out.R41 = r41(recs);
   out.R17 = r("none", [], "amounts_after_mvp");
+  Object.assign(out, coreScopeRefusal(m, recs));
   if (log === undefined) for (const c of STAND_LOG) out[c] = r("none", [], "stand_log");
   else for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e);
   return out as CondResults;
