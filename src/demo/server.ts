@@ -10,8 +10,8 @@ import { parseBrand, type Brand } from "../brand.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
 import { localStandSource } from "../dashboards/source.js";
-import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
-import type { MonitorBus } from "./bus.js";
+import { INSTANCE_HEADER, STAND_LOG_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
+import type { BusItem, MonitorBus } from "./bus.js";
 import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
@@ -462,7 +462,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             connection: "keep-alive",
           });
           sseWrite(res, { type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() });
-          const off = f.subscribe((e: FeedEvent) => void sseWrite(res, e));
+          // Журнал стенда (`stand`, П-11.2а) экрану «Интерпретация» не нужен — он для движка пульта.
+          const off = f.subscribe((e: FeedEvent) => void (e.type !== "stand" && sseWrite(res, e)));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -495,8 +496,12 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           connection: "keep-alive",
           [INSTANCE_HEADER]: instance,
         });
-        for (const item of o.bus.history()) sseWrite(res, item);
-        const off = o.bus.subscribe((item) => void sseWrite(res, item));
+        // Журнал стенда (поток `stand`, П-11.2а) — только по заголовку STAND_LOG_HEADER (источник дашбордов): страница монитора
+        // его не просит и неизвестный поток не рисует строкой консоли (ревью П-11.2а № 1).
+        const withStand = req.headers[STAND_LOG_HEADER] === "1";
+        const pass = (item: BusItem) => withStand || item.stream !== "stand";
+        for (const item of o.bus.history()) if (pass(item)) sseWrite(res, item);
+        const off = o.bus.subscribe((item) => void (pass(item) && sseWrite(res, item)));
         sse.add(res);
         req.on("close", () => {
           off();

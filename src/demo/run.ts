@@ -78,6 +78,8 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
         };
       },
       now: () => stand.stand.now(),
+      // Журнал сбоев и действий стенда (П-11.2а, Р-1514) — только при режиме сбоев: без флага потока `stand` нет.
+      ...(stand.faults && stand.stand.demo && { standLog: () => stand.stand.demo!.log() }),
     });
     bus = b;
     b.start();
