@@ -1,7 +1,13 @@
 // П-11.4б: эмулятор клиента «Решения людей: Авто» (П5, дополнение 1; Р-1497). Таблица решений по сценарию теста, «Вручную» —
 // ни одного действия, форма шагов `client.*` (только `code` / `status` и идентификатор объекта, источник `client-emulator`),
 // словари ru/en, интерпретатор (участник — клиент, эмулированный; код — не ошибка агента) и живые прогоны в «Авто».
+// П-11.4в: маршрут `POST /client/auto/on|off` (Р-1499; без флага — 404) и граница эмулятора белыми списками (доп. 1 п. 4).
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { filesUnder, specifiers } from "../support/imports.js";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { CLIENT_EMULATOR_SOURCE, CLIENT_STEPS, ClientEmulator, decide, type ClientEmulatorPorts, type RunLabel } from "../../src/demo/client-emulator.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
@@ -397,7 +403,7 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
   });
 });
 
-describe("П-11.4б: без режима сбоев эмулятора нет (П5 п. 4)", () => {
+describe("П-11.4б, П-11.4в: без режима сбоев эмулятора нет — ни модуля, ни маршрута (П5 п. 4)", () => {
   let demo: Demo;
   beforeAll(async () => {
     demo = await startDemo();
@@ -408,5 +414,166 @@ describe("П-11.4б: без режима сбоев эмулятора нет (�
 
   it("demo.clientEmulator нет", () => {
     expect(demo.clientEmulator).toBeUndefined();
+  });
+
+  it("маршрут /client/auto/on|off — 404 на любой метод, и со своим Origin", async () => {
+    for (const path of ["/client/auto/on", "/client/auto/off", "/client/auto", "/client/x"])
+      for (const method of ["POST", "GET", "PUT"]) {
+        const r = await fetch(`${demo.monitor.url}${path}`, { method, headers: { origin: demo.monitor.url } });
+        expect(r.status, `${method} ${path}`).toBe(404);
+      }
+  });
+});
+
+describe("П-11.4в: маршрут «Авто» при режиме сбоев (Р-1499)", () => {
+  let demo: Demo;
+  beforeAll(async () => {
+    demo = await startDemo({ faults: true });
+  }, 30_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+  const call = (path: string, init: RequestInit = {}) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin: demo.monitor.url }, ...init });
+  const autoSteps = () => demo.bus.history().flatMap((i) => (i.stream === "scenario" && i.line.step.startsWith("client.auto_") ? [i.line.step] : []));
+
+  it("POST /client/auto/on и /off со своего Origin — 200 {auto}, шаги client.auto_on / client.auto_off; повтор — без шага", async () => {
+    const on = await call("/client/auto/on");
+    expect(on.status).toBe(200);
+    expect(await on.json()).toEqual({ auto: true });
+    expect(demo.clientEmulator!.auto).toBe(true);
+    expect((await (await call("/client/auto/on")).json())).toEqual({ auto: true });
+    const off = await call("/client/auto/off");
+    expect(await off.json()).toEqual({ auto: false });
+    expect(autoSteps()).toEqual(["client.auto_on", "client.auto_off"]);
+  });
+
+  it("чужой Origin и без Origin — 403, режим не меняется; иной метод и иной путь — 404", async () => {
+    for (const headers of [{ origin: "http://evil.example" }, {} as Record<string, string>]) {
+      const r = await fetch(`${demo.monitor.url}/client/auto/on`, { method: "POST", headers });
+      expect(r.status, JSON.stringify(headers)).toBe(403);
+    }
+    expect(demo.clientEmulator!.auto).toBe(false);
+    for (const [method, path] of [["GET", "/client/auto/on"], ["PUT", "/client/auto/off"], ["POST", "/client/auto"], ["POST", "/client/auto/maybe"], ["POST", "/client/x"]] as const) {
+      const r = await call(path, { method });
+      expect(r.status, `${method} ${path}`).toBe(404);
+    }
+    expect(demo.clientEmulator!.auto).toBe(false);
+  });
+
+  it("чужой Host — 421 (подмена DNS), режим не меняется", async () => {
+    const url = new URL(demo.monitor.url);
+    const status = await new Promise<number>((ok, fail) => {
+      const r = request({ host: url.hostname, port: url.port, path: "/client/auto/on", method: "POST", headers: { host: "evil.example", origin: demo.monitor.url } }, (res) => {
+        res.resume();
+        ok(res.statusCode ?? 0);
+      });
+      r.on("error", fail);
+      r.end();
+    });
+    expect(status).toBe(421);
+    expect(demo.clientEmulator!.auto).toBe(false);
+  });
+});
+
+const ROOT = resolve(import.meta.dirname, "../..");
+
+/** Белые списки границы эмулятора (ревью П-11.4в № 1, 2): вне `client-emulator.ts` слово `issuer` и `answerCart` допустимы только
+ *  в этих точных записях — псевдоним, деструктуризация, `!.`, `?.[…]`, `revokeAll`, `signRequest` под них не подходят. */
+const ISSUER_OK: readonly [string | undefined, RegExp][] = [
+  // Чтения и действия банка, не решения клиента: код УПК (SMS для человека), лимиты сюжета 3, лента уведомлений стенда.
+  [undefined, /\.issuer\.(?:upkCode|setLimits|getNotifications)\(/g],
+  // Сборка передаёт банк порту эмулятора — ровно здесь.
+  ["src/demo/run.ts", /new ClientEmulator\(\{ issuer: stand\.stand\.issuer,/g],
+  // Сборка стенда: ответ эмитента на уведомление ADP (локальная переменная).
+  ["src/demo/stand.ts", /const issuer = await s\.app\.inject\(|\bissuer\.statusCode\b/g],
+];
+const ANSWER_OK: readonly [string, RegExp][] = [
+  ["src/demo/scenarios.ts", /^ {2}answerCart\(agree: boolean\): ScenarioStart \{$/gm], // определение
+  ["src/demo/server.ts", /answerCart\(agree: boolean\): ScenarioStart;|o\.scenarios\.answerCart\(what === "cart\/accept"\)/g], // тип и кнопка человека
+  ["src/demo/run.ts", /answerCart: \(agree\) => sc\.answerCart\(agree\)/g], // порт эмулятору
+];
+
+/** Граница эмулятора клиента (П5 п. 5, доп. 1 п. 4) на дереве `src` корня `root`: нарушения — строками. `src/pult` и
+ *  `src/dashboards` к стенду не дотягиваются (своя граница импортов, `tests/dashboards/boundary.test.ts`), страница пульта —
+ *  тест там же; динамические ссылки на модули — граница драйвера (`tests/demo/faulty.test.ts`). */
+function emulatorBoundary(root: string): string[] {
+  const bad: string[] = [];
+  for (const f of filesUnder(join(root, "src"))) {
+    const name = relative(root, f);
+    const text = readFileSync(f, "utf8");
+    // Модуль эмулятора импортирует только сборка демо-стенда (любая форма пути к модулю).
+    if (name !== "src/demo/run.ts" && specifiers(text).some((s) => /(^|\/)client-emulator(\.[cm]?[jt]s)?(\/|$)/.test(s))) bad.push(`${name} → client-emulator`);
+    if (name === "src/demo/client-emulator.ts" || /^src\/(pult|dashboards|demo\/public)\//.test(name)) continue;
+    // Банк стенда — только в точных записях белого списка; всё прочее со словом `issuer` — нарушение.
+    let rest = text;
+    for (const [file, re] of ISSUER_OK) if (file === undefined || file === name) rest = rest.replace(re, "");
+    if (/\bissuer\b/.test(rest)) bad.push(`${name} → issuer вне белого списка`);
+    // Ответ на карточку корзины — только определение, тип, кнопка человека и порт эмулятору.
+    let restA = text;
+    for (const [file, re] of ANSWER_OK) if (file === name) restA = restA.replace(re, "");
+    if (/\banswerCart\b/.test(restA)) bad.push(`${name} → answerCart`);
+    // Обход банка без `issuer`: запрос в приложение стенда в обход сети — только сборка стенда (драйвер — своя граница);
+    // адреса шлюза участников (подпись, отзыв, подтверждение) — только таблица маршрутов шины.
+    if (/\.inject\s*\(/.test(text) && !["src/demo/stand.ts", "src/demo/faulty.ts"].includes(name)) bad.push(`${name} → app.inject`);
+    if (/\/participants\/v1\//.test(text) && name !== "src/demo/bus.ts") bad.push(`${name} → адрес шлюза участников`);
+  }
+  return bad;
+}
+
+describe("П-11.4в: граница эмулятора клиента (П5 п. 5, доп. 1 п. 4)", () => {
+  it("issuer.sign / confirm / revoke в src — только эмулятор; модуль — только run.ts; answerCart — эмулятор, run.ts и кнопка человека в server.ts", () => {
+    expect(emulatorBoundary(ROOT)).toEqual([]);
+    // Сама граница видит свой предмет: эмулятор вызывает все три и порт ответа на карточку.
+    const own = readFileSync(join(ROOT, "src/demo/client-emulator.ts"), "utf8");
+    for (const re of [/\bissuer\.sign\(/, /\bissuer\.confirm\(/, /\bissuer\.revoke\(/, /\.answerCart\(/]) expect(own).toMatch(re);
+  });
+
+  it("src/pult, src/dashboards и страница пульта не импортируют эмулятор и не вызывают issuer.*", () => {
+    for (const dir of ["src/pult", "src/dashboards", "src/demo/public/pult"])
+      for (const f of filesUnder(join(ROOT, dir))) {
+        const text = readFileSync(f, "utf8");
+        expect(specifiers(text).filter((s) => /client-emulator/.test(s)), relative(ROOT, f)).toEqual([]);
+        expect(text, relative(ROOT, f)).not.toMatch(/\bissuer\s*\??\.\s*(?:sign|confirm|revoke)\b|\bClientEmulator\b/);
+      }
+  });
+
+  it("поломки ловятся на временном дереве: импорт эмулятора, issuer.confirm, issuer['sign'], псевдоним, деструктуризация, !., revokeAll, signRequest, inject и адрес шлюза, answerCart", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "emulator-boundary-"));
+    try {
+      const put = (rel: string, text: string) => {
+        mkdirSync(dirname(join(tmp, rel)), { recursive: true });
+        writeFileSync(join(tmp, rel), text);
+      };
+      put("src/demo/client-emulator.ts", "export const x = (i: any) => i.issuer.sign('m');\n");
+      put("src/demo/run.ts", 'import { x } from "./client-emulator.js";\nnew ClientEmulator({ issuer: stand.stand.issuer, answerCart: (agree) => sc.answerCart(agree) });\n');
+      put("src/demo/server.ts", 'o.scenarios.answerCart(what === "cart/accept");\n');
+      put("src/demo/scenarios.ts", "  answerCart(agree: boolean): ScenarioStart {\nawait this.#d.stand.issuer.upkCode(id);\n");
+      put("src/demo/stand.ts", "const issuer = await s.app.inject({});\nissuer.statusCode;\n");
+      expect(emulatorBoundary(tmp)).toEqual([]);
+      const breaks: Record<string, string> = {
+        "src/pult/feed.ts": 'import { x } from "../demo/client-emulator.ts";\n',
+        "src/demo/a.ts": "await this.#d.stand.issuer.confirm(id);\n",
+        "src/demo/b.ts": "stand.issuer['sign'](id);\n",
+        "src/demo/c.ts": "const i = stand.issuer;\ni.sign(id);\n",
+        "src/demo/d.ts": "const { sign } = stand.stand.issuer;\n",
+        "src/demo/e.ts": "stand.issuer!.sign(id);\n",
+        "src/demo/f.ts": "stand.issuer.revokeAll(ref, r);\n",
+        "src/demo/g.ts": "fetch(u, { headers: stand.issuer.signRequest('POST', p, '', now) });\n",
+        "src/demo/h.ts": 'stand.app.inject({ method: "POST", url: "/participants/v1/mandates/m/sign" });\n',
+        "src/demo/i.ts": 'sc["answerCart"](true);\n',
+      };
+      for (const [rel, text] of Object.entries(breaks)) put(rel, text);
+      expect(emulatorBoundary(tmp).sort()).toEqual(
+        [
+          "src/pult/feed.ts → client-emulator",
+          ...["a", "b", "c", "d", "e", "f", "g"].map((x) => `src/demo/${x}.ts → issuer вне белого списка`),
+          "src/demo/h.ts → app.inject",
+          "src/demo/h.ts → адрес шлюза участников",
+          "src/demo/i.ts → answerCart",
+        ].sort(),
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

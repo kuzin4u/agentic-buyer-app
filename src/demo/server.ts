@@ -72,6 +72,9 @@ export interface MonitorServerOptions {
   faults?: boolean;
   /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
   faulty?: { start(test: FaultTest): FaultStart; abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } };
+  /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
+   *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
+  clientEmulator?: { setAuto(on: boolean): boolean };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -338,6 +341,16 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       }
       // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
       return send(res, 404, plain, t(lang, "http.not_found"));
+    }
+    // «Решения людей: Авто» (П5 п. 4, доп. 1; Р-1499): только POST, только при эмуляторе (его создаёт лишь сборка `run.ts` при
+    // режиме сбоев), только со страниц этого сервера (Origin), без тела. Всё прочее под `/client/` — 404 на любой метод, и при
+    // эмуляторе тоже: маршрута нет, а не «метод не тот» (намеренное отличие от `/fault/`, где иной метод получает 405). После
+    // закрытия эмулятора (окно до закрытия сервера) ответ — `{auto: false}`.
+    if (u.pathname.startsWith("/client/")) {
+      const auto = /^\/client\/auto\/(on|off)$/.exec(u.pathname);
+      if (req.method !== "POST" || !o.clientEmulator || !auto) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      return send(res, 200, "application/json; charset=utf-8", JSON.stringify({ auto: o.clientEmulator.setAuto(auto[1] === "on") }));
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {

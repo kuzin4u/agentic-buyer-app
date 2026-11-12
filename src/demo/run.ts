@@ -111,6 +111,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       ...(o.port !== undefined && { port: o.port }),
       faults: stand.faults,
       ...(faulty && { faulty }),
+      ...(clientEmulator && { clientEmulator }),
     });
     return {
       stand,
