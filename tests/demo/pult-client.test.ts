@@ -7,15 +7,18 @@ import { describe, expect, it, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
 import { loadBrand } from "../../src/demo/server.js";
 import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
+import { conditionsView } from "../../src/pult/conditions.js";
+import { NOTE_LABEL, STATUS_LABEL, type CondResult, type CondResults, type CondStatus, type EngineView, type Note } from "../../src/pult/engine.js";
 import { PULT } from "../../src/pult/phrases.js";
+import { CHECKABLE_CONDITIONS, RULES89, SECTORS, type CheckableCondition, type Rule89 } from "../../src/pult/rules89.js";
 import { FakeEvent, pageEnv, type FakeElement, type PageEnv } from "../support/fake-dom.js";
 
 const FOCUS_JS = readFileSync("src/demo/public/pult/focus.js", "utf8");
 const PULT_JS = readFileSync("src/demo/public/pult/pult.js", "utf8");
 const { brand } = loadBrand("config/brand.demo.json");
 
-function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean } = {}): PageEnv {
-  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false), o);
+function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean; rules?: readonly Rule89[] } = {}): PageEnv {
+  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false, o.rules ? { rules: o.rules } : {}), o);
   if (!o.noFocus) env.run(FOCUS_JS);
   env.run(PULT_JS);
   return env;
@@ -413,5 +416,208 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     } finally {
       clock.mockRestore();
     }
+  });
+});
+
+// П-4.2 «Условия»: «Приоритет» (плитки узлов, сектора) и «Все 89». Состояние — из настоящего `conditionsView` над
+// собранным результатом движка: экран показывает его, а не считает сам.
+type CSet = Partial<Record<CheckableCondition, CondStatus | [CondStatus, Note]>>;
+const cres = (x: CondStatus | [CondStatus, Note] | undefined): CondResult =>
+  x === undefined ? { status: "na", seqs: [] } : Array.isArray(x) ? { status: x[0], seqs: [], note: x[1] } : { status: x, seqs: [] };
+const cconds = (s: CSet = {}) => Object.fromEntries(CHECKABLE_CONDITIONS.map((c) => [c, cres(s[c])])) as CondResults;
+const engineView = (system: CSet, objs: { id: string; s: CSet }[] = []): EngineView => ({
+  system: cconds(system),
+  objs: objs.map((o) => ({ id: o.id, kind: "tx" as const, conds: cconds(o.s) })),
+  guarantees: [],
+});
+// У1 «сработало» только сводно (R47 — агент исключил инструкцию); У2 «нарушено» у T2 (R46) и записью системы (R23) —
+// смешанный; У3 «нарушено» только сводно (R27 — запись системы); У4 — R31 без журнала стенда, как отдаёт движок ленты
+// (`none` с пометкой `stand_log`); сектор «Подтверждение» — R21 «ещё не дошло».
+const COND = conditionsView(
+  engineView({ R47: "fired", R46: "bad", R23: "bad", R27: "bad", R21: "wait", R08: "ok", R18: "ok", R31: ["none", "stand_log"] }, [{ id: "T2", s: { R46: "bad" } }]),
+);
+const CTL = { passports: [], waits: [{ kind: "confirmation", cond: "R21", obj: "T2", confirmationId: "Q2", since: "2026-11-10T12:00:00.000Z" }], waitMs: 15_000, active: [], counts: { txs: 1, wrong: 0 } };
+const condMsg = (conditions: unknown = COND) => ({ type: "board", board: { now: NOW, cards: [card("T2", "pay")], jumps: [], control: CTL, conditions } });
+const rows89 = (env: PageEnv) => $(env, "b-ctl").querySelectorAll(".r89");
+// Щелчок по заголовку перестраивает тело — заголовки ищутся заново после каждого.
+const openAll = (env: PageEnv) => {
+  for (let h = $(env, "b-ctl").querySelector(".cg-h[aria-expanded='false']"); h; h = $(env, "b-ctl").querySelector(".cg-h[aria-expanded='false']")) h.click();
+};
+const search = (env: PageEnv, q: string) => {
+  const i = $(env, "b-ctl").querySelector("input")!;
+  i.value = q;
+  i.dispatchEvent(new FakeEvent("input", { bubbles: true }));
+};
+
+describe("«Условия» пульта (П-4.2)", () => {
+  it("«Приоритет»: 5 плиток узлов и 8 секторов — статус из движка; «к нарушению» — фокус на транзакцию; нарушение без транзакции — «система», кнопка неактивна", () => {
+    const t0 = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(t0);
+    try {
+      const env = start();
+      env.sources[0]!.send(condMsg());
+      const box = $(env, "b-ctl");
+      expect(box.querySelector("[data-ctl-view='prio']")!.getAttribute("aria-pressed")).toBe("true");
+      const tiles = box.querySelectorAll(".tile");
+      expect(tiles.map((t) => t.dataset.node)).toEqual(["У1", "У2", "У3", "У4", "У5"]);
+      const y2 = tiles[1]!;
+      expect(y2.classList.contains("st-bad")).toBe(true);
+      // Ревью П-4.2 № 2: смешанный узел — видны и транзакция, и запись системы; кнопка — к транзакции.
+      expect(y2.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru}: T2 · ${ru("cv.node.system")}`);
+      expect(y2.querySelector(".tl-go")!.dataset.go).toBe("T2");
+      // Ревью П-4.2 № 1 (Р-1505): сработавшая защита — «сработало: система», кнопки нет (нарушения нет).
+      expect(tiles[0]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.fired.ru}: ${ru("cv.node.system")}`);
+      expect(tiles[0]!.querySelector(".tl-go")).toBeNull();
+      expect(tiles[0]!.textContent).not.toContain(ru("cv.node.no_tx"));
+      expect(y2.querySelector(".tl-r")!.textContent).toBe(`${ru("cv.node.rules")} Е05, Ж03, О02 · ${ru("cv.node.conds")} R23, R25, R46`);
+      // Уточнение 1: «нарушено» записью системы — «система», кнопка неактивна, щелчок фокус не ставит.
+      const y3 = tiles[2]!;
+      expect(y3.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru}: ${ru("cv.node.system")}`);
+      const noTx = y3.querySelector(".tl-go")!;
+      expect([noTx.textContent, noTx.hasAttribute("disabled"), noTx.dataset.go]).toEqual([ru("cv.node.no_tx"), true, undefined]);
+      noTx.click();
+      expect($(env, "grid").dataset.focus).toBe("system");
+      // У4 (R31 — журнал сбоев стенда) — «на стенде не проверяется» с пометкой, без кодов задач.
+      expect(tiles[3]!.querySelector(".tl-s")!.textContent).toBe(STATUS_LABEL.none.ru);
+      expect(tiles[3]!.querySelector(".tl-n")!.textContent).toBe(NOTE_LABEL.stand_log.ru);
+      expect(tiles[3]!.textContent).not.toMatch(/[ПP]-\d/);
+      // «К нарушению» — по нажатию мыши фокус на T2.
+      y2.querySelector(".tl-go")!.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true }));
+      expect($(env, "grid").dataset.focusTx).toBe("T2");
+      // 8 секторов; «Подтверждение» — «ещё не дошло»; «Гонки» — «на стенде не проверяется».
+      const sects = box.querySelectorAll(".sect");
+      expect(sects.map((s) => s.dataset.sector)).toEqual(Object.keys(SECTORS));
+      const conf = sects.find((s) => s.dataset.sector === "confirmation")!;
+      expect(conf.className).toBe("sect st-wait");
+      expect(conf.querySelector(".sect-att")).toBeNull();
+      expect(sects.find((s) => s.dataset.sector === "races")!.className).toBe("sect st-none");
+      // Уточнение 3: R21 за порогом — значок «внимание», цвет (класс статуса) сектора тот же.
+      clock.mockReturnValue(t0 + 6_000);
+      for (const i of env.intervals) i();
+      const conf2 = box.querySelectorAll(".sect").find((s) => s.dataset.sector === "confirmation")!;
+      expect(conf2.className).toBe("sect st-wait");
+      expect(conf2.querySelector(".sect-att")!.textContent).toBe(` ⚑ ${ru("cv.attention")}: 1`);
+      // Блоки П-4.1 на месте.
+      expect(box.querySelectorAll(".wait-row").map((r) => r.dataset.wait)).toEqual(["confirmation"]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("«Все 89»: счётчик — из движка; поиск по номеру, условию и слову; фильтр по зоне 9 / 33 / 23 / 24; сектор; карточка правила; вид сохраняется", () => {
+    const env = start();
+    env.sources[0]!.send(condMsg());
+    const box = $(env, "b-ctl");
+    box.querySelector("[data-ctl-view='all']")!.click();
+    expect(JSON.parse(env.storage.get("pult.layout.v1")!)).toMatchObject({ ctlView: "all" });
+    expect(box.querySelector(".c89bar")!.hidden).toBe(false);
+    expect(box.querySelectorAll(".tile")).toEqual([]);
+    // Счётчик — числа `counts` движка (уточнение 5).
+    const counts = COND.counts as Record<string, number>;
+    const want = ["bad", "fired", "wait", "ok", "na", "none", "out"].filter((k) => counts[k]! > 0).map((k) => `${STATUS_LABEL[k as CondStatus].ru} ${counts[k]}`);
+    expect(box.querySelector(".c89-count")!.textContent).toBe(`${ru("cv.counts")}: ${want.join(" · ")}`);
+    // Ревью П-4.2 № 5: числа — из `counts`, а не пересчётом строк (`counts` нарочно не совпадает с `rules`).
+    env.sources[0]!.send(condMsg({ ...COND, counts: { bad: 7 } }));
+    expect(box.querySelector(".c89-count")!.textContent).toBe(`${ru("cv.counts")}: ${STATUS_LABEL.bad.ru} 7`);
+    env.sources[0]!.send(condMsg());
+    // Без поиска раскрыты только группы с нарушением (Е — R23, Ж — Ж03 по R46).
+    expect(new Set(rows89(env).map((r) => r.dataset.rule!.charAt(0)))).toEqual(new Set(["Е", "Ж"]));
+    const zh = rows89(env).find((r) => r.dataset.rule === "Ж03")!;
+    expect(zh.querySelector(".s89")!.textContent).toBe(STATUS_LABEL.bad.ru);
+    expect(zh.classList.contains("bad")).toBe(true);
+    openAll(env);
+    expect(rows89(env)).toHaveLength(89);
+    // Статус строки — из `board.conditions`: правило без условия на стенде — как отдал движок.
+    expect(rows89(env).find((r) => r.dataset.rule === "А08")!.querySelector(".s89")!.textContent).toBe(STATUS_LABEL.out.ru);
+    search(env, "ж03");
+    expect(rows89(env).map((r) => r.dataset.rule)).toEqual(["Ж03"]);
+    search(env, "R21");
+    expect(rows89(env).map((r) => r.dataset.rule)).toEqual(["Д05"]);
+    search(env, "отзыв");
+    expect(rows89(env).map((r) => r.dataset.rule)).toEqual(["Б06", "Б08", "Б09", "Л01", "Л02", "Л03"]);
+    search(env, "нет такого слова");
+    expect(rows89(env)).toEqual([]);
+    expect(box.querySelector(".ctl-body")!.textContent).toContain(ru("cv.empty"));
+    search(env, "");
+    for (const [z, n] of [["red", 9], ["orange", 33], ["yellow", 23], ["background", 24]] as const) {
+      box.querySelector(`[data-zone='${z}']`)!.click();
+      expect(rows89(env), z).toHaveLength(n);
+      expect(rows89(env).every((r) => r.classList.contains("z-" + z)), z).toBe(true);
+      expect(box.querySelector(`[data-zone='${z}']`)!.getAttribute("aria-pressed")).toBe("true");
+    }
+    box.querySelector("[data-zone='']")!.click();
+    // Сектор: из «Приоритета» — «Все 89» с правилами сектора, фильтр снимается.
+    box.querySelector("[data-ctl-view='prio']")!.click();
+    box.querySelector("[data-sector='cart']")!.click();
+    expect(box.querySelector("[data-ctl-view='all']")!.getAttribute("aria-pressed")).toBe("true");
+    expect(rows89(env).map((r) => r.dataset.rule)).toEqual(["В04", "Г03", "Г04", "Г06"]);
+    const chip = box.querySelector(".cv-sec")!;
+    expect([chip.hidden, chip.textContent]).toEqual([false, `${ru("cv.sector")}: ${SECTORS.cart.name.ru} ×`]);
+    chip.click();
+    expect(chip.hidden).toBe(true);
+    // Карточка правила: щелчок — открыть, повторный — закрыть.
+    openAll(env);
+    rows89(env).find((r) => r.dataset.rule === "Ж03")!.click();
+    const cardEl = box.querySelector(".c89card")!;
+    const r = RULES89.find((x) => x.id === "Ж03")!;
+    const dd = cardEl.querySelectorAll("dd").map((d) => d.textContent);
+    expect(dd).toContain(r.ru.who);
+    expect(dd).toContain(r.ru.evidence);
+    expect(dd).toContain(`${r.v} × ${r.c} = ${r.v * r.c}`);
+    expect(rows89(env).find((x) => x.dataset.rule === "Ж03")!.getAttribute("aria-expanded")).toBe("true");
+    rows89(env).find((x) => x.dataset.rule === "Ж03")!.click();
+    expect(box.querySelector(".c89card")).toBeNull();
+    // Сохранённый вид восстанавливается.
+    const again = start({ stored: { "pult.layout.v1": env.storage.get("pult.layout.v1")! } });
+    again.sources[0]!.send(condMsg());
+    expect($(again, "b-ctl").querySelectorAll(".tile")).toEqual([]);
+    expect($(again, "b-ctl").querySelector(".c89bar")!.hidden).toBe(false);
+  });
+
+  it("новая доска не трогает поле поиска (тот же узел, значение и фокус); фокус на строке правила возвращается; нет «Условий» — «ещё не посчитаны»", () => {
+    const env = start();
+    env.sources[0]!.send(condMsg());
+    const box = $(env, "b-ctl");
+    box.querySelector("[data-ctl-view='all']")!.click();
+    const input = box.querySelector("input")!;
+    input.focus();
+    search(env, "Ж0");
+    env.sources[0]!.send(condMsg());
+    expect(box.querySelector("input")).toBe(input);
+    expect([input.value, env.document.activeElement]).toEqual(["Ж0", input]);
+    expect(rows89(env).map((r) => r.dataset.rule)).toEqual(["Ж01", "Ж02", "Ж03", "Ж04", "Ж05"].filter((id) => RULES89.some((x) => x.id === id)));
+    rows89(env)[0]!.focus();
+    const id = rows89(env)[0]!.dataset.rule;
+    env.sources[0]!.send(condMsg());
+    expect((env.document.activeElement as FakeElement).dataset.rule).toBe(id);
+    // Движок ещё не отработал — экран не выдумывает статусы.
+    env.sources[0]!.send(condMsg(null));
+    expect(box.querySelector(".c89-count")!.textContent).toBe(ru("cv.no_data"));
+    expect(rows89(env).every((r) => r.querySelector(".s89")!.textContent === "—")).toBe(true);
+    box.querySelector("[data-ctl-view='prio']")!.click();
+    expect(box.querySelector(".ctl-body")!.textContent).toContain(ru("cv.no_data"));
+  });
+
+  it("en: подписи и статусы — en; у правила без en — ru с пометкой «en — after MVP»; формулировка с </script> в справочнике — текстом, разметки нет", () => {
+    const env = start({ lang: "en" });
+    env.sources[0]!.send(condMsg());
+    const box = $(env, "b-ctl");
+    expect(box.querySelector("[data-ctl-view='all']")!.textContent).toBe(PULT["cv.all"].en);
+    expect(box.querySelectorAll(".tile")[1]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.en}: T2 · ${PULT["cv.node.system"].en}`);
+    box.querySelector("[data-ctl-view='all']")!.click();
+    openAll(env);
+    const row = (id: string) => rows89(env).find((r) => r.dataset.rule === id)!.querySelector(".cru")!.textContent;
+    expect(row("Ж03")).toBe(RULES89.find((x) => x.id === "Ж03")!.en!.rule);
+    expect(row("А01")).toBe(`${RULES89.find((x) => x.id === "А01")!.ru.rule} (en — after MVP)`);
+    // Уточнение 4: справочник в странице — через jsonForScript; `</script>` в данных не закрывает блок.
+    const evil = RULES89.map((r) => (r.id === "Ж03" ? { ...r, ru: { ...r.ru, rule: "</script><b>x</b><img src=x>" } } : r));
+    const html = pultPage("ru", brand, false, { rules: evil });
+    expect(html).not.toContain("</script><b>");
+    const e2 = start({ rules: evil });
+    e2.sources[0]!.send(condMsg());
+    e2.document.querySelector("[data-ctl-view='all']")!.click();
+    const zh = $(e2, "b-ctl").querySelectorAll(".r89").find((r) => r.dataset.rule === "Ж03")!;
+    expect(zh.querySelector(".cru")!.textContent).toBe("</script><b>x</b><img src=x>");
+    expect($(e2, "b-ctl").querySelectorAll("b, img")).toEqual([]);
   });
 });

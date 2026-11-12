@@ -271,6 +271,9 @@ describe("лента пульта (П-2.1)", () => {
     const before = p.board().control;
     expect(before.counts.txs).toBe(1);
     expect(before.waits).toEqual([]);
+    // «Условия» (П-4.2) — из того же результата движка: посчитаны, при сбое остаются прежними (тем же объектом).
+    const condBefore = p.board().conditions;
+    expect(condBefore && Object.keys(condBefore.rules)).toHaveLength(89);
     broken = true;
     const order = step("order.placed", { order_id: "OK5", mandate_id: "CK5" }, { stage: "payment" });
     const req = event("confirmation.required", { confirmation_id: "QK5", order_id: "OK5" }, { stage: "confirmation" });
@@ -282,6 +285,32 @@ describe("лента пульта (П-2.1)", () => {
     expect(after.counts).toEqual({ txs: 1, wrong: before.counts.wrong });
     expect(after.active).toEqual([{ id: "CK5", column: "confirmation", since: req.at }]);
     expect(after.waits).toEqual([{ kind: "confirmation", cond: "R21", obj: "CK5", confirmationId: "QK5", since: req.at }]);
+    expect(p.board().conditions).toBe(condBefore);
+    p.close();
+  });
+
+  it("ревью П-4.2 № 4: «Условия» пересчитываются при каждом пересчёте доски — за выдачей движка, а не один раз", async () => {
+    const f = fakeFeed();
+    let bad = false;
+    const p = createPultFeed(f.feed, {
+      now: () => new Date("2026-11-12T12:00:00Z"),
+      debounceMs: 0,
+      evaluate: (...a) => {
+        const v = evaluate(...a);
+        return bad ? { ...v, system: { ...v.system, R46: { status: "bad", seqs: [] } } } : v;
+      },
+    });
+    f.push(step("cart.created", { mandate_id: "CK6", intent_id: "IK6" }, { stage: "cart" }));
+    await tick();
+    expect(p.board().conditions!.rules["Ж03"]).not.toBe("bad");
+    bad = true;
+    f.push(step("order.placed", { order_id: "OK6", mandate_id: "CK6" }, { stage: "payment" }));
+    await tick();
+    expect(p.board().conditions!.rules["Ж03"]).toBe("bad");
+    bad = false;
+    f.push(step("payment.started", { order_id: "OK6" }));
+    await tick();
+    expect(p.board().conditions!.rules["Ж03"]).not.toBe("bad");
     p.close();
   });
 
