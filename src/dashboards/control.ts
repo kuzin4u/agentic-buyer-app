@@ -51,6 +51,39 @@ export function splitRuns(list: readonly Interpretation[]): Run[] {
   return runs;
 }
 
+/** Исход прогона драйвера нарушителя «ПР» (`run.fault`; П-4.1а, № 5 окна Б): совершено и помечено, остановлено защитой,
+ *  записи стенда сделаны (П7 доп. 2 — самостоятельный исход, Н-05), помечено, но не разыграно, не разыграно. Промежуточный
+ *  шаг `fault.sent` и заметки `fault.note.*` исходом не считаются. Перечень — по коду драйвера нарушителя (окно Б), тест
+ *  сверяет их (Р-1511): новый исход драйвера без строки здесь краснеет. */
+export const FAULT_OUTCOMES = ["marked", "refused", "recorded", "unplayed", "failed"] as const;
+export type FaultOutcome = (typeof FAULT_OUTCOMES)[number];
+export interface FaultRun {
+  /** Код теста задания (Н-NN) — из поля шага (`Interpretation.test`), не из текста. */
+  readonly test?: string;
+  /** Нет — исхода ещё нет: «идёт», без срока (Р-1510; срок прогона без паспорта — П-4.3). */
+  readonly outcome?: FaultOutcome;
+  /** Код защиты или причины целиком, составной — через запятую (`PREP_FAILED,NO_RESPONSE`; у «остановлено», «не
+   *  разыграно», «помечено, но не разыграно»). */
+  readonly code?: string;
+}
+const FAULT_RUN = "fault";
+const FAULT_STEP: ReadonlyMap<string, FaultOutcome> = new Map(FAULT_OUTCOMES.map((o) => [`fault.${o}`, o] as const));
+
+/** Прогон драйвера нарушителя: код теста из метки, исход — по последнему шагу исхода этого теста. Не прогон «ПР» — нет. */
+export function faultOf(run: Run): FaultRun | undefined {
+  if (run.name !== FAULT_RUN) return undefined;
+  const test = run.items[0]?.test;
+  let last: { outcome: FaultOutcome; r: Interpretation } | undefined;
+  for (const r of run.items) {
+    const outcome = r.stream === "scenario" ? FAULT_STEP.get(r.ref) : undefined;
+    if (outcome !== undefined && r.test === test) last = { outcome, r };
+  }
+  // Код — из поля шага целиком (`testCode`), а не первая часть составного кода в `who.code` (ревью П-4.1а № 2). Код длиннее
+  // формы (64 знака на часть) не берётся — «Открыто», П-8.1 (ревью П-4.1а № 4).
+  const code = last && last.outcome !== "marked" && last.outcome !== "recorded" ? last.r.testCode : undefined;
+  return { ...(test !== undefined && { test }), ...(last && { outcome: last.outcome }), ...(code !== undefined && { code }) };
+}
+
 /** Срок ожидания по умолчанию, мс. Не меньше окна перестановки событий Платформы `event_reorder_window_ms` (5000 мс;
  *  сбой Н-12 по умолчанию задерживает событие `operation.*` на это окно) — с запасом втрое на фоновые проходы стенда и
  *  опрос шины: иначе тест Н-12 дал бы «не принято» раньше, чем событие придёт (Р-1386 п. 4). */

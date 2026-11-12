@@ -67,6 +67,12 @@ export interface Interpretation {
   readonly source?: WireMonitorEvent["source"];
   /** Идентификаторы записи (П-1.2): по ним пульт собирает транзакцию. Нет идентификаторов — поля нет. */
   readonly ids?: TxIds;
+  /** Код теста задания (`Н-NN`) у шага сюжета — из поля шага `test` (драйвер нарушителя «ПР»: `run.fault`, `fault.*`), не из
+   *  текста фразы; другая форма не берётся (П-4.1а). */
+  readonly test?: string;
+  /** Код из поля шага `code` целиком, у шага с кодом теста (`test`): составной — через запятую (`PREP_FAILED,NO_RESPONSE`);
+   *  каждая часть — по форме кода (П-4.1а, ревью № 2: в `who.code` — только первая часть). */
+  readonly testCode?: string;
 }
 
 /** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаги `cart.created`, `cart.card`
@@ -93,6 +99,8 @@ export const LOCAL_STAND_EMULATED: readonly Role[] = ["bank", "merchant"];
 const own = <T>(map: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 const CODE_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** Код теста задания: кириллическая «Н», дефис, две цифры (Н-01…Н-12; П-4.1а). */
+const TEST_RE = /^Н-\d{2}$/;
 
 // --- Правила квалификации по коду ---
 
@@ -444,7 +452,11 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   // шагам: общий запрет «действие эмулятора не прошло» — П-11.5 окна А.
   if (byEmulator && l.step.endsWith("_failed")) kind = "conflict";
   const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
+  const test = typeof l.params.test === "string" && TEST_RE.test(l.params.test) ? l.params.test : undefined;
+  const testCode = test !== undefined && typeof l.params.code === "string" && l.params.code.split(",").every((c) => CODE_RE.test(c)) ? l.params.code : undefined;
   return {
+    ...(test !== undefined && { test }),
+    ...(testCode !== undefined && { testCode }),
     seq: l.seq,
     at: l.at,
     stream: "scenario",
