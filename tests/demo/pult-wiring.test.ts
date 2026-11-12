@@ -12,11 +12,13 @@ import { loadBrand } from "../../src/demo/server.js";
 const { brand } = loadBrand("config/brand.demo.json");
 
 describe("П-9.4: подключение «Лент» и клавиш на странице пульта", () => {
-  it("теги — в порядке focus.js → pult.js → feeds.js, по одному; клавиш до справки нет (WCAG 2.1.4); подписи «Лент» — со страницей", () => {
+  it("теги — в порядке focus.js → pult.js → feeds.js → help.js → keys.js, по одному: клавиши — только вместе со справкой и после неё (WCAG 2.1.4); подписи «Лент» — со страницей", () => {
     for (const lang of ["ru", "en"] as const) {
       const html = pultPage(lang, brand, false);
       const srcs = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
-      expect(srcs, lang).toEqual(["/pult/focus.js", "/pult/pult.js", "/pult/feeds.js"]);
+      expect(srcs, lang).toEqual(["/pult/focus.js", "/pult/pult.js", "/pult/feeds.js", "/pult/help.js", "/pult/keys.js"]);
+      expect(html).toContain('<script id="pult-help" type="application/json">');
+      expect(html).toMatch(/<button type="button" class="help-btn" data-help/);
       expect(html).toContain('<script id="feeds-i18n" type="application/json">');
       expect(html).toContain(JSON.stringify(feedsLabels(lang)["feeds.view.plain"]));
     }
@@ -41,7 +43,7 @@ describe("П-9.4: сервер отдаёт скрипты окна Б", () => {
   });
 
   it("/pult/feeds.js и /pult/keys.js — 200, text/javascript, без innerHTML и eval; страница пульта — CSP 'self'", async () => {
-    for (const p of ["/pult/feeds.js", "/pult/keys.js"]) {
+    for (const p of ["/pult/feeds.js", "/pult/keys.js", "/pult/help.js"]) {
       const r = await fetch(`${demo.monitor.url}${p}`);
       expect(r.status, p).toBe(200);
       expect(r.headers.get("content-type"), p).toContain("text/javascript");
@@ -54,6 +56,7 @@ describe("П-9.4: сервер отдаёт скрипты окна Б", () => {
     expect(csp).not.toMatch(/script-src/);
     const html = await page.text();
     expect(html).toContain('<script src="/pult/feeds.js"></script>');
-    expect(html).not.toContain('<script src="/pult/keys.js"></script>'); // клавиши — со справкой П-9.2
+    expect(html).toContain('<script src="/pult/help.js"></script>');
+    expect(html).toContain('<script src="/pult/keys.js"></script>');
   });
 });

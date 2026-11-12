@@ -62,6 +62,9 @@
   document.addEventListener("keydown", (ev) => {
     if (ev.defaultPrevented || ev.isComposing || ev.ctrlKey || ev.altKey || ev.metaKey || typing(ev.target) || !enabled()) return;
     const k = ev.key;
+    // Справка открыта — фон недоступен: действует только «?» (закрыть справку), ревью П-9.2 № 2.
+    const help = document.getElementById("pult-help-dialog");
+    if (help && !help.hidden && k !== "?") return;
     if (k >= "1" && k <= "4" && k.length === 1) {
       const pane = PANES[Number(k) - 1];
       const grid = document.getElementById("grid");
