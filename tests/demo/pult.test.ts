@@ -314,6 +314,14 @@ describe("пульт: режим сбоев DEMO_FAULTS=1 (П-1.3)", { timeout: 
     const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };
     expect(hello.faults).toBe(true);
   });
+
+  it("ревью П-8.1 № 10 (Р-1526 В2): режим сбоев включает кнопки реакции — `actions` на странице, маршрут есть (не 404), строки «режим показа» нет", async () => {
+    const html = await (await fetch(`${demo.monitor.url}/pult`)).text();
+    expect(html).toContain('"actions":true');
+    expect(html).not.toContain(`<strong>${PULT["mode.actions"].ru}</strong>`);
+    const r = await fetch(`${demo.monitor.url}/pult/act/revoke?mandate=MND-unknown`, { method: "POST", headers: { origin: demo.monitor.url } });
+    expect(r.status).toBe(409);
+  });
 });
 
 describe("запись в ленты SSE после r.end() (П-1.3, повторное ревью К1.4б № 1)", () => {

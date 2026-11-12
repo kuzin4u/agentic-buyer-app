@@ -32,6 +32,9 @@ export interface BoardCard {
   readonly kind: "tx" | "mandate";
   readonly column: BoardColumn;
   readonly intentId?: string;
+  /** Поручение корзины, если оно известно: «Остановить покупку» — только при нём (ревью П-8.1 № 2); номер транзакции
+   *  `cart:…` (конфликт звеньев — корзин две, единственной нет), `order:…`, `op:…`, `confirmation:…` — не корзина. */
+  readonly cartMandateId?: string;
   /** Продавцы покупки — для разреза «продавец» (П-2.3): все, не первый встреченный; у транзакции с конфликтом звеньев их
    *  несколько — она видна в разрезе любого своего продавца (ревью П-2.3 № 4). */
   readonly merchantIds?: readonly string[];
@@ -163,6 +166,7 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       column,
       ...(enteredAt !== undefined && { enteredAt }),
       ...(t.intentId !== undefined && { intentId: t.intentId }),
+      ...(t.cartMandateId !== undefined && { cartMandateId: t.cartMandateId }),
       ...(t.merchantIds.length > 0 && { merchantIds: t.merchantIds }),
       ...(t.outcome && { outcome: t.outcome.kind, outcomeSeq: t.outcome.seq }),
       ...(t.outcome?.code !== undefined && { code: t.outcome.code }),

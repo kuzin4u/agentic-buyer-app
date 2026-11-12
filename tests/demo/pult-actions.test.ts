@@ -4,6 +4,7 @@
 import { DEMO_VIOLATORS, type DemoIds, type DemoViolator, type StandDemo } from "agentic-ps-platform/stand";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { envFlag } from "../../src/demo/flags.js";
+import { t } from "../../src/demo/i18n.js";
 import { pultAct } from "../../src/demo/pult-act.js";
 import { pultActions } from "../../src/demo/pult-actions.js";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
@@ -26,7 +27,8 @@ describe("кнопки реакции пульта — флаг, порт, ма�
 
   it("перечни разбора — из кода стенда (Р-1511): нарушители и поля идентификаторов как у `sendToReview`", () => {
     expect([...REVIEW_VIOLATORS]).toEqual([...DEMO_VIOLATORS]);
-    // Поля идентификаторов стенд наружу не отдаёт (`DEMO_ID_FIELDS` не экспортирован) — контракт типов: равенство проверяет tsc.
+    // Поля идентификаторов: `DEMO_ID_FIELDS` объявлен в `demo.d.ts`, но входом пакета `agentic-ps-platform/stand` не
+    // экспортирован (`index.d.ts`, ревью П-8.1 № 11) — контракт типов: равенство проверяет tsc.
     type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
     const ids: Same<(typeof REVIEW_ID_FIELDS)[number], keyof DemoIds> = true;
     const viol: Same<(typeof REVIEW_VIOLATORS)[number], DemoViolator> = true;
@@ -70,8 +72,19 @@ describe("кнопки реакции пульта — флаг, порт, ма�
     expect((await pultAct("pay", q({}), a, feed, NOW)).status).toBe(404);
     expect((await pultAct("stop", q({ cart: "<b>x</b>" }), a, feed, NOW)).status).toBe(400);
     expect((await pultAct("review", q({ mandate_id: "M", condition: "R46", violator: "CLIENT" }), a, feed, NOW)).status).toBe(400);
+    // Номер транзакции пульта с типом звена — не номер стенда (ревью П-8.1 № 1, 2).
+    for (const v of ["cart:CA", "order:ORD-1", "op:P1", "confirmation:Q1"]) {
+      expect((await pultAct("stop", q({ cart: v }), a, feed, NOW)).status, v).toBe(400);
+      expect((await pultAct("review", q({ mandate_id: v, condition: "R46", violator: "AGENT" }), a, feed, NOW)).status, v).toBe(400);
+      expect((await pultAct("review", q({ order_id: "ORD-1", op_ref: v, condition: "R46", violator: "AGENT" }), a, feed, NOW)).status, v).toBe(400);
+    }
     expect(feed.react).not.toHaveBeenCalled();
     expect(a.stopPurchase).not.toHaveBeenCalled();
+    expect(a.sendToReview).not.toHaveBeenCalled();
+  });
+
+  it("словари пульта и монитора: строка режима показа одна и та же (ревью П-8.1 № 9)", () => {
+    for (const lang of ["ru", "en"] as const) for (const k of ["mode.actions", "mode.actions_note", "mode.faults", "mode.faults_note"] as const) expect(t(lang, k), `${k} ${lang}`).toBe(PULT[k][lang]);
   });
 
   it("реализация порта: ответ стенда как есть — 4xx и исключение стенда — отказ; продление — новый срок", async () => {
@@ -109,9 +122,12 @@ describe("кнопки реакции на живом стенде с насто
   const after = (n: number, name: string) => () => steps().slice(n).find((s) => s.step === name);
   const post = (path: string, origin = demo.monitor.url) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin } });
   /** Сюжет 4 до ожидания подтверждения клиентом: подписи — эмулятором банка в автотесте (П2 п. 5). */
-  async function toPendingConfirmation(): Promise<{ n: number; intent: string; cart: string; confirmation: string }> {
+  /** Подтверждения прошлых тестов: история шины между сюжетами не очищается (ревью П-8.1 № 3). */
+  const seen = new Set<string>();
+  async function toPendingConfirmation(): Promise<{ n: number; m: number; intent: string; cart: string; confirmation: string }> {
     await demo.scenarios.settled();
     const n = steps().length;
+    const m = events().length;
     expect((await post("/scenario/upk")).status).toBe(202);
     const w = await until(after(n, "intent.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(w.params.mandate_id));
@@ -120,9 +136,15 @@ describe("кнопки реакции на живом стенде с насто
     const cw = await until(after(n, "cart.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(cw.params.mandate_id));
     await until(after(n, "upk.required"));
-    const ev = await until(() => events().find((e) => e.what === "confirmation.required" && e.ids.mandate_id !== undefined) ?? events().filter((e) => e.what === "confirmation.required").at(-1));
-    return { n, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation: String(ev.ids.confirmation_id) };
+    // Только события этого сюжета: запрос подтверждения прошлого теста уже закрыт, его `confirmation.rejected` нашёлся бы
+    // сразу и проверка П2 доп. 6 молча ослабла бы.
+    const ev = await until(() => events().slice(m).find((e) => e.what === "confirmation.required"));
+    const confirmation = String(ev.ids.confirmation_id);
+    expect(seen.has(confirmation)).toBe(false);
+    seen.add(confirmation);
+    return { n, m, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation };
   }
+  const eventAfter = (m: number, what: string, f: (e: MonitorEvent) => boolean) => () => events().slice(m).find((e) => e.what === what && f(e));
 
   beforeAll(async () => {
     [demo, plain] = await Promise.all([startDemo({ actions: true }), startDemo()]);
@@ -139,6 +161,9 @@ describe("кнопки реакции на живом стенде с насто
     expect(html).toContain(PULT["mode.actions"].ru);
     expect(await (await fetch(`${demo.monitor.url}/`)).text()).toContain(PULT["mode.actions"].ru);
     expect((await post("/pult/act/stop?cart=X", "http://evil.example")).status).toBe(403);
+    // Ревью П-8.1 № 10: без Origin — 403; не POST — 404.
+    expect((await fetch(`${demo.monitor.url}/pult/act/stop?cart=X`, { method: "POST" })).status).toBe(403);
+    expect((await fetch(`${demo.monitor.url}/pult/act/stop?cart=X`)).status).toBe(404);
   });
 
   it("каждая кнопка на стенде: «Напомнить» (продление один раз), «Передать на разбор», отказ стенда по неизвестному поручению — «отказано»", async () => {
@@ -156,7 +181,7 @@ describe("кнопки реакции на живом стенде с насто
     const stop = (await (await post(`/pult/act/stop?cart=${p.cart}`)).json()) as Reaction;
     expect(stop).toMatchObject({ outcome: "done" });
     expect(stop.result?.rejected).toContain(p.confirmation);
-    await until(() => events().find((e) => e.what === "confirmation.rejected" && e.ids.confirmation_id === p.confirmation));
+    await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
     await demo.scenarios.settled();
     expect(steps().slice(p.n).some((s) => s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
   });
@@ -165,8 +190,8 @@ describe("кнопки реакции на живом стенде с насто
     const p = await toPendingConfirmation();
     const r = (await (await post(`/pult/act/revoke?mandate=${p.intent}`)).json()) as Reaction;
     expect(r).toMatchObject({ action: "revoke", outcome: "done", result: { ok: true } });
-    await until(() => events().find((e) => e.what === "confirmation.rejected" && e.ids.confirmation_id === p.confirmation));
-    await until(() => events().find((e) => e.what === "mandate.revoked" && e.ids.mandate_id === p.intent));
+    await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
+    await until(eventAfter(p.m, "mandate.revoked", (e) => e.ids.mandate_id === p.intent));
     await demo.scenarios.settled();
     expect(steps().slice(p.n).some((s) => s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
     expect(events().some((e) => e.what === "operation.authorized" && e.ids.mandate_id === p.cart)).toBe(false);

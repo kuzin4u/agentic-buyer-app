@@ -791,12 +791,27 @@
     if (typeof x.error === "string") return label("act.refused") + " · " + x.error;
     if (x.outcome === "noted") return label("act.noted");
     const r = x.result && typeof x.result === "object" ? x.result : {};
+    // Напоминание без продления (стенд уже продлевал срок): не «сделано», а отдельный итог (ревью П-8.1 № 5).
+    if (x.outcome === "done" && r.extended === false) return label("act.not_extended") + " " + (typeof r.expiresAt === "string" ? clock(r.expiresAt) : "—");
     const parts = [label(x.outcome === "done" ? "act.done" : "act.refused")];
     if (typeof r.status === "number") parts.push(String(r.status));
     if (typeof r.code === "string") parts.push(r.code);
-    if (typeof r.expiresAt === "string") parts.push(r.extended ? label("act.extended") + " " + clock(r.expiresAt) : label("act.not_extended"));
+    if (typeof r.expiresAt === "string" && r.extended) parts.push(label("act.extended") + " " + clock(r.expiresAt));
     if (Array.isArray(r.rejected) && r.rejected.length > 0) parts.push(label("act.closed") + ": " + r.rejected.join(", "));
     return parts.join(" · ");
+  }
+  /** Поле разбора по типу номера на пульте (ревью П-8.1 № 1; повторное № 1): `cart:` — поручение корзины (транзакция с
+   *  конфликтом звеньев, первое звено — корзина), `order:` — номер заказа, `op:` — операция, `confirmation:` — запрос
+   *  подтверждения, иначе — поручение; префикс пульта стенду не отправляется. Перечень — `NODE_TYPE` в `src/pult/tx.ts`. */
+  const REVIEW_PREFIX = [
+    ["cart:", "mandate_id"],
+    ["order:", "order_id"],
+    ["op:", "op_ref"],
+    ["confirmation:", "confirmation_id"],
+  ];
+  function reviewIds(obj) {
+    for (const [p, field] of REVIEW_PREFIX) if (obj.indexOf(p) === 0) return { [field]: obj.slice(p.length) };
+    return { mandate_id: obj };
   }
   function sendAct(act, query, key) {
     actState.results[key] = label("act.sending");
@@ -826,7 +841,10 @@
   function txButtons(row, id) {
     const card = board.cards.find((x) => x.id === id);
     const bar = el("div", undefined, "act-bar");
-    if (card && card.kind === "tx" && id.indexOf("order:") !== 0) bar.appendChild(actButton("stop:" + id, label("act.stop"), "stop", { cart: id }));
+    // «Остановить покупку» — только при известном поручении корзины (ревью П-8.1 № 2): у `op:…`, `confirmation:…`,
+    // `order:…` корзины нет — стенд заведомо отказал бы.
+    const cart = card && card.kind === "tx" && typeof card.cartMandateId === "string" ? card.cartMandateId : "";
+    if (cart) bar.appendChild(actButton("stop:" + id, label("act.stop"), "stop", { cart: cart }));
     const intent = card && typeof card.intentId === "string" ? card.intentId : "";
     if (intent) {
       const key = "revoke:" + intent;
@@ -874,7 +892,12 @@
         // «Передать на разбор» — условие и нарушитель из вердикта; нарушитель не определён — разбор владельцем.
         if (ACTIONS && f.cond && ps.obj) {
           const key = "review:" + ps.obj + ":" + f.cond;
-          if (Object.prototype.hasOwnProperty.call(VIOLATOR, f.violator)) line.appendChild(actButton(key, label("act.review"), "review", { mandate_id: ps.obj, condition: f.cond, violator: VIOLATOR[f.violator] }));
+          if (Object.prototype.hasOwnProperty.call(VIOLATOR, f.violator)) {
+            const ids = reviewIds(ps.obj);
+            ids.condition = f.cond;
+            ids.violator = VIOLATOR[f.violator];
+            line.appendChild(actButton(key, label("act.review"), "review", ids));
+          }
           else line.appendChild(disabledButton(label("act.review"), label("act.review.undetermined")));
           append(line, resultOf(key));
         }

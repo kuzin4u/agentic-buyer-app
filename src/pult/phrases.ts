@@ -212,7 +212,7 @@ export const PULT = {
   "focus.hint": p("Esc — уровень выше; панели показывают то, что в фокусе", "Esc — one level up; panes show what is in focus"),
   "mode.faults": p("режим сбоев: вкл.", "fault mode: on"),
   "mode.actions": p("режим показа: вкл.", "demo mode: on"),
-  "mode.actions_note": p("кнопки реакции вызывают действия стенда", "reaction buttons call stand actions"),
+  "mode.actions_note": p("кнопки реакции пульта вызывают действия стенда", "console reaction buttons call stand actions"),
   // Кнопки реакции (П-8.1; модель «Кнопки реакции» v1.0, Р-1526).
   "act.remind": p("Напомнить клиенту", "Remind the client"),
   "act.stop": p("Остановить покупку", "Stop the purchase"),
@@ -229,7 +229,7 @@ export const PULT = {
   "act.refused": p("отказано", "refused"),
   "act.noted": p("напомнено — записано в журнал пульта, срок не продлён", "reminded — recorded in the console log, deadline not extended"),
   "act.extended": p("срок продлён до", "deadline extended to"),
-  "act.not_extended": p("срок уже продлевали — не продлён", "the deadline was already extended — not extended"),
+  "act.not_extended": p("напоминание записано стендом, срок не продлён — его уже продлевали; срок до", "reminder recorded by the stand, deadline not extended — it was already extended; deadline"),
   "act.closed": p("закрыты запросы подтверждения", "confirmation requests closed"),
   "act.failed": p("стенд не ответил", "the stand did not answer"),
   "act.log": p("Журнал реакций", "Reaction log"),
