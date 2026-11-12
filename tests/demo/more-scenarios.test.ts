@@ -418,6 +418,13 @@ describe("сюжет 10 «Срок поручения истёк» (П-09)", { t
     // Срок — из карточки: поручение действует EXPIRY секунд от запроса; попытка — после срока по часам стенда.
     const created = steps.find((s) => s.step === "intent.created")!;
     const validTo = Date.parse(String(Object(wait.params.valid_to).iso));
+    // П-11.5б (П-09): срок поручения — уже в шаге `intent.created`, тот же, что ждёт сюжет (из данных поручения), TimeView.
+    expect(created.params.valid_to).toEqual(wait.params.valid_to);
+    // …и на линии экранов (WIRE_TIME_PARAMS) — та же форма.
+    const createdItem = items.find((r) => r.ref === "intent.created");
+    expect(createdItem).toBeDefined();
+    // Текст для человека с новым параметром — без сырого ISO (ревью П-11.5б № 3).
+    for (const lang of ["ru", "en"] as const) expect(createdItem!.phrase[lang]).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
     expect(validTo - Date.parse(created.at)).toBeLessThanOrEqual(EXPIRY * 1000 + 1000);
     expect(Date.parse(steps.find((s) => s.step === "expiry.attempt")!.at)).toBeGreaterThan(validTo);
     // Код защиты: до витрин не дошло — ни выдачи, ни корзины, ни заказа, ни реквизита.

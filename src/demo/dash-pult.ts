@@ -1,11 +1,16 @@
 // Страница пульта DEMO-2 (П-1.1, модель пульта 1.23): каркас — четыре панели в сетке 2×2 или вкладками, разворот
 // панели, переключатель «Пульт · Экран · Монитор». Разметка без данных шины — панели наполняет скрипт
 // `public/pult/pult.js` через createElement и textContent (инвариант 4, П2 п. 2). Язык ru/en, бренд из конфигурации
-// (правило совместимости 3, инвариант 7).
+// (правило совместимости 3, инвариант 7). Скрипты окна Б (П-9.4, Р-1523 В16 (а)): «Ленты» `feeds.js` (П-5.2) — после
+// `pult.js`, с подписями на языке страницы сразу (без них до первого сообщения ленты видны были бы ключи); справка `help.js`
+// (П-9.2) с переключателем клавиш (WCAG 2.1.4) и кнопкой «?»; клавиши `keys.js` (П-9.1) — последними, после `pult.js`: видят,
+// отменил ли `pult.js` или окно справки событие (Esc).
 import type { Brand } from "../brand.js";
 import type { WireLang } from "../dashboards/wire.js";
 import { BOARD_COLUMNS } from "../pult/board.js";
 import { rulesForPage } from "../pult/conditions.js";
+import { feedsLabels } from "../pult/feeds.js";
+import { helpForPage } from "../pult/help.js";
 import { PANES, PULT, type Pane } from "../pult/phrases.js";
 import type { Rule89 } from "../pult/rules89.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -44,6 +49,8 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
   const other: WireLang = lang === "ru" ? "en" : "ru";
   const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
+  // Справка (П-9.2) — на языке страницы; окно рисует `help.js`.
+  const help = helpForPage(lang);
   const tabs = PANES.map(
     // Вкладки — кнопки-переключатели с aria-pressed, а не роли tab/tabpanel без стрелок (ревью П-1.1 № 3).
     (p) => `<button type="button" data-tab="${p}" aria-controls="p-${p}" aria-pressed="false">${s(`pane.${p}` as const)}</button>`,
@@ -69,6 +76,7 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   ${o.actionsMode ? `<p class="faults-mode"><strong>${s("mode.actions")}</strong> — ${s("mode.actions_note")}</p>` : ""}
   <p class="status"><span id="conn" class="conn conn-wait" role="status"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span></p>
   <span class="layout">${s("layout.label")}:<button type="button" data-layout="grid" aria-pressed="true">${s("layout.grid")}</button> <button type="button" data-layout="tabs" aria-pressed="false">${s("layout.tabs")}</button></span>
+  <button type="button" class="help-btn" data-help aria-controls="pult-help-dialog">${escapeHtml(help.labels["help.open"] ?? "")}</button>
 </div>
 <main>
   <p class="subtitle">${s("subtitle")}</p>
@@ -82,6 +90,11 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
 <script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>
+<script id="feeds-i18n" type="application/json">${jsonForScript(feedsLabels(lang))}</script>
+<script src="/pult/feeds.js"></script>
+<script id="pult-help" type="application/json">${jsonForScript(help)}</script>
+<script src="/pult/help.js"></script>
+<script src="/pult/keys.js"></script>
 </body>
 </html>`;
 }

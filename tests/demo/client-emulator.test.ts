@@ -306,6 +306,19 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     checkClientSteps(s);
     return s;
   }
+  /** П-11.5в: события подтверждения Платформы прогона несут поручение корзины прогона (из записи подтверждения). */
+  async function expectConfirmationCart(s: readonly ScenarioLine[], want: readonly string[]): Promise<void> {
+    const cart = String(s.find((x) => x.step === "cart.created")?.params.mandate_id);
+    const from = s[0]!.seq;
+    const events = () =>
+      demo.bus.history().flatMap((i) => (i.stream === "monitor" && i.event.seq > from && i.event.source === "pao_event" && i.event.ids.confirmation_id ? [i.event] : []));
+    const end = Date.now() + 15_000;
+    while (!want.every((w) => events().some((e) => e.what === w))) {
+      if (Date.now() > end) throw new Error(`нет событий ${want.join(", ")}: ${events().map((e) => e.what).join(", ")}`);
+      await pause(50);
+    }
+    for (const e of events()) expect(e.ids.mandate_id, `${e.what} ${e.ids.confirmation_id}`).toBe(cart);
+  }
   async function fault(test: string): Promise<{ last: ScenarioLine; s: ScenarioLine[] }> {
     await demo.scenarios.settled();
     await demo.faulty!.settled();
@@ -340,6 +353,18 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     expect(s.find((x) => x.step === "cart.created")?.params.intent_id).toBe(intentId);
   });
 
+  it("П-11.5б: шаг intent.created несёт срок поручения valid_to (TimeView) — сюжеты 1 и 8 (П-06)", async () => {
+    for (const [name, end] of [["intent", ["intent.signed"]], ["scope", ["scope.refused", "scope.not_refused"]]] as const) {
+      const s = await run(name, end);
+      const created = s.find((x) => x.step === "intent.created")!;
+      const v = created.params.valid_to as { iso?: string; text?: { ru?: string; en?: string } } | undefined;
+      expect(v, name).toBeDefined();
+      expect(Date.parse(String(v!.iso)), name).toBeGreaterThan(Date.parse(created.at));
+      expect(v!.text?.ru, name).toBeTruthy();
+      expect(v!.text?.en, name).toBeTruthy();
+    }
+  });
+
   it("сюжет 7 (П-04): эмулятор отклоняет запрос подтверждения в банке — upk.declined", async () => {
     const s = await run("unconfirmed", ["upk.declined", "outcome"]);
     const names = s.map((x) => x.step);
@@ -347,6 +372,8 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     expect(names).toContain("upk.declined");
     expect(names).not.toContain("client.confirmed");
     expect(names).not.toContain("outcome");
+    // П-11.5в: `confirmation.rejected` по ПАО несёт только номер запроса — поручение корзины добавляет шина из записи.
+    await expectConfirmationCart(s, ["confirmation.required", "confirmation.rejected"]);
   });
 
   it("драйвер Н-07 «ПР»: эмулятор подписывает только поручение, корзину — нет; защита PRINCIPAL_SIGNATURE_PENDING", async () => {
@@ -379,6 +406,7 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     const s = await run("upk", ["outcome", "upk.declined"]);
     expect(s.map((x) => x.step)).toContain("client.confirmed");
     expect(s.map((x) => x.step)).toContain("outcome");
+    await expectConfirmationCart(s, ["confirmation.required", "confirmation.approved"]);
     expect(JSON.stringify(s.filter((x) => x.step.startsWith("client.")))).not.toMatch(/upk_url|\/c\//);
     expect(Object.keys(s.find((x) => x.step === "client.confirmed")!.params).sort()).toEqual(["confirmation_id", "source"]);
   });
@@ -486,6 +514,8 @@ const ISSUER_OK: readonly [string | undefined, RegExp][] = [
   ["src/demo/run.ts", /new ClientEmulator\(\{ issuer: stand\.stand\.issuer,/g],
   // Сборка стенда: ответ эмитента на уведомление ADP (локальная переменная).
   ["src/demo/stand.ts", /const issuer = await s\.app\.inject\(|\bissuer\.statusCode\b/g],
+  // Тип стенда сюжетов (П-11.4г): банк сужен до чтений — запись самого сужения.
+  ["src/demo/scenarios.ts", /readonly issuer: Pick<StandIssuer, "upkCode" \| "setLimits">/g],
 ];
 const ANSWER_OK: readonly [string, RegExp][] = [
   ["src/demo/scenarios.ts", /^ {2}answerCart\(agree: boolean\): ScenarioStart \{$/gm], // определение
