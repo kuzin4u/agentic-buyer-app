@@ -177,8 +177,10 @@ async function signedCart(c: FaultContext, key: string): Promise<{ intentId: str
 }
 
 /** Остановка ветки ею самой с конкретной причиной (до пометки — «не помечено», после — «помечено, но не разыграно»). */
+/** Причины, с которыми ветка останавливается сама (`BranchStop`). */
+export const BRANCH_STOP_CODES = ["NO_SECOND_MERCHANT", "ORDER_ID_MALFORMED", "FIRST_PAYMENT_NOT_AUTHORIZED"] as const;
 class BranchStop extends Error {
-  constructor(readonly code: "NO_SECOND_MERCHANT" | "ORDER_ID_MALFORMED" | "FIRST_PAYMENT_NOT_AUTHORIZED") {
+  constructor(readonly code: (typeof BRANCH_STOP_CODES)[number]) {
     super(code);
   }
 }
@@ -337,21 +339,37 @@ const CLIENT_WAIT_MS = EXPIRY_SEC * 1000;
 /** Как часто драйвер перечитывает мандат, ожидая действия клиента, мс. */
 const CLIENT_POLL_MS = 300;
 
-/** Причина остановки ветки драйвером. */
-type StopCode =
-  | "NOT_MARKED"
-  | "MARK_REJECTED"
-  | "MARK_AFTER_VIOLATION"
-  | "BAD_STEP"
-  | "BAD_TARGET"
-  | "BAD_VIOLATION"
-  | "BAD_PREP"
-  | "CLIENT_SIGN_TIMEOUT"
-  | "CLIENT_REVOKE_TIMEOUT"
-  | "CLIENT_DECLINED"
-  | "ABORTED"
-  | "ARM_REJECTED"
-  | BranchStop["code"];
+/** Причины остановки ветки драйвером — закрытый перечень (Р-1511): у каждой — фраза ru/en в `CODE_WORDS`, это сверяет тест. */
+export const STOP_CODES = [
+  "NOT_MARKED",
+  "MARK_REJECTED",
+  "MARK_AFTER_VIOLATION",
+  "BAD_STEP",
+  "BAD_TARGET",
+  "BAD_VIOLATION",
+  "BAD_PREP",
+  "CLIENT_SIGN_TIMEOUT",
+  "CLIENT_REVOKE_TIMEOUT",
+  "CLIENT_DECLINED",
+  "ABORTED",
+  "ARM_REJECTED",
+  "ARMED_ELSEWHERE",
+] as const;
+/** Итоговые коды, которые выносит разбор журнала ветки (`#settle`, `paoEntry`, `shopEntry`), — тоже с фразой ru/en; кроме
+ *  `UNEXPECTED_<код>` (код защиты как есть) и `missing` строки таблицы (`FAULT_PLAN`). */
+export const SETTLE_CODES = ["BRANCH_ERROR", "NOT_SENT", "PREP_FAILED", "NO_RESPONSE", "MALFORMED_BODY"] as const;
+type StopCode = (typeof STOP_CODES)[number] | BranchStop["code"];
+
+/** Куда сбой стенда взвёл человек (маршрут `/stand-fault/`, П-11.2б): витрина и / или продавец; оба пусты — на все витрины. */
+export interface HumanArm {
+  readonly shop_id?: string;
+  readonly merchant_id?: string;
+}
+
+/** Запуск нарушения: сведения о взводе человеком этого теста — от маршрута сбоев «П» (П-11.2г, Р-1520). */
+export interface FaultStartOptions {
+  readonly humanArm?: HumanArm;
+}
 
 /** Отказ запроса ветки драйвером (запрос не ушёл): остановлена ветка, кончилась или драйвер закрыт. */
 class FaultStop extends Error {
@@ -409,6 +427,12 @@ export class FaultyDriver {
   /** Снять сбой стенда, взведённый драйвером на время ветки (`arm` таблицы); null — снимать нечего. Вызывается при любом
    *  исходе: конец ветки, «прервать», закрытие драйвера — и только один раз. */
   #disarm: (() => void) | null = null;
+  /** Тест, чей сбой стенда держит ветка (взвела драйвер и ещё не сняла); null — не держит. Пока держит, взвод и снятие этого
+   *  теста человеком отклоняются (П-11.2в, П7 доп. 2): у стенда один взвод на тест, чужой взвод перезаписал бы витрину
+   *  нарушителя, а снятие драйвером в конце ветки сняло бы и сбой человека. */
+  #held: FaultTest | null = null;
+  /** Снять удержание этого прогона, если взвод не драйвера (взвёл человек, П-11.2г (а)); null — снимать нечего. */
+  #releaseHold: (() => void) | null = null;
 
   constructor(d: DemoStand, emit: StepSink, o: FaultyOptions = {}) {
     // Без режима сбоев драйвера нет (П7 п. 2): ни ключа, ни клиента.
@@ -439,20 +463,26 @@ export class FaultyDriver {
     return this.#running !== null;
   }
 
+  /** Держит ли ветка взвод сбоя стенда этого теста: всё время ветки, которая пользуется взводом, — своим (П-11.2в) или
+   *  человека на витрину нарушителя (П-11.2г (а), Р-1520); «прервать» и закрытие снимают удержание сразу. */
+  holds(test: string): boolean {
+    return (this.#disarm !== null || this.#releaseHold !== null) && this.#held === test;
+  }
+
   /** Есть ли у теста ветка (кирпичи П-11.3б–д). */
   has(test: FaultTest): boolean {
     return Object.hasOwn(this.#branches, test);
   }
 
   /** Запустить нарушение; ход — шагами на шину. Возвращает сразу. */
-  start(test: FaultTest): FaultStart {
+  start(test: FaultTest, o: FaultStartOptions = {}): FaultStart {
     if (this.#ac.signal.aborted) return { ok: false, code: "CLOSED" };
     if (this.#running || this.#otherBusy()) return { ok: false, code: "BUSY" };
     const branch = Object.hasOwn(this.#branches, test) ? this.#branches[test] : undefined;
     if (!branch) return { ok: false, code: "NOT_READY" };
     // Своя метка прогона: «Контроль» режет ленту по `run.*` — нарушение не приклеится к прогону последнего сюжета.
     this.#step("run.fault", { test });
-    const running: Promise<void> = this.#run(test, branch)
+    const running: Promise<void> = this.#run(test, branch, o.humanArm)
       .catch(() => undefined)
       .finally(() => {
         if (this.#running === running) this.#running = null;
@@ -467,6 +497,7 @@ export class FaultyDriver {
     if (!this.#abortRun) return { ok: false, code: "NOT_AWAITING" };
     this.#abortRun();
     this.#disarm?.(); // не ждать конца ветки: сбой стенда снят сразу
+    this.#releaseHold?.(); // взвод человека не снимается, удержание — сразу
     return { ok: true };
   }
 
@@ -480,13 +511,14 @@ export class FaultyDriver {
   async close(): Promise<void> {
     this.#ac.abort();
     this.#disarm?.(); // зависшая ветка не держит сбой стенда взведённым после закрытия
+    this.#releaseHold?.();
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([this.#running, new Promise<void>((ok) => (timer = setTimeout(ok, this.#closeWaitMs)))]);
     clearTimeout(timer);
     this.#running = null;
   }
 
-  async #run(test: FaultTest, branch: FaultBranch): Promise<void> {
+  async #run(test: FaultTest, branch: FaultBranch, humanArm: HumanArm | undefined): Promise<void> {
     // Сигнал ветки: закрывается закрытием драйвера, остановкой ветки драйвером и её концом. Запросы, уже ушедшие,
     // доходят до ответа (их ждёт итог); новые не уходят.
     const run = new AbortController();
@@ -638,7 +670,24 @@ export class FaultyDriver {
       // Снятие — замыкание этого прогона: в поле экземпляра для abort() и close() лежит оно же, и обнуляется поле, только
       // если там именно оно (ревью П-11.3д-1 № 5: снятие старой ветки не снимет сбой новой). Взвод и снятие — на шину с
       // пометкой (ПР): сбой взвёл драйвер, а не человек (№ 2).
-      if (plan.arm && !armedNow(standDemo.log(), test)) {
+      // Взвод человека (П-11.2г, Р-1520): на витрину нарушителя (или на все) — ветка идёт по нему и держит его всё время ветки
+      // (а), не снимая; не на витрину нарушителя или куда — не известно — ветка не идёт по чужому сбою: ARMED_ELSEWHERE (б).
+      if (plan.arm && armedNow(standDemo.log(), test)) {
+        const covers =
+          humanArm !== undefined &&
+          (humanArm.shop_id === undefined || humanArm.shop_id === VIOLATOR_SHOP.id) &&
+          (humanArm.merchant_id === undefined || humanArm.merchant_id === VIOLATOR_SHOP.merchant_id);
+        if (!covers) stop ??= "ARMED_ELSEWHERE";
+        else {
+          const release = (): void => {
+            if (this.#releaseHold !== release) return;
+            this.#releaseHold = null;
+            this.#held = null;
+          };
+          this.#releaseHold = release;
+          this.#held = test;
+        }
+      } else if (plan.arm) {
         let armed = false;
         try {
           standDemo.arm(test, { shop_id: VIOLATOR_SHOP.id });
@@ -653,7 +702,10 @@ export class FaultyDriver {
           const disarm = (): void => {
             if (done) return;
             done = true;
-            if (this.#disarm === disarm) this.#disarm = null;
+            if (this.#disarm === disarm) {
+              this.#disarm = null;
+              this.#held = null;
+            }
             // `disarm` стенда бросает только при выключенных сбоях или чужом тесте — здесь недостижимо; если всё же бросил,
             // шага «снят» нет — несоответствие видно на шине (№ 6). Шаг на шину после снятия: его сбой снятие не отменяет.
             try {
@@ -664,6 +716,7 @@ export class FaultyDriver {
             }
           };
           this.#disarm = disarm;
+          this.#held = test;
           this.#step("fault.note.armed", { test, shop_id: VIOLATOR_SHOP.id });
         }
       }
@@ -677,6 +730,7 @@ export class FaultyDriver {
       run.abort(); // ветка кончилась — новые запросы, пометки и шаги из неё не уходят
       this.#abortRun = null;
       this.#disarm?.(); // при любом исходе ветки (решение владельца по В1 П-11.3д)
+      this.#releaseHold?.(); // удержание взвода человека — до конца ветки (П-11.2г (а))
     }
     // Итог — только когда пришли ответы на все ушедшие запросы (или не пришли — тогда сбой).
     const entries = await Promise.all(journal);

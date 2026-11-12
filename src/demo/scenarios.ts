@@ -835,9 +835,15 @@ export class DemoScenarios {
     const qty = q;
     const total = cartTotal([{ price: pick.product.price, qty }]);
     const delivery = pick.product.delivery.find((d) => d.region === undefined || d.region === standRegion()) ?? pick.product.delivery[0];
+    // intent_id — поручение-намерение, под которым показана карточка (как у `cart.created`, П-1.2): им эмулятор клиента «Авто»
+    // привязывает свой ответ «согласен» к объекту (П5 доп. 1 п. 3, Р-1506). `mandate_id` здесь нет: шаг `cart.*` с ним модель
+    // транзакций пульта сочла бы поручением корзины.
+    // Ответ человека ждёт `#consent()` сразу после этого шага (синхронно): эмулятор отвечает микрозадачей после шага и
+    // застаёт ожидание уже выставленным — порядок не менять.
     this.#step("cart.card", {
       title: pick.product.title,
       merchant_id: pick.merchantId,
+      ...(p.intentMandate?.id !== undefined && { intent_id: p.intentMandate.id }),
       sku: pick.sku,
       price: pick.product.price,
       qty,
