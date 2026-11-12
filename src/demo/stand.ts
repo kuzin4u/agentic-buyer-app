@@ -45,6 +45,9 @@ export interface DemoStand {
   readonly urls: DemoUrls;
   /** Режим сбоев стенда включён (`demo: { faults: true }`, П-1.3): прогон тестов пульта, срок подтверждения 45 с. */
   readonly faults: boolean;
+  /** Действия кнопок реакции у стенда есть (`stand.demo`): режим показа (`DEMO_ACTIONS=1`, `{ actions: true }`) или режим
+   *  сбоев (П-8.1, Р-1526 В2). */
+  readonly actions: boolean;
   /** Каталог ключей агента приложения — только при режиме сбоев: из него драйвер нарушителя «ПР» загружает ключ (П7).
    *  Без флага поля нет. Путь, не ключ: сам ключ читает только драйвер. */
   readonly keysDir?: string;
@@ -114,8 +117,10 @@ function agentParamsPath(): string {
 }
 
 /** passMs — период фоновых проходов стенда; 0 — без проходов (тест вызывает их сам). По умолчанию STAND_PASS_MS. */
-export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?: boolean } = {}): Promise<DemoStand> {
+export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?: boolean; actions?: boolean } = {}): Promise<DemoStand> {
   const faults = o.faults === true;
+  // Режим показа (`DEMO_ACTIONS=1`): действия без сбоев; режим сбоев включает действия сам (сбоев без действий не бывает).
+  const actionsOnly = !faults && o.actions === true;
   const fixture = AGENT_FIXTURES.find((f) => f.registered && f.class === "BUYER");
   if (!fixture) throw new Error("в AGENT_FIXTURES нет зарегистрированного агента BUYER");
 
@@ -148,8 +153,9 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?:
 
     // Свой набор витрин (стенд v0.41.0, передача #5): «Масса Мадре» с каталогом пекарни на месте SHOP-1042 (Р-1278).
     // Режим сбоев (П-1.3, Р-1355 ответ 1) — только для прогона тестов пульта: сбои Н-02…Н-12 по кнопкам, срок 45 с
-    // (ответ Платформы по #112). Без флага стенд — как без режима (показ людям; `{ actions: true }` — П-8.1).
-    const s = createStand({ shops: DEMO_SHOPS, ...(faults && { demo: { faults: true } }) });
+    // (ответ Платформы по #112). Режим показа (`DEMO_ACTIONS=1`, П-8.1) — `{ actions: true }`: действия кнопок без сбоев,
+    // срок 900 с. Без флагов — стенд без режима, кнопок нет (Р-1526 В2).
+    const s = createStand({ shops: DEMO_SHOPS, ...(faults ? { demo: { faults: true } } : actionsOnly ? { demo: { actions: true } } : {}) });
     stand = s;
     merchants = createMerchants(s, {
       decide: async (msg) => {
@@ -239,6 +245,7 @@ export async function startDemoStand(o: { lang?: Lang; passMs?: number; faults?:
       agentCode: fixture.agent_code,
       urls: { pao, merchants: merchantsUrl, bankApp, upk },
       faults,
+      actions: faults || actionsOnly,
       // Каталог ключей агента — только в режиме сбоев, для драйвера нарушителя «ПР» (П7); без флага его нет.
       ...(faults && { keysDir }),
       merchantCalls: () => merchantCalls,

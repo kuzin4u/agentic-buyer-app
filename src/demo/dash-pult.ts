@@ -40,7 +40,7 @@ function paneHtml(pane: Pane, lang: WireLang): string {
 
 /** `faults` — режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» под шапкой. `rules` — справочник 89
  *  правил для «Условий» (П-4.2); подмена — только для теста экранирования. */
-export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[] } = {}): string {
+export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[]; actions?: boolean; actionsMode?: boolean; holdSec?: number } = {}): string {
   const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
   const other: WireLang = lang === "ru" ? "en" : "ru";
   const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
@@ -65,7 +65,8 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   <nav>${switcherHtml("pult", lang)} <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/pult?lang=${other}">${other}</a></span></nav>
 </header>
 <div class="bar">
-  ${o.faults ? `<p class="faults-mode"><strong>${s("mode.faults")}</strong> — ${s("mode.faults_note")}</p>` : ""}
+  ${o.faults ? `<p class="faults-mode"><strong>${s("mode.faults")}</strong> — ${s("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+  ${o.actionsMode ? `<p class="faults-mode"><strong>${s("mode.actions")}</strong> — ${s("mode.actions_note")}</p>` : ""}
   <p class="status"><span id="conn" class="conn conn-wait" role="status"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span></p>
   <span class="layout">${s("layout.label")}:<button type="button" data-layout="grid" aria-pressed="true">${s("layout.grid")}</button> <button type="button" data-layout="tabs" aria-pressed="false">${s("layout.tabs")}</button></span>
 </div>
@@ -77,7 +78,7 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}
   </div>
 </main>
-<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES })}</script>
+<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES, actions: o.actions === true })}</script>
 <script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>

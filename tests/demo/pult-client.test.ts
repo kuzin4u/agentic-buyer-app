@@ -17,8 +17,8 @@ const FOCUS_JS = readFileSync("src/demo/public/pult/focus.js", "utf8");
 const PULT_JS = readFileSync("src/demo/public/pult/pult.js", "utf8");
 const { brand } = loadBrand("config/brand.demo.json");
 
-function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean; rules?: readonly Rule89[] } = {}): PageEnv {
-  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false, o.rules ? { rules: o.rules } : {}), o);
+function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean; rules?: readonly Rule89[]; actions?: boolean } = {}): PageEnv {
+  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false, { ...(o.rules && { rules: o.rules }), ...(o.actions && { actions: true }) }), o);
   if (!o.noFocus) env.run(FOCUS_JS);
   env.run(PULT_JS);
   return env;
@@ -710,5 +710,74 @@ describe("«Причины» пульта (П-5.1)", () => {
     expect($(env, "b-int").textContent).not.toMatch(/правильн/);
     env.sources[0]!.send(msg(undefined));
     expect($(env, "b-int").textContent).toContain(ru("int.no_engine"));
+  });
+});
+
+// П-8.1 «Кнопки реакции» на подменённом DOM (Р-1526, Р-1527): режимы, два шага отзыва, «Напомнить» без стенда у R08 / R18.
+describe("кнопки реакции пульта (П-8.1)", () => {
+  const T0 = "2026-11-10T11:59:00.000Z";
+  const ctl = {
+    passports: [{ obj: "CT1", findings: [{ cond: "R46", violator: "agent" }, { cond: "R09", violator: "undetermined" }] }],
+    waits: [
+      { kind: "sign", cond: "R08", obj: "IM1", since: T0 },
+      { kind: "confirmation", cond: "R21", obj: "CT1", confirmationId: "Q1", since: T0 },
+    ],
+    waitMs: 15_000,
+    active: [{ id: "CT1", column: "confirmation", since: T0 }],
+    counts: { txs: 1, wrong: 1 },
+  };
+  const msg = { type: "board", board: { now: NOW, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1" }], jumps: [], control: ctl } };
+  const withFetch = (env: PageEnv) => {
+    const calls: string[] = [];
+    env.window.fetch = (url: string) => {
+      calls.push(url);
+      return Promise.resolve({ json: () => Promise.resolve({ action: "x", obj: "x", outcome: "refused", result: { ok: false, status: 409, code: "MANDATE_NOT_ACTIVE" } }) });
+    };
+    return calls;
+  };
+  const btn = (env: PageEnv, act: string) => $(env, "b-ctl").querySelectorAll("button[data-act]").filter((b) => b.dataset.act === act);
+
+  it("В2: без режима показа или сбоев кнопок нет — экран прежний", () => {
+    const env = start();
+    env.sources[0]!.send(msg);
+    expect($(env, "b-ctl").querySelectorAll("button[data-act]")).toEqual([]);
+    expect($(env, "b-ctl").textContent).toContain(ru("ctl.wait.action"));
+  });
+
+  it("условие 3 Р-1527 (В4): одно нажатие «Отозвать» стенд не вызывает; запрос — только после «Да, отозвать»; «Отмена» — без запроса", async () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    env.sources[0]!.send(msg);
+    btn(env, "revoke")[0]!.click();
+    expect(calls).toEqual([]);
+    expect($(env, "b-ctl").textContent).toContain(ru("act.revoke.ask"));
+    $(env, "b-ctl").querySelector("button[data-act-cancel]")!.click();
+    expect(calls).toEqual([]);
+    btn(env, "revoke")[0]!.click();
+    const second = btn(env, "revoke").find((b) => b.dataset.second === "1")!;
+    second.click();
+    expect(calls).toEqual(["/pult/act/revoke?mandate=IT1"]);
+    // Условие 1: ответ стенда «отказано» — на экране отказ с кодом, не «сделано».
+    await new Promise((r) => setTimeout(r, 0));
+    const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
+    expect(res).toContain(`${ru("act.refused")} · 409 · MANDATE_NOT_ACTIVE`);
+    expect(res).not.toContain(ru("act.done"));
+  });
+
+  it("условие 2 Р-1527 (В1 (а)): «Напомнить» у R08 уходит на «remind_note» (без стенда), у R21 — на стенд; «Повторить уведомление» неактивна; разбор при «не определён» — неактивен", () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    env.sources[0]!.send(msg);
+    const reminds = btn(env, "remind_note");
+    expect(reminds).toHaveLength(1);
+    reminds[0]!.click();
+    expect(calls).toEqual(["/pult/act/remind_note?obj=IM1&cond=R08"]);
+    btn(env, "remind")[0]!.click();
+    expect(calls[1]).toBe("/pult/act/remind?confirmation=Q1");
+    const off = $(env, "b-ctl").querySelectorAll("button[disabled]").map((b) => b.textContent);
+    expect(off).toEqual(expect.arrayContaining([ru("act.notify"), ru("act.review")]));
+    expect($(env, "b-ctl").textContent).toContain(ru("act.notify.none"));
+    expect($(env, "b-ctl").textContent).toContain(ru("act.review.undetermined"));
+    expect(btn(env, "review").map((b) => b.dataset.params)).toEqual(["mandate_id=CT1&condition=R46&violator=AGENT"]);
   });
 });
