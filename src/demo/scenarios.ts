@@ -13,7 +13,21 @@ import { ISO4217_MINOR_UNITS } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
 import type { MoreScenario } from "./server.js";
 import { MASSA_MADRE } from "./shops.js";
+import type { StandIssuer } from "agentic-ps-platform/stand";
 import type { DemoStand } from "./stand.js";
+
+/** Стенд для сюжетов (П-11.4г; П5 п. 5, доп. 1 п. 4) — **списком нужного**, а не вычитанием (повторное ревью П-11.4г № 1): из
+ *  стенда Платформы — параметры, журнал обращений, часы, приостановление и возобновление агента (сюжет 9); у банка — только код
+ *  УПК для «SMS» человеку и лимиты сюжета 3. Подпись, подтверждение и отзыв за клиента (у банка — `sign` / `confirm` / `revoke`
+ *  / `revokeAll` / `signRequest`; `demo.revokeMandate` / `stopPurchase`), обращения в обход сети (`app`, `upk`, `bankApp`) сюжету
+ *  недоступны при компиляции — их делает человек на экране банка или эмулятор клиента «Авто» (`client-emulator.ts`).
+ *  **Остаток:** это граница компиляции. Во время работы сюжет получает полный объект стенда, и приведение (`as any`,
+ *  `as unknown as`) или `Reflect.get` её обходят; их ловит только ревью и текстовая граница (`tests/demo/client-emulator.test.ts`). */
+export type ScenarioStand = Omit<DemoStand, "stand"> & {
+  readonly stand: Pick<DemoStand["stand"], "params" | "calls" | "now" | "suspendAgent" | "reinstateAgent"> & {
+    readonly issuer: Pick<StandIssuer, "upkCode" | "setLimits">;
+  };
+};
 
 /** Шаг сюжета для консоли: код и параметры. Текст — на странице по словарю (step.<код>). */
 export interface ScenarioStep {
@@ -177,7 +191,7 @@ function standRegion(): string | undefined {
 }
 
 export class DemoScenarios {
-  readonly #d: DemoStand;
+  readonly #d: ScenarioStand;
   readonly #emit: StepSink;
   readonly #ac = new AbortController();
   readonly #ops = new Map<string, Operation>();
@@ -204,7 +218,7 @@ export class DemoScenarios {
   /** Занят ли драйвер нарушителя «ПР» (П7): он ходит тем же ключом агента — сюжет одновременно с ним не стартует. */
   readonly #otherBusy: () => boolean;
 
-  constructor(d: DemoStand, emit: StepSink, o: { expirySec?: number; otherBusy?: () => boolean } = {}) {
+  constructor(d: ScenarioStand, emit: StepSink, o: { expirySec?: number; otherBusy?: () => boolean } = {}) {
     this.#d = d;
     this.#emit = emit;
     this.#expirySec = o.expirySec ?? EXPIRY_SEC;

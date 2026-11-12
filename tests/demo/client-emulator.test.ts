@@ -486,6 +486,8 @@ const ISSUER_OK: readonly [string | undefined, RegExp][] = [
   ["src/demo/run.ts", /new ClientEmulator\(\{ issuer: stand\.stand\.issuer,/g],
   // Сборка стенда: ответ эмитента на уведомление ADP (локальная переменная).
   ["src/demo/stand.ts", /const issuer = await s\.app\.inject\(|\bissuer\.statusCode\b/g],
+  // Тип стенда сюжетов (П-11.4г): банк сужен до чтений — запись самого сужения.
+  ["src/demo/scenarios.ts", /readonly issuer: Pick<StandIssuer, "upkCode" \| "setLimits">/g],
 ];
 const ANSWER_OK: readonly [string, RegExp][] = [
   ["src/demo/scenarios.ts", /^ {2}answerCart\(agree: boolean\): ScenarioStart \{$/gm], // определение
