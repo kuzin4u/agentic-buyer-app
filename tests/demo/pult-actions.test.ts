@@ -10,6 +10,7 @@ import { pultActions } from "../../src/demo/pult-actions.js";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { REVIEW_ID_FIELDS, REVIEW_VIOLATORS, type ActionResult, type PultActions, type Reaction } from "../../src/pult/actions.js";
+import type { PultBoardState } from "../../src/pult/feed.js";
 import { PULT } from "../../src/pult/phrases.js";
 
 const NOW = () => new Date("2026-11-12T12:00:00Z");
@@ -195,5 +196,113 @@ describe("кнопки реакции на живом стенде с насто
     await demo.scenarios.settled();
     expect(steps().slice(p.n).some((s) => s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
     expect(events().some((e) => e.what === "operation.authorized" && e.ids.mandate_id === p.cart)).toBe(false);
+  });
+
+  it("П-8.2 (Р-1531): в режиме показа журнала стенда нет — у реакции «журнал недоступен», «упреждено» не ставится", async () => {
+    // Своё нажатие (ревью П-8.2 № 8): тест не зависит от реакций прошлых тестов.
+    const p = await toPendingConfirmation();
+    expect((await post(`/pult/act/remind?confirmation=${p.confirmation}`)).status).toBe(200);
+    const b = await boardUntil(demo, (x) => (x.reactions ?? []).some((r) => r.action === "remind" && r.obj === p.confirmation));
+    const mine = b.reactions!.filter((r) => r.action === "remind" && r.obj === p.confirmation);
+    expect(mine.map((r) => [r.link.state, r.preempted])).toEqual([["unavailable", undefined]]);
+    // Покупку — остановить, чтобы не висела до срока (900 с).
+    expect((await post(`/pult/act/stop?cart=${p.cart}`)).status).toBe(200);
+    await demo.scenarios.settled();
+  });
+});
+
+/** Доска пульта с ленты `/pult/events` (второе сообщение — `board`). */
+async function boardOf(d: Demo): Promise<PultBoardState> {
+  const ac = new AbortController();
+  const res = await fetch(`${d.monitor.url}/pult/events`, { signal: ac.signal });
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += dec.decode(value, { stream: true });
+      for (const m of text.split("\n\n").slice(0, -1)) {
+        const j = JSON.parse(m.replace(/^data: /, "")) as { type: string; board?: PultBoardState };
+        if (j.type === "board" && j.board) return j.board;
+      }
+    }
+  } finally {
+    ac.abort();
+  }
+  throw new Error("лента закрылась без доски");
+}
+async function boardUntil(d: Demo, f: (b: PultBoardState) => boolean, ms = 30_000): Promise<PultBoardState> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const b = await boardOf(d);
+    if (f(b)) return b;
+    if (Date.now() > end) throw new Error("не дождались доски");
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+describe("У-04 на живом стенде в режиме сбоев: «Напомнить» → код клиента → «упреждено реакцией» (П-8.2, Р-1531)", { timeout: 180_000 }, () => {
+  let demo: Demo;
+  const steps = (): ScenarioLine[] => demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
+  const after = (n: number, name: string) => () => steps().slice(n).find((s) => s.step === name);
+  const post = (path: string) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin: demo.monitor.url } });
+  async function until<T>(f: () => T | undefined, ms = 60_000): Promise<T> {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = f();
+      if (v !== undefined) return v;
+      if (Date.now() > end) throw new Error("не дождались");
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  beforeAll(async () => {
+    demo = await startDemo({ faults: true });
+  }, 60_000);
+  afterAll(async () => {
+    await demo?.close();
+  });
+
+  it("покупка оплачена по событию; запись R21 — «соблюдено» с «упреждено реакцией», реакция связана с записью CLIENT_REMINDED стенда; паспорта R21 нет", async () => {
+    // Сюжет 4 вручную (эмулятор клиента — «Вручную»): подписи — эмулятором банка в автотесте (П2 п. 5).
+    const n = steps().length;
+    expect((await post("/scenario/upk")).status).toBe(202);
+    const w = await until(after(n, "intent.awaiting_signature"));
+    await demo.stand.stand.issuer.sign(String(w.params.mandate_id));
+    await until(after(n, "cart.card"));
+    expect((await post("/scenario/cart/accept")).status).toBe(202);
+    const cw = await until(after(n, "cart.awaiting_signature"));
+    await demo.stand.stand.issuer.sign(String(cw.params.mandate_id));
+    const req = await until(after(n, "upk.required"));
+    const sms = await until(after(n, "upk.sms"));
+    // Номер запроса подтверждения — с доски пульта («Идёт к нарушению» R21), как у оператора.
+    const b0 = await boardUntil(demo, (b) => b.control.waits.some((x) => x.cond === "R21"));
+    const q = b0.control.waits.find((x) => x.cond === "R21")!.confirmationId!;
+    // Оператор: «Напомнить клиенту».
+    const r = (await (await post(`/pult/act/remind?confirmation=${q}`)).json()) as Reaction;
+    expect(r).toMatchObject({ outcome: "done", result: { ok: true, extended: true } });
+    // Клиент: страница УПК → код из SMS → «подтвердить».
+    const answer = await fetch(String(req.params.upk_url), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ decision: "APPROVE", instrument: "CARD", code: String(sms.params.code) }).toString(),
+    });
+    expect(answer.status).toBe(200);
+    const outcome = await until(after(n, "outcome"), 90_000);
+    expect(outcome.params.status).toBe("AUTHORIZED");
+    await demo.scenarios.settled();
+
+    // «Оплачено» на доске — только по событию Платформы (инвариант 6): оно может прийти позже шага итога сюжета.
+    const cart = String(cw.params.mandate_id);
+    const b = await boardUntil(demo, (x) => (x.reactions ?? []).some((y) => y.action === "remind" && y.preempted === "R21") && x.cards.some((c) => c.id === cart && c.outcome === "paid"), 60_000);
+    const rr = b.reactions!.find((y) => y.action === "remind" && y.obj === q)!;
+    expect(rr).toMatchObject({ preempted: "R21", link: { state: "linked", what: "CLIENT_REMINDED" } });
+    // Паспорта у этой покупки нет вовсе (У-04: «паспорт НЕ появляется» — ни по R21, ни по условиям журнала стенда, которые
+    // в режиме сбоев теперь считаются; ревью П-8.2 № 1) — ни у корзины, ни у поручения-намерения; «оплачено» — по событию.
+    expect(b.control.passports.filter((p) => p.obj === cart || p.obj === String(w.params.mandate_id))).toEqual([]);
+    expect(b.control.passports.flatMap((p) => p.findings.map((f) => f.cond))).not.toContain("R21");
+    expect(b.cards.filter((c) => c.kind === "tx").map((c) => [c.id, c.cartMandateId, c.outcome])).toContainEqual([cart, cart, "paid"]);
   });
 });
