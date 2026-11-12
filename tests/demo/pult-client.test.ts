@@ -726,7 +726,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     active: [{ id: "CT1", column: "confirmation", since: T0 }],
     counts: { txs: 1, wrong: 1 },
   };
-  const msg = { type: "board", board: { now: NOW, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1" }], jumps: [], control: ctl } };
+  const msg = { type: "board", board: { now: NOW, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", cartMandateId: "CT1" }], jumps: [], control: ctl } };
   const withFetch = (env: PageEnv) => {
     const calls: string[] = [];
     env.window.fetch = (url: string) => {
@@ -779,5 +779,46 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     expect($(env, "b-ctl").textContent).toContain(ru("act.notify.none"));
     expect($(env, "b-ctl").textContent).toContain(ru("act.review.undetermined"));
     expect(btn(env, "review").map((b) => b.dataset.params)).toEqual(["mandate_id=CT1&condition=R46&violator=AGENT"]);
+  });
+
+  it("ревью П-8.1 № 1, 2: разбор — поле по типу номера (`cart:` → mandate_id, `order:` → order_id, `op:` → op_ref), «Остановить» — только при поручении корзины", () => {
+    const env = start({ actions: true });
+    withFetch(env);
+    const c2 = {
+      ...ctl,
+      passports: [
+        { obj: "cart:CA", findings: [{ cond: "R26", violator: "merchant" }] },
+        { obj: "order:ORD-1", findings: [{ cond: "R26", violator: "merchant" }] },
+        { obj: "op:P1", findings: [{ cond: "R46", violator: "agent" }] },
+        { obj: "CT1", findings: [{ cond: "R46", violator: "agent" }] },
+      ],
+      waits: [],
+      active: [
+        { id: "CT1", column: "confirmation", since: T0 },
+        { id: "op:P1", column: "confirmation", since: T0 },
+      ],
+    };
+    // Номер корзины нарочно не равен номеру карточки (повторное ревью № 3): в стенд уходит именно `cartMandateId`.
+    const cards = [{ ...card("CT1", "confirmation"), cartMandateId: "CART-9" }, card("op:P1", "confirmation")];
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards, jumps: [], control: c2 } });
+    expect(btn(env, "review").map((b) => b.dataset.params)).toEqual([
+      "mandate_id=CA&condition=R26&violator=MERCHANT",
+      "order_id=ORD-1&condition=R26&violator=MERCHANT",
+      "op_ref=P1&condition=R46&violator=AGENT",
+      "mandate_id=CT1&condition=R46&violator=AGENT",
+    ]);
+    expect(btn(env, "stop").map((b) => b.dataset.params)).toEqual(["cart=CART-9"]);
+  });
+
+  it("ревью П-8.1 № 5: «Напомнить» без продления — не «сделано», а «срок не продлён» с прежним сроком", async () => {
+    const env = start({ actions: true });
+    env.window.fetch = () =>
+      Promise.resolve({ json: () => Promise.resolve({ action: "remind", obj: "Q1", outcome: "done", result: { ok: true, expiresAt: "2026-11-10T12:05:00.000Z", extended: false } }) });
+    env.sources[0]!.send(msg);
+    btn(env, "remind")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
+    expect(res).toContain(ru("act.not_extended"));
+    expect(res).not.toContain(ru("act.done"));
   });
 });

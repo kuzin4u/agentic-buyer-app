@@ -9,6 +9,9 @@ import type { PultFeed } from "../pult/feed.js";
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** Условие, по которому напоминают без стенда: только R08 (У-01) и R18 (У-02). */
 const NOTE_CONDS = new Set(["R08", "R18"]);
+/** Номер транзакции пульта с типом звена (`cart:…`, `order:…`, `op:…`, `confirmation:…` — `NODE_TYPE` в `src/pult/tx.ts`) —
+ *  не номер стенда: в `stop` и `review` — 400 (ревью П-8.1 № 1, 2; повторное № 1). Экран переводит его в поле разбора по типу. */
+const PULT_PREFIX = /^(cart|order|op|confirmation):/;
 
 export interface PultActReply {
   readonly status: number;
@@ -33,7 +36,7 @@ export async function pultAct(what: string, q: URLSearchParams, actions: PultAct
   switch (what) {
     case "stop": {
       const cart = id("cart");
-      return cart ? record(cart, await actions.stopPurchase(cart)) : bad;
+      return cart && !PULT_PREFIX.test(cart) ? record(cart, await actions.stopPurchase(cart)) : bad;
     }
     case "remind": {
       const c = id("confirmation");
@@ -56,6 +59,7 @@ export async function pultAct(what: string, q: URLSearchParams, actions: PultAct
       const tx: Record<string, string> = {};
       for (const f of REVIEW_ID_FIELDS) {
         const v = id(f);
+        if (v && PULT_PREFIX.test(v)) return bad;
         if (v) tx[f] = v;
       }
       const condition = q.get("condition") ?? "";

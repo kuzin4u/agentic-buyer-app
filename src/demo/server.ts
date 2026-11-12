@@ -401,10 +401,12 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const now = o.dashboards?.now ?? (() => new Date());
       // Сбой обработки — 500 с телом, а не повисший запрос и не необработанный отказ, который уронил бы процесс стенда.
-      void pultAct(u.pathname.slice("/pult/act/".length), u.searchParams, o.pultActions, pult, now).then(
-        (r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)),
-        () => send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "ACTION_FAILED" })),
-      );
+      // Сбой и самой отправки ответа (клиент закрыл соединение) — тоже сюда (ревью П-8.1 № 7).
+      void pultAct(u.pathname.slice("/pult/act/".length), u.searchParams, o.pultActions, pult, now)
+        .then((r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)))
+        .catch(() => {
+          if (!res.headersSent) send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "ACTION_FAILED" }));
+        });
       return;
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.

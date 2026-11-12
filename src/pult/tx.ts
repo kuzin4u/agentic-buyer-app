@@ -37,8 +37,8 @@ export interface TxOperation {
 }
 
 export interface PultTx {
-  /** Номер транзакции на пульте: поручение корзины, если оно известно, иначе первое звено с типом (`order:…`, `op:…`,
-   *  `confirmation:…`) — не совпадёт с номером корзины (ревью П-1.2 № 8). */
+  /** Номер транзакции на пульте: поручение корзины, если оно известно, иначе первое звено с типом (`cart:…` — при конфликте
+   *  звеньев, `order:…`, `op:…`, `confirmation:…`) — не совпадёт с номером корзины (ревью П-1.2 № 8). */
   readonly id: string;
   readonly intentId?: string;
   readonly cartMandateId?: string;
