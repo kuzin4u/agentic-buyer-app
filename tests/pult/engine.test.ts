@@ -395,6 +395,56 @@ const withLog = (items: Interpretation[], standLog: StandLogEntry[], o: { now?: 
   evaluate(buildTxModel(items), items, { standLog, ...(o.now !== undefined && { now: new Date(o.now).toISOString() }) });
 const txOf = (v: ReturnType<typeof withLog>) => v.objs.find((x) => x.kind === "tx")!.conds;
 
+describe("«упреждено реакцией» у R21 (П-8.2, У-04, Р-1531)", () => {
+  // Запрос подтверждения и одобрение Платформы; время напоминания — относительно события одобрения (часы стенда).
+  const conf = (n: string) => {
+    const req = event("confirmation.required", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" });
+    const ok = event("confirmation.approved", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" });
+    return { items: purchase(n, { at: { start: () => [req, ok] } }), okAt: Date.parse(ok.at) };
+  };
+  const remind = (q: string, atMs: number, what: StandLogEntry["what"] = "CLIENT_REMINDED") => entry(what, { confirmation_id: q }, { atMs });
+
+  it("напоминание по тому же запросу до одобрения — «соблюдено» с пометкой «упреждено реакцией», запись стенда — в доказательствах; паспорта нет", () => {
+    const { items, okAt } = conf("U1");
+    const e = remind("QU1", okAt - 5_000);
+    const view = withLog(items, [e]);
+    expect(txOf(view).R21).toMatchObject({ status: "ok", note: "preempted_by_reaction", log: [e.seq] });
+    expect(verdicts(view, buildTxModel(items), items).filter((v) => v.cond === "R21")).toEqual([]);
+    // Повтор напоминания (без продления) — тоже напоминание.
+    const again = remind("QU1", okAt - 1_000, "REMIND_REPEATED");
+    expect(txOf(withLog(items, [again])).R21).toMatchObject({ status: "ok", note: "preempted_by_reaction", log: [again.seq] });
+  });
+
+  it("напоминание после одобрения, по другому запросу, без журнала (режим показа) — просто «соблюдено», без пометки", () => {
+    const { items, okAt } = conf("U2");
+    const plain = (c: CondResults) => expect([c.R21.status, c.R21.note]).toEqual(["ok", undefined]);
+    plain(txOf(withLog(items, [remind("QU2", okAt + 1_000)])));
+    plain(tx(items));
+    // Другой запрос той же покупки (повтор после отказа): напоминание по первому, одобрен второй — не «упреждено».
+    const ev = (ref: string, q: string) => event(ref, { confirmation_id: q, order_id: "OU2b" }, { stage: "confirmation" });
+    const retry = [ev("confirmation.required", "QA"), ev("confirmation.rejected", "QA"), ev("confirmation.required", "QB"), ev("confirmation.approved", "QB")];
+    const two = purchase("U2b", { at: { start: () => retry } });
+    const okB = Date.parse(retry[3]!.at);
+    plain(txOf(withLog(two, [remind("QA", okB - 5_000)])));
+    expect(txOf(withLog(two, [remind("QB", okB - 5_000)])).R21.note).toBe("preempted_by_reaction");
+    // Сбой стенда по тому же запросу — не напоминание.
+    plain(txOf(withLog(items, [fault("UPK_CODE_LEAKED", { confirmation_id: "QU2" }, "Н-11", okAt - 5_000)])));
+  });
+
+  it("срок истёк после напоминания — «сработало», не «упреждено»", () => {
+    const req = event("confirmation.required", { confirmation_id: "QU3", order_id: "OU3" }, { stage: "confirmation" });
+    const exp = event("confirmation.expired", { confirmation_id: "QU3", order_id: "OU3" }, { stage: "confirmation" });
+    const items = purchase("U3", { skip: ["start", "pay", "done"], at: { end: () => [req, exp] } });
+    expect(txOf(withLog(items, [remind("QU3", Date.parse(exp.at) - 5_000)])).R21).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "confirmation_expired" } });
+  });
+
+  it("текст пометки — без причинности, ru/en (Р-1531); экран пишет тот же текст в журнале реакций", () => {
+    expect(NOTE_LABEL.preempted_by_reaction.ru).toContain("напоминание было до подтверждения — нарушения нет");
+    expect(NOTE_LABEL.preempted_by_reaction.en).toContain("no breach");
+    expect(PULT["act.preempted"]).toEqual(NOTE_LABEL.preempted_by_reaction);
+  });
+});
+
 describe("журнал сбоев стенда и пометки «ПР» (П-3.2в)", () => {
   it("контракт записи — как у стенда v0.48.0: перечень тестов, коды и идентификаторы", () => {
     expect([...STAND_TESTS]).toEqual([...DEMO_TESTS]);

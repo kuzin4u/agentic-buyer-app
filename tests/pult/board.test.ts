@@ -256,6 +256,35 @@ describe("лента пульта (П-2.1)", () => {
     q.close();
   });
 
+  it("П-8.2, ревью № 2, 9: журнал стенда — движку только при `standLog` и журнале у ленты; иначе «недоступен» (undefined), а не пустой; запись `stand` — пересчёт", async () => {
+    const line = (n: number) => ({ seq: 100 + n, at: at(n), entry: { seq: n, at: at(n), kind: "action" as const, what: "CLIENT_REMINDED" as const, ids: { confirmation_id: "QS1" } } });
+    const seen: unknown[] = [];
+    const spy: typeof evaluate = (...a) => (seen.push(a[2]?.standLog), evaluate(...a));
+    // Режим сбоев, но у ленты журнала нет — недоступен.
+    const bare = fakeFeed();
+    createPultFeed(bare.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0, evaluate: spy, standLog: true });
+    expect(seen.at(-1)).toBeUndefined();
+    // Журнал у ленты есть, но режим не сбоев — недоступен; событие `stand` пересчёта не вызывает.
+    const ls = new Set<(e: FeedEvent) => void>();
+    const log = [line(1)];
+    const withLog = { ...fakeFeed().feed, subscribe: (l: (e: FeedEvent) => void) => (ls.add(l), () => ls.delete(l)), standLog: () => [...log] };
+    seen.length = 0;
+    createPultFeed(withLog, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0, evaluate: spy });
+    expect(seen).toEqual([undefined]);
+    for (const l of ls) l({ type: "stand", line: line(2) });
+    await tick();
+    expect(seen).toEqual([undefined]);
+    // Режим сбоев и журнал есть — записи журнала стенда; новая запись — пересчёт.
+    ls.clear();
+    seen.length = 0;
+    createPultFeed(withLog, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0, evaluate: spy, standLog: true });
+    expect(seen).toEqual([[log[0]!.entry]]);
+    log.push(line(2));
+    for (const l of ls) l({ type: "stand", line: line(2) });
+    await tick();
+    expect(seen.at(-1)).toEqual([log[0]!.entry, log[1]!.entry]);
+  });
+
   it("ревью П-4.1 № 5, № 16: ошибка в движке условий доску не гасит; прежние — только паспорта и число с паспортом, ожидания и «В работе сейчас» — свежие", async () => {
     const f = fakeFeed();
     let broken = false;

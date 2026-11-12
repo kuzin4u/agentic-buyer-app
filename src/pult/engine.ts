@@ -38,7 +38,7 @@ export const worstStatus = (list: readonly CondStatus[], empty: CondStatus = "na
   list.reduce<CondStatus | undefined>((a, s) => (a === undefined || RANK[s] < RANK[a] ? s : a), undefined) ?? empty;
 
 /** Пометка к статусу: почему он такой. */
-export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending"] as const;
+export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction"] as const;
 export type Note = (typeof NOTES)[number];
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
@@ -48,10 +48,19 @@ export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   unconfirmed_paid: p("второе «оплачено» связано с корзиной только номером заказа — связь не подтверждена", "a second “paid” is linked to the cart only by the order number — link not confirmed"),
   amounts_after_mvp: p("сравнение сумм — после MVP; на стенде сумму первой проверяет Платформа (MANDATE_SCOPE)", "amount comparison — after MVP; on the stand the Platform checks the amount first (MANDATE_SCOPE)"),
   // Без внутренних кодов задач на экране (ревью П-4.1 № 10; ревью П-3.2б № 14): пометка видна в плитке узла «Условий» (П-4.2).
-  stand_log: p("проверяется по журналу сбоев стенда — журнал подключается позже", "checked from the stand fault log — the log is connected later"),
+  // Журнал стенда — только в режиме сбоев (Р-1514; подключён в П-8.2, Р-1531).
+  stand_log: p("проверяется по журналу сбоев стенда — журнал есть только в режиме сбоев", "checked from the stand fault log — the log exists in fault mode only"),
   link_conflict: p("конфликт звеньев — две покупки с одним номером заказа; решает человек", "link conflict — two purchases share an order number; a human decides"),
   event_pending: p("агент сообщил о подписи корзины — ждём событие Платформы", "the agent reported the cart signature — waiting for the Platform event"),
+  // У-04 (П-8.2, Р-1531): без причинности — пульт не знает, успел ли клиент благодаря продлению.
+  preempted_by_reaction: p(
+    "упреждено реакцией: напоминание было до подтверждения — нарушения нет",
+    "pre-empted by a reaction: the reminder came before the confirmation — no breach",
+  ),
 };
+/** Записи журнала стенда о напоминании клиенту (кнопка «Напомнить клиенту», `remindClient`): первое — с продлением срока,
+ *  повтор — без него; оба — напоминание. */
+export const REMIND_LOG: readonly StandLogWhat[] = ["CLIENT_REMINDED", "REMIND_REPEATED"];
 
 export interface CondResult {
   readonly status: CondStatus;
@@ -107,8 +116,8 @@ export type Cause =
   | { readonly kind: "mark"; readonly test: StandTest; readonly bus?: RuleCause };
 
 export interface EngineOptions {
-  /** Журнал сбоев стенда (на шину — П-11.2). Нет — условия журнала «на стенде не проверяется»; есть (даже пустой) —
-   *  считаются. */
+  /** Журнал сбоев и действий стенда — только в режиме сбоев (Р-1514; в ленту пульта — П-8.2, Р-1531). Нет — журнал
+   *  недоступен: условия журнала «на стенде не проверяется»; есть (даже пустой) — считаются. */
   readonly standLog?: readonly StandLogEntry[];
   /** «Сейчас» для срока позднего итога R31 — аргументом, не системными часами: модель без часов, тесты детерминированы. */
   readonly now?: string;
@@ -466,12 +475,25 @@ function txConds(
   const payAfter = expired ? [...payStarts, ...pays, ...opEvents.filter((x) => x.ref !== "operation.declined")].filter((x) => x.seq > expired.seq) : [];
   // Кто после срока: операция Платформы — Платформа должна была отказать; только оплата агента — агент (ревью П-3.3 № 5).
   const opAfter = payAfter.some((x) => x.source === "pao_event");
+  // «Упреждено реакцией» (У-04; П-8.2, Р-1531): в журнале стенда — напоминание по ТОМУ ЖЕ запросу подтверждения раньше
+  // события одобрения Платформы (часы стенда). Доказательство — только запись протокола стенда, не нажатие пульта (запись
+  // пульта о себе, Р-1519); журнала нет (`log === undefined`, режим показа) — не определяется, просто «соблюдено».
+  const approved = conf.filter((x) => x.ref === "confirmation.approved");
+  const preempted = [
+    ...new Set(
+      approved.flatMap((a) =>
+        (log ?? []).filter((e) => REMIND_LOG.includes(e.what) && e.ids.confirmation_id !== undefined && e.ids.confirmation_id === a.ids?.confirmation_id && Date.parse(e.at) < Date.parse(a.at)).map((e) => e.seq),
+      ),
+    ),
+  ];
   out.R21 = expired
     ? payAfter.length > 0
       ? rc("bad", opAfter ? "operation_after_expiry" : "agent_pay_after_expiry", [expired.seq, ...payAfter.map((x) => x.seq)])
       : rc("fired", "confirmation_expired", [expired.seq])
-    : conf.some((x) => x.ref === "confirmation.approved")
-      ? r("ok", conf.filter((x) => x.ref === "confirmation.approved").map((x) => x.seq))
+    : approved.length > 0
+      ? preempted.length > 0
+        ? r("ok", approved.map((x) => x.seq), "preempted_by_reaction", preempted)
+        : r("ok", approved.map((x) => x.seq))
       : conf.some((x) => x.ref === "confirmation.required") && !conf.some((x) => x.ref === "confirmation.rejected")
         ? r("wait")
         : r("na");

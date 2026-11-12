@@ -800,6 +800,13 @@
     if (Array.isArray(r.rejected) && r.rejected.length > 0) parts.push(label("act.closed") + ": " + r.rejected.join(", "));
     return parts.join(" · ");
   }
+  /** Запись протокола стенда, связанная с реакцией (П-8.2): номер журнала стенда и что записано; журнала нет — так и сказано. */
+  function linkText(link) {
+    if (!link || typeof link !== "object") return "";
+    if (link.state === "linked") return " · " + label("act.link.record") + " " + link.seq + " (" + link.what + ")";
+    if (link.state === "unavailable" || link.state === "not_found") return " · " + label("act.link." + link.state);
+    return "";
+  }
   /** Поле разбора по типу номера на пульте (ревью П-8.1 № 1; повторное № 1): `cart:` — поручение корзины (транзакция с
    *  конфликтом звеньев, первое звено — корзина), `order:` — номер заказа, `op:` — операция, `confirmation:` — запрос
    *  подтверждения, иначе — поручение; префикс пульта стенду не отправляется. Перечень — `NODE_TYPE` в `src/pult/tx.ts`. */
@@ -941,10 +948,15 @@
       if (ACTIONS) txButtons(row, a.id);
       wrap.appendChild(row);
     }
-    // Журнал реакций (П-8.1; связь с протоколом и «упреждено реакцией» — П-8.2): последние нажатия и ответ стенда.
+    // Журнал реакций (П-8.1): последние нажатия и ответ стенда; связь с записью протокола стенда и «упреждено реакцией» —
+    // из ленты (П-8.2, Р-1531): экран их не выводит сам.
     if (ACTIONS && Array.isArray(board.reactions) && board.reactions.length > 0) {
       wrap.appendChild(el("h3", label("act.log"), "ctl-h"));
-      for (const x of board.reactions.slice(-5).reverse()) wrap.appendChild(el("div", clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + " · " + describeReaction(x), "react-row"));
+      for (const x of board.reactions.slice(-5).reverse()) {
+        const row = el("div", clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + " · " + describeReaction(x) + linkText(x.link), "react-row");
+        if (x.preempted) row.appendChild(el("div", x.preempted + " · " + label("act.preempted"), "react-pre"));
+        wrap.appendChild(row);
+      }
     }
   }
 

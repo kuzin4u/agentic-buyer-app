@@ -11,8 +11,10 @@ import type { Reaction } from "./actions.js";
 import { causesView, type TxCauses } from "./causes.js";
 import { conditionsView, type ConditionsView } from "./conditions.js";
 import { controlView, WAIT_MS, type ControlState } from "./control.js";
-import { evaluate } from "./engine.js";
+import { evaluate, type EngineView } from "./engine.js";
 import { graphView, type GraphView } from "./graph.js";
+import { linkReactions, type LinkedReaction } from "./reactions.js";
+import type { StandLogEntry } from "./standlog.js";
 import { buildTxModel } from "./tx.js";
 import { verdicts } from "./verdict.js";
 
@@ -42,8 +44,9 @@ export interface PultBoardState {
   readonly conditions?: ConditionsView;
   /** «Причины» (П-5.1): разбор транзакций и поручений с вердиктом — из вердиктов движка. Нет — движок ещё не отработал. */
   readonly causes?: readonly TxCauses[];
-  /** Журнал реакций (П-8.1): нажатия кнопок и ответ стенда как есть; новые — в конце, последние `REACTIONS_KEPT`. */
-  readonly reactions?: readonly Reaction[];
+  /** Журнал реакций (П-8.1): нажатия кнопок и ответ стенда как есть; новые — в конце, последние `REACTIONS_KEPT`. Связь с
+   *  записью протокола стенда и «упреждено реакцией» — П-8.2 (`reactions.ts`). */
+  readonly reactions?: readonly LinkedReaction[];
 }
 /** Сколько реакций помнить в ленте (журнал и протокол — П-6, П-8.2). */
 export const REACTIONS_KEPT = 50;
@@ -75,6 +78,10 @@ export interface PultFeedOptions {
    *  начало покупки, и оплаченная карточка откатывалась бы из «Завершены» (ревью П-2.1 № 3, Р-1460). Хранение итога
    *  транзакции независимо от окна — после MVP. */
   readonly limit?: number;
+  /** Журнал сбоев и действий стенда на шине есть — режим сбоев (Р-1514; подключение — П-8.2, Р-1531): движок берёт его из
+   *  ленты интерпретатора (`standLog()`). Нет — журнал недоступен (`standLog === undefined` у движка): условия журнала «на
+   *  стенде не проверяется», «упреждено реакцией» не ставится, а не «напоминаний не было». */
+  readonly standLog?: boolean;
 }
 
 export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFeed {
@@ -94,6 +101,13 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   const column = new Map<string, { column: BoardColumn; since: string }>();
   let jumps: PultJump[] = [];
   let reactions: Reaction[] = [];
+  // Журнал стенда — только при `standLog` (режим сбоев); запись шины `stand` несёт запись журнала стенда как есть.
+  // Журнала у ленты нет — «недоступен» (`undefined`), а не «пуст» (ревью П-8.2 № 2): иначе условия журнала ушли бы в
+  // разрешающую сторону («соблюдено» вместо «на стенде не проверяется»).
+  const standLog = (): readonly StandLogEntry[] | undefined => (o.standLog && feed.standLog ? feed.standLog().map((l) => l.entry) : undefined);
+  // Последний результат движка: по нему реакция узнаёт «упреждено» и между пересчётами (нажатие пересчёта не вызывает).
+  let lastEv: EngineView | undefined;
+  const linked = () => linkReactions(reactions, standLog(), lastEv);
   const emptyControl: ControlState = { passports: [], waits: [], waitMs: o.waitMs ?? WAIT_MS, active: [], counts: { txs: 0, wrong: 0 } };
   let state: PultBoardState = { now: o.now().toISOString(), cards: [], jumps: [], graph: { rows: [] }, control: emptyControl };
   let timer: NodeJS.Timeout | undefined;
@@ -145,8 +159,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     if (jumps.length > kept) jumps = jumps.slice(-kept);
     const active = cards.filter((c) => c.kind === "tx" && c.column !== "done").map((c) => ({ id: c.id, column: c.column, since: c.since }));
     // Движок условий и вердикты — в своём блоке: ошибка в условии оставляет прежний «Контроль», доска обновляется (ревью
-    // П-4.1 № 5 — иначе одна ошибка гасит доску, и на прогоне это выглядит как зависание стенда). Журнал сбоев стенда на
-    // шину выводит П-11.2 (после PR #11): до него условия журнала — «на стенде не проверяется».
+    // П-4.1 № 5 — иначе одна ошибка гасит доску, и на прогоне это выглядит как зависание стенда). Журнал сбоев и действий
+    // стенда — в режиме сбоев (`standLog`, П-8.2, Р-1531); без него условия журнала — «на стенде не проверяется».
     // Прежними при сбое — только паспорта, число транзакций с паспортом и «Условия» (они от движка); ожидания, «В работе сейчас» и
     // число транзакций — свежие: показывать устаревшее там, где доступно свежее, нельзя (ревью П-4.1 № 16).
     // «Условия» (П-4.2) — из того же результата движка; при сбое остаются прежние, как паспорта.
@@ -154,7 +168,9 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     let conditions = state.conditions;
     let causes = state.causes;
     try {
-      const ev = (o.evaluate ?? evaluate)(model, items, { now });
+      const log = standLog();
+      const ev = (o.evaluate ?? evaluate)(model, items, { now, ...(log !== undefined && { standLog: log }) });
+      lastEv = ev;
       const vs = verdicts(ev, model, items);
       control = controlView(model, items, vs, active, o.waitMs);
       conditions = conditionsView(ev);
@@ -167,7 +183,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
-    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }), ...(reactions.length > 0 && { reactions: [...reactions] }) };
+    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }), ...(reactions.length > 0 && { reactions: linked() }) };
     emit({ type: "board", board: state });
   };
 
@@ -181,9 +197,13 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     if (e.type === "item") {
       add(e.item);
       schedule();
+    } else if (e.type === "stand") {
+      // Запись журнала стенда (сбой, пометка, действие кнопки) — пересчёт: условия журнала и «упреждено» (П-8.2).
+      if (o.standLog) schedule();
     } else if (e.type === "reset") {
       items.length = 0;
       reactions = [];
+      lastEv = undefined;
       column.clear();
       jumps = [];
       schedule();
@@ -196,7 +216,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     board: () => state,
     react(r) {
       reactions = [...reactions, r].slice(-REACTIONS_KEPT);
-      state = { ...state, reactions: [...reactions] };
+      state = { ...state, reactions: linked() };
       emit({ type: "board", board: state });
     },
     subscribe(l) {

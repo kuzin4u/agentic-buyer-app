@@ -586,7 +586,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       ...(o.dashboards.training && { training: o.dashboards.training }),
     });
     control = createControlFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
-    pult = createPultFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
+    // Журнал стенда — движку пульта только в режиме сбоев (Р-1514; П-8.2, Р-1531): без флага журнал недоступен.
+    pult = createPultFeed(feed, { now: o.dashboards.now ?? (() => new Date()), ...(o.faults === true && { standLog: true }) });
   }
   return {
     url,
