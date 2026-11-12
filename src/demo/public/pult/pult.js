@@ -2,7 +2,7 @@
 // ленты. Панели наполняют следующие кирпичи (П-1.2 и дальше). Данные выводятся только через createElement и
 // textContent (инвариант 4): разметка из строк не собирается. Выбор раскладки помнит браузер (localStorage) — только
 // удобство зрителя: без хранилища пульт работает так же.
-/* global document, window, Element, EventSource, CustomEvent, localStorage, setInterval */
+/* global document, window, Element, EventSource, CustomEvent, localStorage, setInterval, URLSearchParams */
 "use strict";
 
 (function () {
@@ -715,6 +715,22 @@
       const b = ev.target instanceof Element ? ev.target.closest("button") : null;
       if (!b || !ctlBox.contains(b) || b.hasAttribute("disabled")) return;
       const d = b.dataset;
+      // Кнопки реакции (П-8.1): отзыв — второй шаг только кнопкой «Да, отозвать» (В4); «Отмена» — без запроса.
+      if (d.actCancel !== undefined) {
+        actState.pending = "";
+        renderCtl();
+        return;
+      }
+      if (d.act !== undefined) {
+        if (d.act === "revoke" && d.second === undefined) {
+          actState.pending = d.actKey;
+          renderCtl();
+          return;
+        }
+        actState.pending = "";
+        sendAct(d.act, d.params || "", d.actKey);
+        return;
+      }
       if (d.ctlView !== undefined) {
         if (CTL_VIEWS.indexOf(d.ctlView) < 0) return;
         state.ctlView = d.ctlView;
@@ -746,6 +762,91 @@
     });
   }
 
+  // ---- кнопки реакции (П-8.1; модель «Кнопки реакции» v1.0, Р-1526, Р-1527) ----
+  // Только в режиме показа или сбоев (`cfg.actions`, В2): иначе экран прежний. Ответ стенда — как есть: «отказано» с кодом,
+  // не «сделано» (инвариант 2). У R08 / R18 «Напомнить» — запись «напомнено» без стенда (В1 (а)). Отзыв — в два шага (В4):
+  // первое нажатие запрос не шлёт. «Повторить уведомление» — неактивна, «на стенде нет» (В3).
+  const ACTIONS = cfg.actions === true;
+  const actState = { pending: "", results: {} };
+  const VIOLATOR = { agent: "AGENT", merchant: "MERCHANT", bank: "BANK", platform: "PLATFORM", operator: "OPERATOR" };
+  function actButton(key, text, act, params, cls) {
+    const b = el("button", text, "act-btn" + (cls ? " " + cls : ""));
+    b.type = "button";
+    b.dataset.act = act;
+    b.dataset.actKey = key;
+    b.dataset.params = new URLSearchParams(params).toString();
+    return b;
+  }
+  function disabledButton(text, note) {
+    const box = el("span", undefined, "act-off");
+    const b = el("button", text, "act-btn");
+    b.type = "button";
+    b.setAttribute("disabled", "");
+    box.appendChild(b);
+    box.appendChild(el("span", " " + note, "muted"));
+    return box;
+  }
+  function describeReaction(x) {
+    if (!x || typeof x !== "object") return label("act.failed");
+    if (typeof x.error === "string") return label("act.refused") + " · " + x.error;
+    if (x.outcome === "noted") return label("act.noted");
+    const r = x.result && typeof x.result === "object" ? x.result : {};
+    const parts = [label(x.outcome === "done" ? "act.done" : "act.refused")];
+    if (typeof r.status === "number") parts.push(String(r.status));
+    if (typeof r.code === "string") parts.push(r.code);
+    if (typeof r.expiresAt === "string") parts.push(r.extended ? label("act.extended") + " " + clock(r.expiresAt) : label("act.not_extended"));
+    if (Array.isArray(r.rejected) && r.rejected.length > 0) parts.push(label("act.closed") + ": " + r.rejected.join(", "));
+    return parts.join(" · ");
+  }
+  function sendAct(act, query, key) {
+    actState.results[key] = label("act.sending");
+    renderCtl();
+    const f = window.fetch;
+    if (typeof f !== "function") {
+      actState.results[key] = label("act.failed");
+      renderCtl();
+      return;
+    }
+    f("/pult/act/" + act + "?" + query, { method: "POST" })
+      .then((r) => r.json())
+      .then((body) => {
+        actState.results[key] = describeReaction(body);
+        renderCtl();
+      })
+      .catch(() => {
+        actState.results[key] = label("act.failed");
+        renderCtl();
+      });
+  }
+  const resultOf = (key) => (actState.results[key] ? el("div", actState.results[key], "act-result") : null);
+  const append = (box, node) => {
+    if (node) box.appendChild(node);
+  };
+  /** Кнопки транзакции в «В работе сейчас»: остановить покупку, отозвать поручение (два шага), повторить уведомление. */
+  function txButtons(row, id) {
+    const card = board.cards.find((x) => x.id === id);
+    const bar = el("div", undefined, "act-bar");
+    if (card && card.kind === "tx" && id.indexOf("order:") !== 0) bar.appendChild(actButton("stop:" + id, label("act.stop"), "stop", { cart: id }));
+    const intent = card && typeof card.intentId === "string" ? card.intentId : "";
+    if (intent) {
+      const key = "revoke:" + intent;
+      if (actState.pending === key) {
+        bar.appendChild(el("span", label("act.revoke.ask") + " ", "act-ask"));
+        const yes = actButton(key, label("act.revoke.yes"), "revoke", { mandate: intent }, "act-second");
+        yes.dataset.second = "1";
+        bar.appendChild(yes);
+        const no = el("button", label("act.cancel"), "act-btn");
+        no.type = "button";
+        no.dataset.actCancel = "1";
+        bar.appendChild(no);
+      } else bar.appendChild(actButton(key, label("act.revoke"), "revoke", { mandate: intent }));
+    }
+    bar.appendChild(disabledButton(label("act.notify"), label("act.notify.none")));
+    row.appendChild(bar);
+    append(row, resultOf("stop:" + id));
+    if (intent) append(row, resultOf("revoke:" + intent));
+  }
+
   /** «Приоритет»: строка состояния, плитки узлов, сектора, затем блоки П-4.1 — паспорта, «Идёт к нарушению», «В работе». */
   function renderPrio(wrap, due) {
     const c = board.control;
@@ -769,7 +870,15 @@
         parts.push(label("ctl.violator") + ": " + subj(f.violator));
         if (f.protector) parts.push(label("ctl.protector") + ": " + subj(f.protector));
         if (f.note === "race_c28") parts.push(label("ctl.race_c28"));
-        box.appendChild(el("div", parts.join(" · "), "pp-f"));
+        const line = el("div", parts.join(" · "), "pp-f");
+        // «Передать на разбор» — условие и нарушитель из вердикта; нарушитель не определён — разбор владельцем.
+        if (ACTIONS && f.cond && ps.obj) {
+          const key = "review:" + ps.obj + ":" + f.cond;
+          if (Object.prototype.hasOwnProperty.call(VIOLATOR, f.violator)) line.appendChild(actButton(key, label("act.review"), "review", { mandate_id: ps.obj, condition: f.cond, violator: VIOLATOR[f.violator] }));
+          else line.appendChild(disabledButton(label("act.review"), label("act.review.undetermined")));
+          append(line, resultOf(key));
+        }
+        box.appendChild(line);
       }
       wrap.appendChild(box);
     }
@@ -785,7 +894,17 @@
       // «Возможно, чужая операция» — предположение, не нарушение: реакции нет (условие Р-1478). Реакция «Напомнить
       // клиенту» — только у подтверждения: стенд продлевает срок запроса подтверждения (ревью П-4.1 № 10).
       if (w.kind === "agent_step") row.appendChild(el("span", " — " + label("ctl.wait.agent_step.note")));
-      else if (w.kind === "confirmation") row.appendChild(el("div", label("ctl.wait.action"), "muted"));
+      else if (ACTIONS && w.kind === "confirmation" && w.confirmationId) {
+        // У-03: стенд продлевает срок запроса подтверждения.
+        const key = "remind:" + w.confirmationId;
+        row.appendChild(actButton(key, label("act.remind"), "remind", { confirmation: w.confirmationId }));
+        append(row, resultOf(key));
+      } else if (ACTIONS && (w.cond === "R08" || w.cond === "R18")) {
+        // У-01, У-02 (В1 (а)): только «напомнено» в журнале пульта — стенд не вызывается.
+        const key = "note:" + w.obj + ":" + w.cond;
+        row.appendChild(actButton(key, label("act.remind"), "remind_note", { obj: w.obj, cond: w.cond }));
+        append(row, resultOf(key));
+      } else if (w.kind === "confirmation") row.appendChild(el("div", label("ctl.wait.action"), "muted"));
       wrap.appendChild(row);
     }
     wrap.appendChild(el("h3", label("ctl.active"), "ctl-h"));
@@ -796,7 +915,13 @@
       const t = el("span", stageText(a.since), "active-t");
       t.dataset.since = a.since;
       row.appendChild(t);
+      if (ACTIONS) txButtons(row, a.id);
       wrap.appendChild(row);
+    }
+    // Журнал реакций (П-8.1; связь с протоколом и «упреждено реакцией» — П-8.2): последние нажатия и ответ стенда.
+    if (ACTIONS && Array.isArray(board.reactions) && board.reactions.length > 0) {
+      wrap.appendChild(el("h3", label("act.log"), "ctl-h"));
+      for (const x of board.reactions.slice(-5).reverse()) wrap.appendChild(el("div", clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + " · " + describeReaction(x), "react-row"));
     }
   }
 

@@ -8,6 +8,7 @@ import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
 import { t, type Lang } from "./i18n.js";
 import { DEMO_PRINCIPAL, DemoScenarios, INTENT_CARD, INTENT_CARD_UPK, moreScenarios } from "./scenarios.js";
+import { pultActions } from "./pult-actions.js";
 import { startMonitorServer, type MonitorServer } from "./server.js";
 import { TRAINING_MERCHANTS } from "./shops.js";
 import { startDemoStand, type DemoStand } from "./stand.js";
@@ -21,6 +22,8 @@ export interface DemoOptions {
   /** Режим сбоев стенда для прогона тестов пульта (`DEMO_FAULTS=1`, Р-1355 ответ 1, П-1.3): `demo: { faults: true }`,
    *  срок подтверждения 45 с. По умолчанию выключен. Для показа людям не включается. */
   faults?: boolean;
+  /** Режим показа людям с кнопками реакции пульта (`DEMO_ACTIONS=1`, П-8.1, Р-1526 В2): `demo: { actions: true }`. */
+  actions?: boolean;
   /** Срок поручения сюжета 10 «срок поручения истёк», секунд (по умолчанию EXPIRY_SEC); короче — для автотестов. */
   expirySec?: number;
 }
@@ -46,6 +49,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
     ...(o.lang && { lang: o.lang }),
     ...(o.passMs !== undefined && { passMs: o.passMs }),
     ...(o.faults === true && { faults: true }),
+    ...(o.actions === true && { actions: true }),
   });
   let bus: MonitorBus | undefined;
   let scenarios: DemoScenarios | undefined;
@@ -128,6 +132,9 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       ...(o.lang && { defaultLang: o.lang }),
       ...(o.port !== undefined && { port: o.port }),
       faults: stand.faults,
+      holdSec: stand.stand.params.order_hold_sec,
+      // Кнопки реакции пульта (П-8.1, Р-1526 В2): только при действиях стенда — режим показа или режим сбоев.
+      ...(stand.actions && stand.stand.demo && { pultActions: pultActions(stand.stand.demo), actionsMode: !stand.faults }),
       ...(faulty && { faulty }),
       ...(clientEmulator && { clientEmulator }),
       ...(standFaults && { standFaults }),

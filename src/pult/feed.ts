@@ -7,6 +7,7 @@ import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { SourceStatus } from "../dashboards/source.js";
 import { boardView, type BoardCard, type BoardColumn } from "./board.js";
+import type { Reaction } from "./actions.js";
 import { causesView, type TxCauses } from "./causes.js";
 import { conditionsView, type ConditionsView } from "./conditions.js";
 import { controlView, WAIT_MS, type ControlState } from "./control.js";
@@ -41,7 +42,11 @@ export interface PultBoardState {
   readonly conditions?: ConditionsView;
   /** «Причины» (П-5.1): разбор транзакций и поручений с вердиктом — из вердиктов движка. Нет — движок ещё не отработал. */
   readonly causes?: readonly TxCauses[];
+  /** Журнал реакций (П-8.1): нажатия кнопок и ответ стенда как есть; новые — в конце, последние `REACTIONS_KEPT`. */
+  readonly reactions?: readonly Reaction[];
 }
+/** Сколько реакций помнить в ленте (журнал и протокол — П-6, П-8.2). */
+export const REACTIONS_KEPT = 50;
 
 export type PultFeedEvent =
   | { readonly type: "board"; readonly board: PultBoardState }
@@ -49,6 +54,8 @@ export type PultFeedEvent =
 
 export interface PultFeed {
   board(): PultBoardState;
+  /** Записать реакцию (кнопку пульта) и разослать доску. Пересчёт движка не нужен: реакция — не запись шины. */
+  react(r: Reaction): void;
   subscribe(l: (e: PultFeedEvent) => void): () => void;
   close(): void;
 }
@@ -86,6 +93,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   const listeners = new Set<(e: PultFeedEvent) => void>();
   const column = new Map<string, { column: BoardColumn; since: string }>();
   let jumps: PultJump[] = [];
+  let reactions: Reaction[] = [];
   const emptyControl: ControlState = { passports: [], waits: [], waitMs: o.waitMs ?? WAIT_MS, active: [], counts: { txs: 0, wrong: 0 } };
   let state: PultBoardState = { now: o.now().toISOString(), cards: [], jumps: [], graph: { rows: [] }, control: emptyControl };
   let timer: NodeJS.Timeout | undefined;
@@ -159,7 +167,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
-    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }) };
+    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }), ...(reactions.length > 0 && { reactions: [...reactions] }) };
     emit({ type: "board", board: state });
   };
 
@@ -175,6 +183,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       schedule();
     } else if (e.type === "reset") {
       items.length = 0;
+      reactions = [];
       column.clear();
       jumps = [];
       schedule();
@@ -185,6 +194,11 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
 
   return {
     board: () => state,
+    react(r) {
+      reactions = [...reactions, r].slice(-REACTIONS_KEPT);
+      state = { ...state, reactions: [...reactions] };
+      emit({ type: "board", board: state });
+    },
     subscribe(l) {
       listeners.add(l);
       return () => listeners.delete(l);

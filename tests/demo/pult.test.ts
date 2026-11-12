@@ -305,6 +305,10 @@ describe("пульт: режим сбоев DEMO_FAULTS=1 (П-1.3)", { timeout: 
         const html = await (await fetch(`${demo.monitor.url}${path}?lang=${lang}`)).text();
         expect(html, `${path} ${lang}`).toContain(`<p class="faults-mode"`);
         expect(html, `${path} ${lang}`).toContain(`<strong>${PULT["mode.faults"][lang]}</strong>`);
+        // Срок — из `stand.params.order_hold_sec`, а не литерал словаря (ревью П-1.3 № 5, П-8.1).
+        const line = /<p class="faults-mode"[^>]*>.*?<\/p>/s.exec(html)![0];
+        expect(line, `${path} ${lang}`).toContain(`${demo.stand.stand.params.order_hold_sec} ${lang === "ru" ? "с" : "s"}`);
+        expect(line, `${path} ${lang}`).not.toContain("{sec}");
       }
     }
     const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };

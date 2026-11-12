@@ -19,6 +19,8 @@ import { controlPage } from "./dash-control.js";
 import { pultPage } from "./dash-pult.js";
 import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
 import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
+import type { PultActions } from "../pult/actions.js";
+import { pultAct } from "./pult-act.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -72,6 +74,13 @@ export interface MonitorServerOptions {
   bankLogin?: () => string;
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
+  /** Кнопки реакции пульта (П-8.1, Р-1526 В2) — порт к действиям стенда; только в режиме показа или сбоев: маршрут
+   *  `POST /pult/act/<действие>`. Нет — маршрута нет (404), кнопок на пульте нет. */
+  pultActions?: PultActions;
+  /** Режим показа людям (`DEMO_ACTIONS=1`): строка «режим показа: вкл.» на мониторе и пульте. */
+  actionsMode?: boolean;
+  /** Срок удержания заказа и запроса подтверждения стенда, с (`stand.params.order_hold_sec`) — в строке режима сбоев. */
+  holdSec?: number;
   /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
   faulty?: {
     start(test: FaultTest, o?: { humanArm?: { readonly shop_id?: string; readonly merchant_id?: string } }): FaultStart;
@@ -171,7 +180,8 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   <nav class="lang">${o.dashboards ? `${switcherHtml("monitor", lang)} · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
-${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${e("mode.faults_note")}</p>` : ""}
+${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${e("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+${o.actionsMode ? `<p class="faults-mode" role="status"><strong>${e("mode.actions")}</strong> — ${e("mode.actions_note")}</p>` : ""}
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
@@ -388,6 +398,20 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       return send(res, 200, "application/json; charset=utf-8", JSON.stringify({ auto: o.clientEmulator.setAuto(auto[1] === "on") }));
     }
+    // Кнопки реакции пульта (П-8.1, Р-1526): только POST, только при действиях стенда (режим показа или сбоев), только со
+    // страниц этого сервера (Origin); параметры — номера объекта адресом. Без действий — 404 на любой путь под `/pult/act/`.
+    // Разбор и вызов порта — `pult-act.ts`; ответ стенда — как есть.
+    if (u.pathname.startsWith("/pult/act/")) {
+      if (req.method !== "POST" || !o.pultActions || !pult) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const now = o.dashboards?.now ?? (() => new Date());
+      // Сбой обработки — 500 с телом, а не повисший запрос и не необработанный отказ, который уронил бы процесс стенда.
+      void pultAct(u.pathname.slice("/pult/act/".length), u.searchParams, o.pultActions, pult, now).then(
+        (r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)),
+        () => send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "ACTION_FAILED" })),
+      );
+      return;
+    }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
@@ -462,7 +486,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return;
         }
         case "/pult":
-          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true }));
+          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true, actions: o.pultActions !== undefined, actionsMode: o.actionsMode === true, ...(o.holdSec !== undefined && { holdSec: o.holdSec }) }));
         case "/pult/pult.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultJs);
         case "/pult/focus.js":
