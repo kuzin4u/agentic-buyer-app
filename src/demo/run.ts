@@ -1,6 +1,7 @@
 // Сборка демо-стенда целиком (П2): стенд и агент, шина монитора, сюжеты, сервер экранов. Общая для npm run demo и тестов.
 import { LOCAL_STAND_EMULATED } from "../dashboards/interpret.js";
 import { MonitorBus } from "./bus.js";
+import { ClientEmulator } from "./client-emulator.js";
 import { FaultyDriver } from "./faulty.js";
 import { loadSituationTitles } from "./situations.js";
 import { buildDiagSnapshot } from "./diag.js";
@@ -29,6 +30,8 @@ export interface Demo {
   readonly scenarios: DemoScenarios;
   /** Драйвер нарушителя «ПР» — только при режиме сбоев (П7); без флага его нет. */
   readonly faulty?: FaultyDriver;
+  /** Эмулятор клиента «Авто» — только при режиме сбоев (П5); без флага его нет. */
+  readonly clientEmulator?: ClientEmulator;
   readonly monitor: MonitorServer;
   close(): Promise<void>;
 }
@@ -44,6 +47,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
   let bus: MonitorBus | undefined;
   let scenarios: DemoScenarios | undefined;
   let driver: FaultyDriver | undefined;
+  let emulator: ClientEmulator | undefined;
   try {
     // Сюжеты пишут шаги в шину; шина берёт у сюжетов сумму операции для строки итога. Связь — через замыкания.
     // Сюжет и нарушитель «ПР» — взаимно исключаются (ревью П-11.3а № 4): оба ходят ключом агента.
@@ -80,6 +84,11 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
     // Драйвер нарушителя «ПР» (П7): только при режиме сбоев — без флага экземпляр не создаётся и ключ не загружается.
     const faulty = stand.faults ? new FaultyDriver(stand, (s) => b.scenario(s), { otherBusy: () => sc.busy }) : undefined;
     driver = faulty;
+    // Эмулятор клиента «Авто» (П5, доп. 1): только при режиме сбоев — без флага экземпляра нет; по умолчанию «Вручную».
+    const clientEmulator = stand.faults
+      ? new ClientEmulator({ issuer: stand.stand.issuer, answerCart: (agree) => sc.answerCart(agree), subscribe: (fn) => b.subscribe(fn), emit: (s) => b.scenario(s) })
+      : undefined;
+    emulator = clientEmulator;
     const monitor = await startMonitorServer({
       bus: b,
       urls: stand.urls,
@@ -108,8 +117,10 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       bus: b,
       scenarios: sc,
       ...(faulty && { faulty }),
+      ...(clientEmulator && { clientEmulator }),
       monitor,
       close: async () => {
+        await clientEmulator?.close().catch(() => undefined);
         await sc.close().catch(() => undefined);
         await faulty?.close().catch(() => undefined);
         b.stop();
@@ -121,6 +132,7 @@ export async function startDemo(o: DemoOptions = {}): Promise<Demo> {
       },
     };
   } catch (e) {
+    await emulator?.close().catch(() => undefined);
     await scenarios?.close().catch(() => undefined);
     await driver?.close().catch(() => undefined);
     bus?.stop();

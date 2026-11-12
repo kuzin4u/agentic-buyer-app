@@ -190,6 +190,19 @@ const ru = {
   "step.fault.note.first_payment":
     "Нарушитель (ПР) — драйвер приложения ({test}): Платформа записала операцию {op_ref} по заказу {order_id} — итог первой оплаты на мониторе по событию; первая оплата законна и входит в тест, нарушение — её повтор.",
   "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
+  // Эмулятор клиента «Авто» (П5, доп. 1): каждое действие помечено — решение за человека принимает эмулятор, не человек.
+  "step.client.auto_on": "Эмулятор клиента: «Решения людей» — «Авто» (только прогон тестов, DEMO_FAULTS=1); подпись, подтверждение и отзыв — за клиента по сценарию теста.",
+  "step.client.auto_off": "Эмулятор клиента: «Решения людей» — «Вручную»; решения принимает человек.",
+  "step.client.cart_agreed": "Эмулятор клиента: «согласен» на карточку корзины продавца {merchant_id} по поручению {mandate_id}.",
+  "step.client.cart_failed": "Эмулятор клиента: ответ на карточку корзины не принят — {code}.",
+  "step.client.signed": "Эмулятор клиента: подписал поручение {mandate_id} в банке.",
+  "step.client.cart_rejected": "Эмулятор клиента: отказался от корзины {mandate_id} в банке — по сценарию теста.",
+  "step.client.sign_failed": "Эмулятор клиента: подпись поручения {mandate_id} не прошла — {status}, {code}.",
+  "step.client.confirmed": "Эмулятор клиента: подтвердил запрос {confirmation_id} в банке.",
+  "step.client.confirm_rejected": "Эмулятор клиента: отклонил запрос {confirmation_id} в банке — по сценарию теста.",
+  "step.client.confirm_failed": "Эмулятор клиента: решение по запросу {confirmation_id} не прошло — {status}, {code}.",
+  "step.client.revoked": "Эмулятор клиента: отозвал поручение {mandate_id} в банке — по сценарию теста.",
+  "step.client.revoke_failed": "Эмулятор клиента: отзыв поручения {mandate_id} не прошёл — {status}, {code}.",
   "scenario.expired": "10. Срок поручения истёк",
   "scenario.expired_note":
     "Своё поручение с коротким сроком (карточка выше) — подпишите его в банке, пока срок не вышел. Сюжет дождётся конца срока и попробует купить: агент остановится сам до витрин, корзины и оплаты.",
@@ -444,6 +457,18 @@ const en: Record<MessageKey, string> = {
   "step.fault.note.first_payment":
     "Violator (ПР) — app driver ({test}): the Platform recorded operation {op_ref} for order {order_id} — the first payment outcome is on the monitor from the event; the first payment is legitimate and part of the test, the violation is its repeat.",
   "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
+  "step.client.auto_on": "Client emulator: “Human decisions” — “Auto” (test runs only, DEMO_FAULTS=1); signing, confirming and revoking for the client per the test scenario.",
+  "step.client.auto_off": "Client emulator: “Human decisions” — “Manual”; a person decides.",
+  "step.client.cart_agreed": "Client emulator: “agree” to the cart card of merchant {merchant_id} under mandate {mandate_id}.",
+  "step.client.cart_failed": "Client emulator: the answer to the cart card was not accepted — {code}.",
+  "step.client.signed": "Client emulator: signed mandate {mandate_id} in the bank.",
+  "step.client.cart_rejected": "Client emulator: refused cart {mandate_id} in the bank — per the test scenario.",
+  "step.client.sign_failed": "Client emulator: signing mandate {mandate_id} failed — {status}, {code}.",
+  "step.client.confirmed": "Client emulator: approved request {confirmation_id} in the bank.",
+  "step.client.confirm_rejected": "Client emulator: rejected request {confirmation_id} in the bank — per the test scenario.",
+  "step.client.confirm_failed": "Client emulator: the decision on request {confirmation_id} failed — {status}, {code}.",
+  "step.client.revoked": "Client emulator: revoked mandate {mandate_id} in the bank — per the test scenario.",
+  "step.client.revoke_failed": "Client emulator: revoking mandate {mandate_id} failed — {status}, {code}.",
   "scenario.expired": "10. The mandate has expired",
   "scenario.expired_note":
     "Its own mandate with a short validity (card above) — sign it in the bank before it runs out. The scenario waits for the end of the validity and tries to buy: the agent stops itself before shops, cart and payment.",
