@@ -723,7 +723,15 @@ export class DemoScenarios {
     this.#intentActive = false;
     const draft = demoIntent(new Date(), card);
     const intent = await p.intent(draft, this.#key("intent"));
-    this.#step("intent.created", { mandate_id: intent.id, subject: draft.subject, limit: draft.amountLimit });
+    // Срок поручения — из данных поручения ядра (П-11.5б, Р-1525): по нему окно А ставит признак истечения (П-5.1а); на шине
+    // `valid_to` — текст по языку и машинное значение (TimeView, как у `expiry.wait`, П-11.1д-а). Не по форме — шина выпускает
+    // шаг без него (на линии экранов запись с неверным `valid_to` отбрасывается целиком, `wire.ts`).
+    this.#step("intent.created", {
+      mandate_id: intent.id,
+      subject: draft.subject,
+      limit: draft.amountLimit,
+      ...(typeof intent.validTo === "string" && intent.validTo !== "" && { valid_to: intent.validTo }),
+    });
     this.#step("intent.awaiting_signature", { mandate_id: intent.id });
     const signed = await p.awaitIntent(this.#signal);
     this.#intentActive = signed.status === "ACTIVE";

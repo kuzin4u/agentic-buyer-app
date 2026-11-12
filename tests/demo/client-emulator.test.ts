@@ -353,6 +353,18 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     expect(s.find((x) => x.step === "cart.created")?.params.intent_id).toBe(intentId);
   });
 
+  it("П-11.5б: шаг intent.created несёт срок поручения valid_to (TimeView) — сюжеты 1 и 8 (П-06)", async () => {
+    for (const [name, end] of [["intent", ["intent.signed"]], ["scope", ["scope.refused", "scope.not_refused"]]] as const) {
+      const s = await run(name, end);
+      const created = s.find((x) => x.step === "intent.created")!;
+      const v = created.params.valid_to as { iso?: string; text?: { ru?: string; en?: string } } | undefined;
+      expect(v, name).toBeDefined();
+      expect(Date.parse(String(v!.iso)), name).toBeGreaterThan(Date.parse(created.at));
+      expect(v!.text?.ru, name).toBeTruthy();
+      expect(v!.text?.en, name).toBeTruthy();
+    }
+  });
+
   it("сюжет 7 (П-04): эмулятор отклоняет запрос подтверждения в банке — upk.declined", async () => {
     const s = await run("unconfirmed", ["upk.declined", "outcome"]);
     const names = s.map((x) => x.step);
