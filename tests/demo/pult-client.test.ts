@@ -621,3 +621,94 @@ describe("«Условия» пульта (П-4.2)", () => {
     expect($(e2, "b-ctl").querySelectorAll("b, img")).toEqual([]);
   });
 });
+
+// П-5.1 «Причины»: панель «Интерпретатор» показывает разбор из `board.causes` — в системе блоки, в фокусе — полностью.
+describe("«Причины» пульта (П-5.1)", () => {
+  const rec = (seq: number, phrase: string) => ({ seq, at: "2026-11-10T12:00:00.000Z", actor: "agent", kind: "norm", phrase: { ru: phrase, en: phrase } });
+  const CAUSES = [
+    {
+      id: "T2",
+      outcome: "paid",
+      items: [
+        {
+          kind: "violation",
+          cond: "R46",
+          title: { ru: "<b>Один заказ — одна оплата</b>", en: "One order — one payment" },
+          node: "У2",
+          violator: "agent",
+          protector: "none",
+          happened: [rec(5, "второе «оплачено»")],
+          where: ["Т4"],
+          rules: ["Ж03"],
+          consequences: { ru: "клиент платит дважды", en: "the client pays twice" },
+          todo: { ru: "остановить и разобрать", en: "stop and review" },
+          guarantees: [{ ru: "Приостановленный агент остановлен (403) — кто защитил: платёжная система (Платформа)", en: "The suspended agent was stopped (403) — protected by: payment system (Platform)" }],
+        },
+        {
+          kind: "protection",
+          guarantee: "agent_suspended",
+          title: { ru: "Приостановленный агент остановлен (403)", en: "The suspended agent was stopped (403)" },
+          violator: "none",
+          protector: "platform",
+          happened: [rec(6, "403")],
+          where: ["Т3"],
+          rules: ["А06"],
+          consequences: { ru: "процесс остановлен", en: "process stopped" },
+          todo: { ru: "сообщить клиенту", en: "tell the client" },
+          guarantees: [{ ru: "403 — Платформа", en: "403 — Platform" }],
+        },
+      ],
+      waits: [],
+      chain: Array.from({ length: 40 }, (_, i) => rec(100 + i, `запись ${i}`)),
+      chainTotal: 55,
+      chainLimit: 40,
+    },
+  ];
+  const msg = (causes: unknown) => ({ type: "board", board: { now: NOW, cards: [card("T2", "done")], jumps: [], control: CTL, causes } });
+
+  it("система — блоки без разбора; щелчок — фокус; в фокусе — что случилось, где, правило, почему, последствия, что делать, гарантии, цепочка «из N»; данные — текстом", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      env.sources[0]!.send(msg(CAUSES));
+      const box = $(env, "b-int");
+      expect(box.querySelector(".note")!.textContent).toBe(PULT["int.note.system"][lang]);
+      const head = box.querySelector(".cb-h")!;
+      expect(head.textContent).toBe(`T2 · ${PULT["outcome.paid"][lang]}`);
+      expect(box.querySelectorAll(".cause").length).toBe(2);
+      expect(box.querySelectorAll("dt").map((d) => d.textContent)).not.toContain(PULT["int.happened"][lang]);
+      expect(box.querySelector(".chain")).toBeNull();
+      // Щелчок по заголовку — фокус на транзакцию, разбор полностью.
+      head.click();
+      expect($(env, "grid").dataset.focusTx).toBe("T2");
+      expect(box.querySelector(".note")!.textContent).toBe(PULT["int.note.tx"][lang]);
+      const dts = box.querySelectorAll("dt").map((d) => d.textContent);
+      for (const k of ["int.violator", "int.happened", "int.where", "int.rule", "int.why", "int.consequences", "int.todo", "int.guarantees", "int.protector"] as const) expect(dts, k).toContain(PULT[k][lang]);
+      // Гарантии, правила и точки — из данных: правило по номеру — текст справочника страницы, точка — с названием.
+      const dds = box.querySelectorAll("dd").map((d) => d.textContent);
+      expect(dds.some((t) => t.includes(lang === "ru" ? "кто защитил: платёжная система" : "protected by: payment system"))).toBe(true);
+      const zh = RULES89.find((r) => r.id === "Ж03")!;
+      expect(dds.some((t) => t.includes("Ж03 " + (lang === "en" ? zh.en!.rule : zh.ru.rule)))).toBe(true);
+      expect(dds.some((t) => t.startsWith("Т4 "))).toBe(true);
+      // «Кто защитил» у нарушения без защиты — словами «защиты не было».
+      expect(dds).toContain(PULT["int.protector.none"][lang]);
+      // Цепочка — 40 строк и пометка «показаны последние 40 из 55» (Р-1519).
+      expect(box.querySelectorAll(".ch-r")).toHaveLength(40);
+      expect(box.querySelector(".chain-cut")!.textContent).toContain("55");
+      expect(box.querySelector(".chain-cut")!.textContent).toContain("40");
+      // Данные — текстом.
+      expect(box.querySelectorAll("b")).toEqual([]);
+      expect(box.textContent).toContain(lang === "ru" ? "<b>Один заказ — одна оплата</b>" : "One order — one payment");
+    }
+  });
+
+  it("ревью П-5.1 № 4: экран не объявляет транзакцию правильной — «вердиктов по транзакции нет»; движок не отработал — так и сказано", () => {
+    const env = start();
+    env.sources[0]!.send(msg([]));
+    expect($(env, "b-int").textContent).toContain(ru("int.none"));
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T9" } }));
+    expect($(env, "b-int").textContent).toContain(ru("int.tx.none"));
+    expect($(env, "b-int").textContent).not.toMatch(/правильн/);
+    env.sources[0]!.send(msg(undefined));
+    expect($(env, "b-int").textContent).toContain(ru("int.no_engine"));
+  });
+});

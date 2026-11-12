@@ -15,6 +15,7 @@ import {
   KIND_LABEL,
   NODES,
   PARTY_LABEL,
+  POINTS,
   RULE_GROUPS,
   RULES89,
   ruleText,
@@ -25,6 +26,7 @@ import {
   type CheckableCondition,
   type ConditionId,
   type NodeId,
+  type Point,
   type Rule89,
   type Sector,
 } from "./rules89.js";
@@ -116,6 +118,8 @@ export function rulesForPage(lang: WireLang, rules: readonly Rule89[] = RULES89)
       rules: rules.filter((r) => r.node === id).map((r) => r.id),
     })),
     sectors: (Object.keys(SECTORS) as Sector[]).map((id) => ({ id, name: t(SECTORS[id].name), conds: SECTORS[id].conds })),
+    // Точки контроля — для «где проявилось» в «Причинах» (П-5.1: правила и точки — номером, тексты — здесь).
+    points: (Object.keys(POINTS) as Point[]).map((id) => ({ id, name: t(POINTS[id].name) })),
     rules: rules.map((r) => {
       const { text, enLater } = ruleText(r, lang);
       return {

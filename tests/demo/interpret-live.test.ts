@@ -248,5 +248,16 @@ describe("интерпретатор на пяти сюжетах приёмки
     expect(knew?.ids?.mandate_id).toBe(view(5).objs.find((o) => o.kind === "mandate")!.id);
     expect(view(5).objs.find((o) => o.kind === "mandate")!.conds.R37.seqs).toContain(knew!.seq);
     expect(view(5).guarantees.map((g) => g.kind)).toContain("revoke");
+    // П-5.1 (ревью П-3.2б № 4; Р-1519) на настоящей шине: одна остановка — одна защита, защитник — по источнику.
+    for (const no of [3, 5] as const) {
+      const keys = view(no).guarantees.map((g) => `${g.kind}|${g.obj ?? ""}`);
+      expect(new Set(keys).size, `сюжет ${no}`).toBe(keys.length);
+    }
+    expect(view(3).guarantees.find((g) => g.kind === "limit_client")!.protector).toBe("bank");
+    const rv = view(5).guarantees.find((g) => g.kind === "revoke")!;
+    // Задание v1.0 (П-08) и Р-1522: событие отзыва — уведомление, агент остановился сам по своему журналу — «защитил агент»;
+    // точно, не «агент или Платформа» (ревью П-5.1 № 7).
+    expect(rv.protector).toBe("agent");
+    expect(rv.seqs.some((s) => runs.get(5)!.find((r) => r.seq === s)?.stream !== "scenario")).toBe(true);
   });
 });

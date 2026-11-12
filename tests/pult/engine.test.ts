@@ -3,14 +3,16 @@
 // записях той же формы. Номер seq выдаётся при создании записи — записи создаются в порядке шины.
 import { describe, expect, it } from "vitest";
 import type { Interpretation, TxIds, Who } from "../../src/dashboards/interpret.js";
-import { evaluate, GUARANTEE_INFO, hasCardNumber, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
+import { evaluate, GUARANTEE_CODES, GUARANTEE_INFO, hasCardNumber, HIDDEN_RECORD, MERCHANT_STOP_CODES, stoppedBy, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
 import { PULT } from "../../src/pult/phrases.js";
-import { CHECKABLE_CONDITIONS, isCheckable, PARTIES, RULES89 } from "../../src/pult/rules89.js";
+import { CHECKABLE_CONDITIONS, CONDITIONS, isCheckable, PARTIES, RULES89, ruleText } from "../../src/pult/rules89.js";
 import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
 import { conditionsView } from "../../src/pult/conditions.js";
+import { buildDiagSnapshot } from "../../src/demo/diag.js";
+import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
 import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
 
 let seq = 0;
@@ -37,6 +39,13 @@ function rec(stream: Interpretation["stream"], ref: string, ids: TxIds, o: O = {
   };
 }
 const step = (ref: string, ids: TxIds, o: O = {}) => rec("scenario", ref, ids, o);
+/** Запись журнала агента с кодом (`agent.refused`: причина — код, как в интерпретаторе). */
+const journal = (ref: string, ids: TxIds, code: string) => rec("console", ref, ids, { code, kind: "conflict" });
+/** Отказ Платформы MANDATE_SCOPE на запрос реквизита (как на живой шине) и шаг сюжета (ревью П-5.1 № 1). */
+const scopeRefused = (cart: string, order: string) => [
+  rec("monitor", "POST /pao/v1/credentials", { mandate_id: cart }, { source: "agent_platform", code: "MANDATE_SCOPE", kind: "conflict" }),
+  step("failed", { order_id: order, mandate_id: cart }, { code: "MANDATE_SCOPE" }),
+];
 const event = (ref: string, ids: TxIds, o: O = {}) => rec("monitor", ref, ids, { ...o, source: "pao_event" });
 const call = (ref: string, ids: TxIds, source: Interpretation["source"], o: O = {}) => rec("monitor", ref, ids, { ...o, source });
 const PAY = "POST /v1/shops/{shop_id}/orders/{order_id}/payment";
@@ -260,11 +269,13 @@ describe("движок условий пульта (П-3.2б)", () => {
   });
 
   it("R17 (В8): MANDATE_SCOPE — «сработало»; защиты: MANDATE_SCOPE, 403 AGENT_SUSPENDED, отзыв (агент остановился сам), LIMIT_EXCEEDED клиента — не банка", () => {
-    const scope = () => [step("failed", { order_id: "OB", mandate_id: "CB" }, { code: "MANDATE_SCOPE" })];
-    const items = purchase("B", { skip: ["start", "pay", "done"], at: { end: scope } });
+    const items = purchase("B", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CB", "OB") } });
     const v = run(items);
-    const scopeSeq = items.at(-1)!.seq;
-    expect(v.objs[0]!.conds.R17).toEqual({ status: "fired", seqs: [scopeSeq], cause: { kind: "rule", rule: "mandate_scope" } });
+    const scopeSeq = items.at(-2)!.seq;
+    expect(v.objs[0]!.conds.R17).toEqual({ status: "fired", seqs: [scopeSeq, items.at(-1)!.seq], cause: { kind: "rule", rule: "mandate_scope_platform" } });
+    // Ревью П-5.1 № 1 (Р-1519): только шаг сюжета — защитник не определён.
+    const stepOnly = purchase("B9", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OB9", mandate_id: "CB9" }, { code: "MANDATE_SCOPE" })] } });
+    expect(run(stepOnly).objs[0]!.conds.R17.cause).toEqual({ kind: "rule", rule: "mandate_scope_undetermined" });
     expect(v.system.R17.status).toBe("fired");
     expect(v.system.R17.note).toBeUndefined();
     const susp = step("failed", { order_id: "OB2", mandate_id: "CB2" }, { code: "AGENT_SUSPENDED" });
@@ -280,6 +291,43 @@ describe("движок условий пульта (П-3.2б)", () => {
     ]);
     expect(g[0]!.obj).toBe("CB");
     expect(GUARANTEE_INFO.mandate_scope.guarantee).toBe("g1d");
+  });
+
+  it("П-5.1 (ревью П-3.2б № 4, П-3.3 № 3; Р-1519): одна остановка — одна защита; кто остановил — ответ Платформы, иначе журнал агента, иначе «не определён»", () => {
+    const base = purchase("S1", { skip: ["start", "pay", "done"] });
+    const plat = call("POST /pao/v1/credentials", { mandate_id: "CS1" }, "agent_platform", { code: "AGENT_SUSPENDED", kind: "conflict" });
+    const jr = journal("agent.refused", { mandate_id: "CS1" }, "AGENT_SUSPENDED");
+    const st = step("failed", { order_id: "OS1", mandate_id: "CS1" }, { code: "AGENT_SUSPENDED" });
+    const all = run([...base, plat, jr, st]).guarantees;
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ kind: "agent_suspended", protector: "platform", seqs: [plat.seq, jr.seq, st.seq], seq: plat.seq });
+    // Только журнал агента — агент; только шаг сюжета — «не определён» (рассказ стенда, не доказательство).
+    const b2 = purchase("S2", { skip: ["start", "pay", "done"] });
+    expect(run([...b2, journal("agent.refused", { mandate_id: "CS2" }, "AGENT_SUSPENDED"), step("failed", { order_id: "OS2", mandate_id: "CS2" }, { code: "AGENT_SUSPENDED" })]).guarantees[0]!.protector).toBe("agent");
+    const b3 = purchase("S3", { skip: ["start", "pay", "done"] });
+    expect(run([...b3, step("failed", { order_id: "OS3", mandate_id: "CS3" }, { code: "AGENT_SUSPENDED" })]).guarantees[0]!.protector).toBe("undetermined");
+    // Ответ витрины (не Платформы) с тем же кодом — не «защитила Платформа».
+    const b4 = purchase("S4", { skip: ["start", "pay", "done"] });
+    expect(run([...b4, call(PAY, { shop_id: "SHOP-1", order_id: "OS4" }, "agent_merchant", { code: "AGENT_SUSPENDED", kind: "conflict" })]).guarantees[0]!.protector).toBe("undetermined");
+    expect(stoppedBy([], ["AGENT_SUSPENDED"])).toBe("undetermined");
+  });
+
+  it("П-5.1 (Р-1511): коды сработавших защит — из реестра агента и ПАО (`DIAG` ядра), а не выдуманы пультом", () => {
+    const snap = buildDiagSnapshot();
+    const agent = snap.registries.find((r) => r.id === "agent")!;
+    const merchant = snap.registries.find((r) => r.id === "merchant")!;
+    // Р-1524: коды отказа продавца — из реестра продавца; остальные — из реестра агента и ПАО.
+    const merchantKnown = new Set(merchant.entries.map((e) => e.code));
+    expect(MERCHANT_STOP_CODES.filter((c) => !merchantKnown.has(c))).toEqual([]);
+    const known = new Set(agent.entries.map((e) => e.code));
+    const own = GUARANTEE_CODES.filter((c) => !MERCHANT_STOP_CODES.includes(c));
+    expect(own.filter((c) => !known.has(c))).toEqual([]);
+    // Ревью П-5.1 № 15: коды ответов Платформы — в компоненте ПАО; MANDATE_NOT_ACTIVE — собственная остановка агента.
+    const comp = (c: string) => agent.entries.filter((e) => e.code === c).map((e) => e.component);
+    for (const c of own.filter((x) => x !== "MANDATE_NOT_ACTIVE")) expect(comp(c), c).toContain("pao");
+    // Перечень защитников (Р-1511, Р-1524): у каждого — подпись ru/en.
+    for (const s of ["platform", "agent", "bank", "merchant", "undetermined"] as const) for (const lang of ["ru", "en"] as const) expect(PULT[`subj.${s}`][lang].length, s).toBeGreaterThan(0);
+    expect(comp("MANDATE_NOT_ACTIVE")).toContain("agent");
   });
 
   it("поручение без покупки: подписано клиентом — R08 «соблюдено»; отозвано, агент остановился — R37 «соблюдено»; остальное — не применяется", () => {
@@ -434,10 +482,10 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const mk = (test: StandTest, n: string) => entry("MARKED", { order_id: `O${n}` }, { test });
     // Решение по П-3.3, 1: Платформа не отказала (операция оплачена) — «нарушено»; отказала (MANDATE_SCOPE) — «сработало».
     expect(txOf(withLog(purchase("M8"), [mk("Н-08", "M8")])).R17.status).toBe("bad");
-    const scope = purchase("M8s", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OM8s", mandate_id: "CM8s" }, { code: "MANDATE_SCOPE" })] } });
-    expect(txOf(withLog(scope, [mk("Н-08", "M8s")])).R17).toMatchObject({ status: "fired", cause: { kind: "mark", test: "Н-08", bus: "mandate_scope" } });
+    const scope = purchase("M8s", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CM8s", "OM8s") } });
+    expect(txOf(withLog(scope, [mk("Н-08", "M8s")])).R17).toMatchObject({ status: "fired", cause: { kind: "mark", test: "Н-08", bus: "mandate_scope_platform" } });
     // Повторное ревью П-3.3 № 1: две пометки Н-08 при отказе Платформы — вторая не теряет отказ, остаётся «сработало».
-    expect(txOf(withLog(scope, [mk("Н-08", "M8s"), mk("Н-08", "M8s")])).R17).toMatchObject({ status: "fired", cause: { kind: "mark", test: "Н-08", bus: "mandate_scope" } });
+    expect(txOf(withLog(scope, [mk("Н-08", "M8s"), mk("Н-08", "M8s")])).R17).toMatchObject({ status: "fired", cause: { kind: "mark", test: "Н-08", bus: "mandate_scope_platform" } });
     // Н-06: агент не записал «узнал об отзыве» — по шине гонка С-28 («ждёт»); пометка приложения — «нарушено».
     const ignore = purchase("M6", { at: { start: () => [event("mandate.revoked", { mandate_id: "CM6" }, { stage: "revoke" })] } });
     expect(txOf(withLog(ignore, [])).R37.status).toBe("wait");
@@ -541,10 +589,9 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
       items: () => purchase("V4", { skip: ["start", "pay", "done"], at: { end: () => [req("V4"), event("confirmation.expired", { confirmation_id: "QV4", order_id: "OV4" }, { stage: "confirmation" })] } }),
       want: [{ cond: "R21", kind: "client_decision", violator: "client_decision", protector: "platform" }],
     },
-    // П-05, П-07 — вердикты по сработавшим защитам (`guarantees`) — П-5.1 (Р-1484, решение владельца по П-3.3).
     {
       test: "П-06 агент вне поручения — не нарушение, защитила Платформа",
-      items: () => purchase("V6", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OV6", mandate_id: "CV6" }, { code: "MANDATE_SCOPE" })] } }),
+      items: () => purchase("V6", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CV6", "OV6") } }),
       want: [{ cond: "R17", kind: "protection", protector: "platform" }],
     },
     {
@@ -553,15 +600,84 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
       items: () =>
         purchase("V8", {
           skip: ["start", "pay", "done"],
-          at: { end: () => [event("mandate.revoked", { mandate_id: "CV8" }, { stage: "revoke" }), step("failed", { order_id: "OV8", mandate_id: "CV8" }, { code: "MANDATE_REVOKED" })] },
+          // Как на живом сюжете 5: агент записал отказ в журнал (Р-1519).
+          at: {
+            end: () => [
+              event("mandate.revoked", { mandate_id: "CV8" }, { stage: "revoke" }),
+              journal("agent.refused", { mandate_id: "CV8" }, "MANDATE_REVOKED"),
+              step("failed", { order_id: "OV8", mandate_id: "CV8" }, { code: "MANDATE_REVOKED" }),
+            ],
+          },
         }),
       want: [{ cond: "R09", kind: "client_decision", violator: "client_decision", protector: "agent" }],
+    },
+    {
+      // Ревью П-5.1 № 16: срок и один MANDATE_NOT_ACTIVE — только шаг сюжета — защитник не определён.
+      test: "срок поручения, остановка только в шаге сюжета — защитник не определён",
+      items: () => purchase("VE", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OVE", mandate_id: "CVE" }, { code: "MANDATE_EXPIRED" })] } }),
+      want: [{ cond: "R09", kind: "protection", protector: "undetermined" }],
+    },
+    {
+      test: "MANDATE_NOT_ACTIVE, остановка только в шаге сюжета — нарушитель и защитник не определены",
+      items: () => purchase("VG", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OVG", mandate_id: "CVG" }, { code: "MANDATE_NOT_ACTIVE" })] } }),
+      want: [{ cond: "R09", kind: "protection", violator: "undetermined", protector: "undetermined", node: "У5" }],
+    },
+    {
+      // Р-1519: остановка только в шаге сюжета — рассказ стенда, не доказательство: защитник «не определён».
+      test: "отзыв в транзакции, остановка видна только в шаге сюжета — защитник не определён",
+      items: () =>
+        purchase("VC", {
+          skip: ["start", "pay", "done"],
+          at: { end: () => [event("mandate.revoked", { mandate_id: "CVC" }, { stage: "revoke" }), step("failed", { order_id: "OVC", mandate_id: "CVC" }, { code: "MANDATE_REVOKED" })] },
+        }),
+      want: [{ cond: "R09", kind: "client_decision", violator: "client_decision", protector: "undetermined" }],
+    },
+    {
+      // Ревью П-3.3 № 3, уточнение Р-1519: ответ Платформы MANDATE_REVOKED и запись агента об отказе — защитила Платформа
+      // (агент лишь узнал об отказе).
+      test: "отзыв в транзакции: ответ Платформы MANDATE_REVOKED и журнал агента — защитила Платформа",
+      items: () =>
+        purchase("VD", {
+          skip: ["start", "pay", "done"],
+          at: {
+            end: () => [
+              event("mandate.revoked", { mandate_id: "CVD" }, { stage: "revoke" }),
+              call("POST /pao/v1/credentials", { mandate_id: "CVD" }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" }),
+              journal("agent.refused", { mandate_id: "CVD" }, "MANDATE_REVOKED"),
+              step("failed", { order_id: "OVD", mandate_id: "CVD" }, { code: "MANDATE_REVOKED" }),
+            ],
+          },
+        }),
+      want: [{ cond: "R09", kind: "client_decision", violator: "client_decision", protector: "platform" }],
+    },
+    {
+      // П-05 (задание v1.0): отказ банка по лимиту клиента — решение клиента, защитил банк; вердикт — по сработавшей защите.
+      test: "П-05 превышен лимит клиента в банке — решение клиента, защитил банк",
+      items: () => purchase("V5", { skip: ["done"], at: { end: () => [event("operation.declined", { op_ref: "PV5", order_id: "OV5" }, { stage: "outcome", code: "LIMIT_EXCEEDED", detail: "CLIENT" }), step("limit.declined", { op_ref: "PV5", order_id: "OV5", mandate_id: "CV5" }, { stage: "outcome" })] } }),
+      want: [{ guarantee: "limit_client", kind: "client_decision", violator: "client_decision", protector: "bank" }],
+    },
+    {
+      // П-07 (задание v1.0): приостановленный агент — защитила Платформа (403); ответ 403, журнал и шаг — одна защита.
+      test: "П-07 агент приостановлен — защитила Платформа (403), одна защита",
+      items: () =>
+        purchase("V7", {
+          skip: ["start", "pay", "done"],
+          at: {
+            end: () => [
+              call("POST /pao/v1/credentials", { mandate_id: "CV7" }, "agent_platform", { code: "AGENT_SUSPENDED", kind: "conflict" }),
+              journal("agent.refused", { mandate_id: "CV7" }, "AGENT_SUSPENDED"),
+              step("failed", { order_id: "OV7", mandate_id: "CV7" }, { code: "AGENT_SUSPENDED" }),
+            ],
+          },
+        }),
+      want: [{ guarantee: "agent_suspended", kind: "protection", protector: "platform" }],
     },
     {
       // Форма после передачи агенту: ядро 4a4ee7c на истёкшем поручении даёт MANDATE_NOT_ACTIVE (строка ниже —
       // «не определён»), код MANDATE_EXPIRED появится после неё (расхождение № 7).
       test: "срок поручения в транзакции — форма после передачи агенту (MANDATE_EXPIRED): нарушителя нет, защитил агент",
-      items: () => purchase("V9", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OV9", mandate_id: "CV9" }, { code: "MANDATE_EXPIRED" })] } }),
+      // Остановку агента доказывает его журнал (П-5.1, Р-1519): шаг сюжета — только рассказ стенда.
+      items: () => purchase("V9", { skip: ["start", "pay", "done"], at: { end: () => [journal("agent.refused", { mandate_id: "CV9" }, "MANDATE_EXPIRED"), step("failed", { order_id: "OV9", mandate_id: "CV9" }, { code: "MANDATE_EXPIRED" })] } }),
       want: [{ cond: "R09", kind: "protection", protector: "agent" }],
     },
     {
@@ -574,7 +690,7 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     {
       // Ревью П-3.3 № 1: без положительного признака отзыва или срока — не «П-09 по умолчанию».
       test: "MANDATE_NOT_ACTIVE без признака отзыва или срока — защитил агент, нарушитель не определён",
-      items: () => purchase("VA", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OVA", mandate_id: "CVA" }, { code: "MANDATE_NOT_ACTIVE" })] } }),
+      items: () => purchase("VA", { skip: ["start", "pay", "done"], at: { end: () => [journal("agent.refused", { mandate_id: "CVA" }, "MANDATE_NOT_ACTIVE"), step("failed", { order_id: "OVA", mandate_id: "CVA" }, { code: "MANDATE_NOT_ACTIVE" })] } }),
       want: [{ cond: "R09", kind: "protection", violator: "undetermined", protector: "agent", node: "У5" }],
     },
     {
@@ -633,7 +749,7 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     { test: "Н-07 без согласия клиента — R18, агент, узла нет", items: () => purchase("W7"), log: () => [mk("Н-07", { order_id: "OW7" })], want: [{ cond: "R18", kind: "violation", violator: "agent", node: undefined }] },
     {
       test: "Н-08 сумма ≠ корзине (В8) — R17 сработало: нарушил агент, защитила Платформа",
-      items: () => purchase("W8", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OW8", mandate_id: "CW8" }, { code: "MANDATE_SCOPE" })] } }),
+      items: () => purchase("W8", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CW8", "OW8") } }),
       log: () => [mk("Н-08", { order_id: "OW8" })],
       want: [{ cond: "R17", kind: "protection", violator: "agent", protector: "platform", node: undefined }],
     },
@@ -727,12 +843,12 @@ describe("«Контроль» пульта (П-4.1)", () => {
       [
         "Н-08",
         () => ({
-          items: purchase("X8", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OX8", mandate_id: "CX8" }, { code: "MANDATE_SCOPE" })] } }),
+          items: purchase("X8", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CX8", "OX8") } }),
           log: [entry("MARKED", { order_id: "OX8" }, { test: "Н-08" })],
         }),
         true,
       ],
-      ["П-06", () => ({ items: purchase("X6", { skip: ["start", "pay", "done"], at: { end: () => [step("failed", { order_id: "OX6", mandate_id: "CX6" }, { code: "MANDATE_SCOPE" })] } }) }), false],
+      ["П-06", () => ({ items: purchase("X6", { skip: ["start", "pay", "done"], at: { end: () => scopeRefused("CX6", "OX6") } }) }), false],
       [
         "П-08",
         () => ({
@@ -906,6 +1022,193 @@ describe("«Контроль» пульта (П-4.1)", () => {
     const c = controlView(model, items, vs, []);
     expect(c.counts).toEqual({ txs: 1, wrong: 0 });
     expect(c.waitMs).toBe(WAIT_MS);
+  });
+});
+
+// П-5.1: «Причины» на записях в форме шины — разбор вердиктов, защиты по источнику, цепочка событий (Р-1519).
+describe("«Причины» пульта на записях в форме шины (П-5.1)", () => {
+  const causesOf = (items: Interpretation[], standLog?: StandLogEntry[]) => {
+    const model = buildTxModel(items);
+    const ev = evaluate(model, items, standLog ? { standLog } : {});
+    return causesView(model, items, verdicts(ev, model, items), waits(model, items));
+  };
+  const intentOnly = (id: string, tail: () => Interpretation[]) => [step("intent.awaiting_signature", { mandate_id: id }, { stage: "mandate" }), event("mandate.signed", { mandate_id: id }), ...tail()];
+  /** Похожее на номер карты — собирается во время теста (литералов номеров в тестах нет): префикс 9 — не схема карт, Луна. */
+  const luhnNumber = () => {
+    const body = "9" + "2".repeat(14);
+    let sum = 0;
+    for (let i = 0; i < body.length; i++) {
+      let d = Number(body[body.length - 1 - i]);
+      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
+      sum += d;
+    }
+    return body + String((10 - (sum % 10)) % 10);
+  };
+
+  it("Н-01 (два «оплачено», R46): нарушение — правило Ж03, точка, почему, последствия узла У2, что делать; защит нет — «гарантий нет»", () => {
+    const second = () => [event("operation.authorized", { op_ref: "PN1x", order_id: "ON1" }), step("outcome", { op_ref: "PN1x", order_id: "ON1", mandate_id: "CN1" })];
+    const items = purchase("N1", { at: { end: second } });
+    const [c] = causesOf(items);
+    expect(c).toMatchObject({ outcome: "paid" });
+    const it46 = c!.items.find((x) => x.cond === "R46")!;
+    expect(it46).toMatchObject({ kind: "violation", violator: "agent", protector: "none", node: "У2", todo: CONDITIONS.find((x) => x.id === "R46")!.todo });
+    expect(it46.consequences).toEqual(NODE_CONSEQUENCES.У2);
+    expect(it46.rules).toContain("Ж03");
+    expect(it46.where).toContain(RULES89.find((r) => r.id === "Ж03")!.point);
+    expect(it46.happened.length).toBeLessThanOrEqual(4);
+    // Защит нет — «система не остановила».
+    expect(it46.guarantees).toEqual([PULT["int.guarantees.none"]]);
+    expect(c!.items.filter((x) => x.kind !== "violation")).toEqual([]);
+    filled(it46);
+  });
+
+  /** Восемь полей разбора не пустые на обоих языках (план П-5.1, указание владельца перед коммитом). */
+  function filled(it: CauseItem): void {
+    for (const lang of ["ru", "en"] as const) {
+      expect(it.happened.length, "что случилось").toBeGreaterThan(0);
+      for (const r of it.happened) expect(r.phrase[lang].length, "что случилось").toBeGreaterThan(0);
+      expect([it.violator, it.protector].every((s) => typeof s === "string" && s.length > 0), "кто нарушил / кто защитил").toBe(true);
+      expect(it.where.length, "где проявилось").toBeGreaterThan(0);
+      expect(it.rules.length, "правило").toBeGreaterThan(0);
+      for (const id of it.rules) {
+        const t = ruleText(RULES89.find((r) => r.id === id)!, lang).text;
+        expect([t.rule, t.whyCrit, t.whyVuln].every((s) => s.length > 0), `почему неправильно ${id}`).toBe(true);
+      }
+      expect(it.consequences[lang].length, "последствия").toBeGreaterThan(0);
+      expect(it.todo[lang].length, "что делать").toBeGreaterThan(0);
+      expect(it.guarantees.length, "гарантии").toBeGreaterThan(0);
+      for (const g of it.guarantees) expect(g[lang].length, "гарантии").toBeGreaterThan(0);
+    }
+  }
+
+  it("П-06 (MANDATE_SCOPE, ответ Платформы): защита — R17, защитила Платформа; П-07 — защита без условия, одна, защитила Платформа", () => {
+    const scope = purchase("N6", { skip: ["start", "pay", "done"], at: { end: () => [call("POST /pao/v1/credentials", { mandate_id: "CN6" }, "agent_platform", { code: "MANDATE_SCOPE", kind: "conflict" }), step("failed", { order_id: "ON6", mandate_id: "CN6" }, { code: "MANDATE_SCOPE" })] } });
+    const [c6] = causesOf(scope);
+    expect(c6!.items).toEqual([expect.objectContaining({ kind: "protection", cond: "R17", protector: "platform", violator: "none" })]);
+    filled(c6!.items[0]!);
+    expect(c6!.items[0]!.consequences).toEqual(KIND_CONSEQUENCES.protection);
+    const susp = purchase("N7", {
+      skip: ["start", "pay", "done"],
+      at: { end: () => [call("POST /pao/v1/credentials", { mandate_id: "CN7" }, "agent_platform", { code: "AGENT_SUSPENDED", kind: "conflict" }), journal("agent.refused", { mandate_id: "CN7" }, "AGENT_SUSPENDED"), step("failed", { order_id: "ON7", mandate_id: "CN7" }, { code: "AGENT_SUSPENDED" })] },
+    });
+    const [c7] = causesOf(susp);
+    expect(c7!.items).toEqual([expect.objectContaining({ kind: "protection", guarantee: "agent_suspended", protector: "platform", title: GUARANTEE_INFO.agent_suspended.name })]);
+    // У защиты без проверяемого условия тоже все восемь полей: правила — А06, Л04 (R05), что делать — своё.
+    filled(c7!.items[0]!);
+    expect(c7!.items[0]!.rules).toEqual(expect.arrayContaining(["А06", "Л04"]));
+    expect(c7!.items[0]!.todo).toEqual(GUARANTEE_TODO.agent_suspended);
+  });
+
+  it("ревью П-5.1 № 2: отказ Платформы по корзине и журнал агента по намерению — одна остановка, одна защита, защитила Платформа; дубля вердикта нет", () => {
+    const items = purchase("NF", {
+      skip: ["start", "pay", "done"],
+      at: {
+        end: () => [
+          event("mandate.revoked", { mandate_id: "CNF" }, { stage: "revoke" }),
+          call("POST /pao/v1/credentials", { mandate_id: "CNF" }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" }),
+          journal("agent.refused", { mandate_id: "INF" }, "MANDATE_REVOKED"),
+        ],
+      },
+    });
+    const v = run(items);
+    expect(v.guarantees.filter((g) => g.kind === "revoke")).toEqual([expect.objectContaining({ protector: "platform", obj: v.objs.find((o) => o.kind === "tx")!.id })]);
+    const vs = verdicts(v, buildTxModel(items), items);
+    expect(vs.filter((x) => x.cond === "R09" || x.guarantee === "revoke")).toHaveLength(1);
+    expect(causesOf(items)).toHaveLength(1);
+  });
+
+  it("повторное ревью П-5.1 № 1, 4, 5, 8, 10: П-03 — восемь полей; субъект защиты «отзыв / не действует» — по коду; R17 — по записи намерения; «что делать» у защиты — не «остановить»; R17 «агент»", () => {
+    // № 1: П-03 (клиент отказался от корзины) — решение клиента без условия и защиты: правило R18, «защиты не требовалось».
+    const p03 = purchase("NP3", { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [event("mandate.rejected", { mandate_id: "CNP3" })] } });
+    const d = causesOf(p03).flatMap((c) => c.items).find((x) => x.kind === "client_decision")!;
+    filled(d);
+    expect(d.guarantees).toEqual([NO_GUARD_NEEDED]);
+    expect(d.todo).toEqual(DECISION_TODO);
+    // № 4: поручение без покупки, срок истёк по журналу агента — нарушителя нет (не «решение клиента»).
+    const exp = intentOnly("IEX", () => [journal("agent.refused", { mandate_id: "IEX" }, "MANDATE_EXPIRED")]);
+    const vExp = verdicts(run(exp), buildTxModel(exp), exp).find((x) => x.guarantee === "revoke")!;
+    expect([vExp.kind, vExp.violator, vExp.protector]).toEqual(["protection", undefined, "agent"]);
+    const ina = intentOnly("INA", () => [journal("agent.refused", { mandate_id: "INA" }, "MANDATE_NOT_ACTIVE")]);
+    expect(verdicts(run(ina), buildTxModel(ina), ina).find((x) => x.guarantee === "revoke")!.violator).toBe("undetermined");
+    // № 5: отказ Платформы MANDATE_SCOPE с номером намерения — R17 «Платформа».
+    const viaIntent = purchase("NR5", { skip: ["start", "pay", "done"], at: { end: () => [call("POST /pao/v1/credentials", { mandate_id: "INR5" }, "agent_platform", { code: "MANDATE_SCOPE", kind: "conflict" }), step("failed", { order_id: "ONR5", mandate_id: "CNR5" }, { code: "MANDATE_SCOPE" })] } });
+    expect(run(viaIntent).objs.find((o) => o.kind === "tx")!.conds.R17.cause).toEqual({ kind: "rule", rule: "mandate_scope_platform" });
+    // № 10: только журнал агента — R17 «агент»; № 8: «что делать» у защиты — по виду защиты.
+    const agentOnly = purchase("NR6", { skip: ["start", "pay", "done"], at: { end: () => [journal("agent.refused", { mandate_id: "CNR6" }, "MANDATE_SCOPE"), step("failed", { order_id: "ONR6", mandate_id: "CNR6" }, { code: "MANDATE_SCOPE" })] } });
+    expect(run(agentOnly).objs.find((o) => o.kind === "tx")!.conds.R17.cause).toEqual({ kind: "rule", rule: "mandate_scope_agent" });
+    expect(causesOf(agentOnly)[0]!.items.find((x) => x.cond === "R17")!.todo).toEqual(GUARANTEE_TODO.mandate_scope);
+  });
+
+  it("Р-1524: Н-01 на стенде — повторную оплату отклонила витрина (409 ORDER_NOT_PAYABLE): защитил продавец; у R46 — гарантия и «вред не наступил»; пометка без ответа витрины защиты не даёт", () => {
+    const items = purchase("NM", { at: { end: () => [call(PAY, { shop_id: "SHOP-1", order_id: "ONM" }, "agent_merchant", { code: "ORDER_NOT_PAYABLE", kind: "conflict" })] } });
+    const log = [entry("MARKED", { order_id: "ONM" }, { test: "Н-01" })];
+    const [c] = causesOf(items, log);
+    const it46 = c!.items.find((x) => x.cond === "R46")!;
+    expect(it46).toMatchObject({ kind: "violation", violator: "agent" });
+    expect(it46.consequences).toEqual(STOPPED_CONSEQUENCES);
+    expect(it46.guarantees.map((g) => g.ru).join(" ")).toContain(PULT["subj.merchant"].ru);
+    expect(c!.items.find((x) => x.guarantee === "pay_refused")).toMatchObject({ kind: "protection", protector: "merchant" });
+    filled(it46);
+    // Без ответа витрины (только пометка «ПР») — защиты нет: «система не остановила».
+    const [c2] = causesOf(purchase("NM2"), [entry("MARKED", { order_id: "ONM2" }, { test: "Н-01" })]);
+    expect(c2!.items.find((x) => x.cond === "R46")!.guarantees).toEqual([PULT["int.guarantees.none"]]);
+  });
+
+  it("ревью П-5.1 № 3: доказательство из записей намерения (R08 — подпись поручения агентом) — в цепочке, не только в «что случилось»", () => {
+    const items = purchase("NS", { intent: () => [step("intent.awaiting_signature", { mandate_id: "INS" }, { stage: "mandate" }), call(SIGN, { mandate_id: "INS" }, "agent_platform"), event("mandate.signed", { mandate_id: "INS" })] });
+    const [c] = causesOf(items);
+    const it08 = c!.items.find((x) => x.cond === "R08")!;
+    expect(it08).toMatchObject({ kind: "violation", violator: "agent" });
+    const proof = run(items).objs.find((o) => o.kind === "tx")!.conds.R08.seqs;
+    expect(proof.length).toBeGreaterThan(0);
+    const chain = new Set(c!.chain.map((r) => r.seq));
+    for (const s of proof) expect(chain.has(s), String(s)).toBe(true);
+  });
+
+  it("Р-1522: событие Платформы-уведомление (mandate.revoked) и журнал агента — защитил агент; ответ 409 Платформы и журнал — Платформа", () => {
+    const notice = intentOnly("IQ1", () => [event("mandate.revoked", { mandate_id: "IQ1" }, { stage: "revoke" }), journal("agent.refused", { mandate_id: "IQ1" }, "MANDATE_REVOKED")]);
+    expect(run(notice).guarantees.find((g) => g.kind === "revoke")!.protector).toBe("agent");
+    const refusal = intentOnly("IQ2", () => [
+      event("mandate.revoked", { mandate_id: "IQ2" }, { stage: "revoke" }),
+      call("POST /pao/v1/mandates/{mandate_id}/cart", { mandate_id: "IQ2" }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" }),
+      journal("agent.refused", { mandate_id: "IQ2" }, "MANDATE_REVOKED"),
+    ]);
+    expect(run(refusal).guarantees.find((g) => g.kind === "revoke")!.protector).toBe("platform");
+  });
+
+  it("ревью П-5.1 № 5 (инвариант 1): запись с похожим на номер карты — «скрыта» в «что случилось» и в цепочке; номера нет в «Причинах»", () => {
+    const n = luhnNumber();
+    const items = purchase("NK", { at: { end: () => [rec("console", "shop.call", { mandate_id: "CNK", order_id: "ONK" }, { phrase: { ru: `карта ${n}`, en: `card ${n}` } })] } });
+    const cs = causesOf(items);
+    const it41 = cs.flatMap((c) => c.items).find((x) => x.cond === "R41");
+    expect(it41).toBeDefined();
+    const json = JSON.stringify(cs);
+    expect(json).not.toContain(n);
+    expect(json).toContain(HIDDEN_RECORD.ru);
+  });
+
+  it("цепочка (Р-1519): последние 40 записей и все доказательства, даже старше 40-й; всего — N; транзакция без вердикта — без разбора", () => {
+    // Доказательство R46 (первое «оплачено») — в начале; после него 50 записей транзакции.
+    const filler = () => Array.from({ length: 50 }, () => step("order.shop_reply", { order_id: "ON8", mandate_id: "CN8" }, { stage: "service" }));
+    const second = () => [...filler(), event("operation.authorized", { op_ref: "PN8x", order_id: "ON8" }), step("outcome", { op_ref: "PN8x", order_id: "ON8", mandate_id: "CN8" })];
+    const items = purchase("N8", { at: { end: second } });
+    const [c] = causesOf(items);
+    const it46 = c!.items.find((x) => x.cond === "R46")!;
+    const chainSeqs = new Set(c!.chain.map((r) => r.seq));
+    const last40 = new Set(buildTxModel(items).txs[0]!.seqs.slice(-40));
+    for (const s of last40) expect(chainSeqs.has(s)).toBe(true);
+    // Доказательства разбора, которые старше последних 40, тоже в цepочке — и такое доказательство есть (ревью П-5.1 № 16).
+    const v = run(items);
+    const proof = v.objs[0]!.conds.R46.seqs;
+    const older = proof.filter((s) => !last40.has(s));
+    expect(older.length).toBeGreaterThan(0);
+    for (const s of older) expect(chainSeqs.has(s), String(s)).toBe(true);
+    expect(it46.happened.length).toBeGreaterThan(0);
+    expect(c!.chainTotal).toBe(buildTxModel(items).txs[0]!.seqs.length);
+    expect(c!.chain.length).toBeLessThan(c!.chainTotal);
+    expect(c!.chain.length).toBeGreaterThanOrEqual(40);
+    // Обычная покупка — вердиктов нет, «Причин» нет.
+    expect(causesOf(purchase("N9"))).toEqual([]);
   });
 });
 

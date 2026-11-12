@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
-import { evaluate } from "../../src/pult/engine.js";
+import { evaluate, HIDDEN_RECORD } from "../../src/pult/engine.js";
+import { createControlFeed } from "../../src/dashboards/control-feed.js";
 import { createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
 import { graphView } from "../../src/pult/graph.js";
 import { buildTxModel } from "../../src/pult/tx.js";
@@ -286,6 +287,39 @@ describe("лента пульта (П-2.1)", () => {
     expect(after.active).toEqual([{ id: "CK5", column: "confirmation", since: req.at }]);
     expect(after.waits).toEqual([{ kind: "confirmation", cond: "R21", obj: "CK5", confirmationId: "QK5", since: req.at }]);
     expect(p.board().conditions).toBe(condBefore);
+    p.close();
+  });
+
+  it("ревью П-5.1 № 5 (инвариант 1): номера карты нет ни в доске и «Причинах», ни в сообщении SSE пульта, ни в выгрузке ACC-1", async () => {
+    // Похожее на номер карты собирается во время теста (литералов номеров нет): префикс 9 — не схема карт, контрольная цифра — Луна.
+    const body = "9" + "3".repeat(14);
+    let sum = 0;
+    for (let i = 0; i < body.length; i++) {
+      let d = Number(body[body.length - 1 - i]);
+      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
+      sum += d;
+    }
+    const n = body + String((10 - (sum % 10)) % 10);
+    const f = fakeFeed();
+    const sent: string[] = [];
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0 });
+    // Сообщение SSE — это JSON события ленты (`sseWrite`); подписчик видит ровно его.
+    p.subscribe((e) => sent.push(JSON.stringify(e)));
+    const leak = { ...rec("console", "shop.call", { mandate_id: "CK9", order_id: "OK9" }, { stage: "payment", level: "key" }), phrase: { ru: `карта ${n}`, en: `card ${n}` } };
+    f.push(step("cart.created", { mandate_id: "CK9", intent_id: "IK9" }, { stage: "cart" }), leak);
+    await tick();
+    const board = p.board();
+    // Нарушение R41 есть — и в «Причинах» оно разобрано, но номер скрыт.
+    expect(board.causes!.flatMap((c) => c.items).some((x) => x.cond === "R41")).toBe(true);
+    for (const s of [JSON.stringify(board), ...sent]) expect(s).not.toContain(n);
+    expect(JSON.stringify(board)).toContain(HIDDEN_RECORD.ru);
+    // Выгрузка ACC-1 (лента «Контроля» К2) — по тем же записям.
+    const c = createControlFeed(f.feed, { now: () => new Date("2026-11-12T12:10:00Z"), tickMs: 0 });
+    f.push({ ...step("run.intent", {}), seq: 9000 }, { ...leak, seq: 9001 });
+    c.recompute();
+    expect(c.markdown("ru")).not.toContain(n);
+    expect(c.markdown("en")).not.toContain(n);
+    c.close();
     p.close();
   });
 

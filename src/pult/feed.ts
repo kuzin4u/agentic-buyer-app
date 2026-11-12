@@ -7,6 +7,7 @@ import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { SourceStatus } from "../dashboards/source.js";
 import { boardView, type BoardCard, type BoardColumn } from "./board.js";
+import { causesView, type TxCauses } from "./causes.js";
 import { conditionsView, type ConditionsView } from "./conditions.js";
 import { controlView, WAIT_MS, type ControlState } from "./control.js";
 import { evaluate } from "./engine.js";
@@ -38,6 +39,8 @@ export interface PultBoardState {
   readonly control: ControlState;
   /** «Условия» (П-4.2): статусы 89 правил, плитки узлов, сектора — из движка. Нет — движок ещё не отработал ни разу. */
   readonly conditions?: ConditionsView;
+  /** «Причины» (П-5.1): разбор транзакций и поручений с вердиктом — из вердиктов движка. Нет — движок ещё не отработал. */
+  readonly causes?: readonly TxCauses[];
 }
 
 export type PultFeedEvent =
@@ -141,11 +144,13 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     // «Условия» (П-4.2) — из того же результата движка; при сбое остаются прежние, как паспорта.
     let control: ControlState;
     let conditions = state.conditions;
+    let causes = state.causes;
     try {
       const ev = (o.evaluate ?? evaluate)(model, items, { now });
       const vs = verdicts(ev, model, items);
       control = controlView(model, items, vs, active, o.waitMs);
       conditions = conditionsView(ev);
+      causes = causesView(model, items, vs, control.waits);
     } catch {
       try {
         const fresh = controlView(model, items, [], active, o.waitMs);
@@ -154,7 +159,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
-    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }) };
+    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }) };
     emit({ type: "board", board: state });
   };
 

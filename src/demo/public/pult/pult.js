@@ -800,7 +800,132 @@
     }
   }
 
+  // ---- «Причины» (П-5.1, модель 1.23 `causesFor`, `deepCause`, `evidenceChain`) — панель «Интерпретатор» ----
+  // Разбор — из `board.causes` (вердикты движка, инвариант 2): экран вид, нарушителя и защитника не выводит сам. В фокусе
+  // «транзакция» — её паспорт полностью, разбор каждого вердикта, «Идёт к нарушению» и цепочка событий (последние 40 из N и
+  // все доказательства, Р-1519); в фокусе «система» — блоки транзакций с вердиктом, щелчок — фокус. Место под переключатель
+  // видов «Лента простыми словами» / «Лента шины» — `.int-modes` (П-5.2 окна Б, Р-1504).
+  const intBox = document.getElementById("b-int");
+  const intModes = el("div", undefined, "int-modes");
+  const intBody = el("div", undefined, "int-body");
+  if (intBox) {
+    while (intBox.firstChild) intBody.appendChild(intBox.firstChild);
+    intBox.appendChild(intModes);
+    intBox.appendChild(intBody);
+  }
+  const fill = (s, vars) => String(s).replace(/\{(\w+)\}/g, (_m, k) => (Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : ""));
+  const recLine = (r, cls) => {
+    const d = el("div", undefined, cls + " k-" + r.kind);
+    d.appendChild(el("span", clock(r.at) + " ", "tm"));
+    d.appendChild(el("span", label("role." + r.actor) + ": ", "ch-a"));
+    d.appendChild(el("span", txt(r.phrase)));
+    return d;
+  };
+  const dtdd = (dl, k, node) => {
+    dl.appendChild(el("dt", label("int." + k)));
+    const dd = el("dd");
+    if (typeof node === "string") dd.textContent = node;
+    else dd.appendChild(node);
+    dl.appendChild(dd);
+  };
+
+  // Правила и точки — номером из `board.causes`, тексты — справочник страницы (`#rules89`; ревью П-5.1 № 6).
+  const ruleById = (id) => (R89 ? R89.rules.find((r) => r.id === id) : undefined);
+  const pointName = (id) => {
+    const x = R89 && Array.isArray(R89.points) ? R89.points.find((pt) => pt.id === id) : undefined;
+    return x ? id + " " + x.name : id;
+  };
+  const who = (s, none) => label(s === "none" ? none : "subj." + s);
+
+  /** Разбор одного вердикта — восемь полей (план П-5.1): кратко — вид и субъекты, полностью — всё. */
+  function causeItem(it, deep) {
+    const box = el("div", undefined, "cause k-" + it.kind);
+    const head = [label("int.kind." + it.kind)];
+    if (it.cond) head.push(it.cond);
+    head.push(txt(it.title));
+    if (it.node) head.push(label("ctl.node") + " " + it.node);
+    box.appendChild(el("div", head.join(" · "), "ca-h"));
+    const dl = el("dl", undefined, "ca-d");
+    dtdd(dl, "violator", who(it.violator, "int.violator.none"));
+    dtdd(dl, "protector", who(it.protector, "int.protector.none"));
+    if (it.note === "race_c28") dl.appendChild(el("dd", label("ctl.race_c28"), "note"));
+    if (deep) {
+      const happened = el("div");
+      for (const r of Array.isArray(it.happened) ? it.happened : []) happened.appendChild(recLine(r, "ha-r"));
+      if (!happened.firstChild) happened.textContent = label("int.happened.none");
+      dtdd(dl, "happened", happened);
+      dtdd(dl, "where", (Array.isArray(it.where) ? it.where : []).map(pointName).join("; ") || "—");
+      const rules = el("div");
+      const why = el("div");
+      for (const id of Array.isArray(it.rules) ? it.rules : []) {
+        const r = ruleById(id);
+        if (!r) {
+          rules.appendChild(el("div", id));
+          continue;
+        }
+        rules.appendChild(el("div", r.id + " " + r.text.rule + (r.enLater ? " (" + R89.enLater + ")" : "")));
+        why.appendChild(el("div", r.id + ": " + label("int.why.crit") + " — " + r.text.whyCrit + "; " + label("int.why.vuln") + " — " + r.text.whyVuln));
+      }
+      dtdd(dl, "rule", rules);
+      dtdd(dl, "why", why);
+      dtdd(dl, "consequences", txt(it.consequences));
+      dtdd(dl, "todo", txt(it.todo));
+      dtdd(dl, "guarantees", (Array.isArray(it.guarantees) ? it.guarantees : []).map(txt).join("; "));
+    }
+    box.appendChild(dl);
+    return box;
+  }
+
+  function txBlock(c, deep) {
+    const box = el("section", undefined, "cblock");
+    box.dataset.intTx = c.id;
+    const h = el("button", c.id + " · " + (c.outcome ? label("outcome." + c.outcome) : label("int.outcome.none")), "cb-h");
+    h.type = "button";
+    h.dataset.intTx = c.id;
+    box.appendChild(h);
+    for (const it of Array.isArray(c.items) ? c.items : []) box.appendChild(causeItem(it, deep));
+    if (deep && Array.isArray(c.waits) && c.waits.length > 0) {
+      box.appendChild(el("h4", label("int.waits"), "ctl-h"));
+      for (const w of c.waits) box.appendChild(el("div", (w.cond ? w.cond + " · " : "") + label("ctl.wait." + w.kind) + " · " + clock(w.since), "wait-row"));
+    }
+    if (deep && Array.isArray(c.chain)) {
+      box.appendChild(el("h4", label("int.chain"), "ctl-h"));
+      if (c.chainTotal > c.chainLimit) box.appendChild(el("p", fill(label("int.chain.cut"), { n: c.chainLimit, total: c.chainTotal }), "muted chain-cut"));
+      const ch = el("div", undefined, "chain");
+      for (const r of c.chain) ch.appendChild(recLine(r, "ch-r"));
+      box.appendChild(ch);
+    }
+    return box;
+  }
+
+  function renderInt() {
+    if (!intBox || !board) return;
+    const list = Array.isArray(board.causes) ? board.causes : [];
+    const wrap = document.createDocumentFragment();
+    const tx = focus && focus.level === "tx" ? focus.tx : null;
+    wrap.appendChild(el("p", label(tx ? "int.note.tx" : "int.note.system"), "note"));
+    // Нейтрально: экран не объявляет транзакцию правильной — вердиктов нет или движок ещё не отработал (ревью П-5.1 № 4).
+    if (!Array.isArray(board.causes)) wrap.appendChild(el("p", label("int.no_engine"), "muted"));
+    else if (tx) {
+      const c = list.find((x) => x && x.id === tx);
+      wrap.appendChild(c ? txBlock(c, true) : el("p", label("int.tx.none"), "muted"));
+    } else if (list.length === 0) wrap.appendChild(el("p", label("int.none"), "muted"));
+    else for (const c of list) wrap.appendChild(txBlock(c, false));
+    while (intBody.firstChild) intBody.removeChild(intBody.firstChild);
+    intBody.appendChild(wrap);
+  }
+  if (intBox) {
+    // Щелчок по заголовку блока — фокус на транзакцию (как карточка доски).
+    const pick = (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("button[data-int-tx]") : null;
+      if (b) document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: b.dataset.intTx } }));
+    };
+    intBox.addEventListener("pointerdown", pick);
+    intBox.addEventListener("click", pick);
+  }
+
   document.addEventListener("pult:focus", renderProc);
+  document.addEventListener("pult:focus", renderInt);
   // Раз в секунду — только текст счётчиков доски и положения «Графика»: узлы не пересоздаются, фокус и щелчок не теряются
   // (ревью П-2.1 № 4).
   setInterval(() => {
@@ -840,6 +965,7 @@
       syncMerchants();
       renderProc();
       renderCtl();
+      renderInt();
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если
