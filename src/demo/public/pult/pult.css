@@ -112,6 +112,49 @@ main { padding: 10px 16px 24px; }
 .gmark { position: absolute; top: 0; width: 2px; height: 18px; background: var(--ink); }
 .gmark.k-error, .gmark.k-fraud { background: var(--alert); width: 3px; }
 .gnow { position: absolute; top: 0; right: 0; width: 2px; height: 18px; background: var(--brand-accent); }
+/* «Условия» (П-4.2): цвета зон и статусов — только переменными (ревью П-2.1 № 11); смысл несёт текст статуса, цвет — в
+   помощь. «Внимание» у сектора — значок, цвет сектора от него не меняется (уточнение 3 к плану П-4.2). */
+:root { --warn: #a86b0c; --z-red: var(--alert); --z-orange: #c9761a; --z-yellow: #b79a1e; --z-bg: #8a97a8; }
+.cv-bar, .c89bar { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; font-size: 12px; }
+.cv-bar button, .c89bar button, .sect, .tl-go, .cg-h { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font: inherit; color: inherit; cursor: pointer; }
+.cv-bar button[aria-pressed="true"], .c89bar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.c89bar input { flex: 1 1 220px; min-width: 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+.tile { border: 1px solid var(--line); border-left: 6px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; background: var(--bg); }
+.tile.st-bad { border-left-color: var(--alert); }
+.tile.st-fired { border-left-color: var(--warn); }
+.tile.st-ok { border-left-color: var(--ok); }
+.tl-s { font-weight: 600; margin: 2px 0; }
+.tile.st-bad .tl-s { color: var(--alert); }
+.tl-n { color: var(--warn); font-size: 11.5px; }
+.tl-r { font-size: 11px; }
+.tl-go:disabled { cursor: default; color: var(--muted); }
+.sects { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.sect { display: flex; gap: 4px; align-items: center; border-radius: 999px; }
+.sect .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); display: inline-block; }
+.sect.st-bad .dot { background: var(--alert); }
+.sect.st-fired .dot { background: var(--warn); }
+.sect.st-ok .dot { background: var(--ok); }
+.sect-att { font-weight: 600; }
+.cgroup { border-bottom: 1px solid var(--line); padding: 3px 0; }
+.cg-h { border: 0; padding: 2px 0; font-weight: 600; text-align: left; width: 100%; background: none; }
+.r89 { display: grid; grid-template-columns: minmax(6em, max-content) 3em 7em minmax(0, 1fr); gap: 6px; align-items: baseline; width: 100%; border: 0; border-top: 1px dashed var(--line); border-left: 4px solid var(--z-bg); background: none; padding: 3px 4px; font: inherit; font-size: 12px; color: inherit; text-align: left; cursor: pointer; }
+.r89.z-red { border-left-color: var(--z-red); }
+.r89.z-orange { border-left-color: var(--z-orange); }
+.r89.z-yellow { border-left-color: var(--z-yellow); }
+.r89.open { background: var(--bg); }
+.s89 { font-weight: 600; font-size: 11px; color: var(--muted); }
+.s89.st-bad { color: var(--alert); }
+.s89.st-fired { color: var(--warn); }
+.s89.st-ok { color: var(--ok); }
+.cid { font-weight: 600; }
+.zb { font-size: 11px; color: var(--muted); }
+.chip.z-red { border-color: var(--z-red); }
+.chip.z-orange { border-color: var(--z-orange); }
+.chip.z-yellow { border-color: var(--z-yellow); }
+.c89card { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 2px 0 6px 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font-size: 12px; }
+.c89card dt { color: var(--muted); }
+.c89card dd { margin: 0; overflow-wrap: anywhere; }
 .conn-icon { font-weight: 700; }
 .conn-ok .conn-icon { color: var(--ok); }
 .conn-wait .conn-icon { color: var(--muted); }

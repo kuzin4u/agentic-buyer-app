@@ -10,6 +10,7 @@ import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultId
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
+import { conditionsView } from "../../src/pult/conditions.js";
 import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
 
 let seq = 0;
@@ -905,5 +906,43 @@ describe("«Контроль» пульта (П-4.1)", () => {
     const c = controlView(model, items, vs, []);
     expect(c.counts).toEqual({ txs: 1, wrong: 0 });
     expect(c.waitMs).toBe(WAIT_MS);
+  });
+});
+
+// П-4.2: «Условия» на записях в форме шины — плитки узлов и статусы правил из того же результата движка, что вердикты.
+describe("«Условия» пульта на записях в форме шины (П-4.2)", () => {
+  it("два «оплачено» по связанным операциям (R46): плитка У2 «нарушено» с этой транзакцией, правило Ж03 «нарушено»", () => {
+    const second = () => [event("operation.authorized", { op_ref: "PC1x", order_id: "OC1" }), step("outcome", { op_ref: "PC1x", order_id: "OC1", mandate_id: "CC1" })];
+    const v = run(purchase("C1", { at: { end: second } }));
+    const c = conditionsView(v);
+    const t = v.objs.find((o) => o.kind === "tx")!;
+    expect(c.nodes.find((n) => n.id === "У2")).toMatchObject({ status: "bad", objs: [t.id], system: false });
+    expect(c.rules["Ж03"]).toBe("bad");
+    expect(c.counts.bad).toBeGreaterThanOrEqual(1);
+  });
+
+  it("уточнение 1: сбой стенда без привязки (второй реквизит по чужой операции) — «нарушено» только сводно: плитка У2 «система»", () => {
+    const v = withLog(purchase("C2"), [entry("SECOND_CREDENTIAL_ISSUED", { op_ref: "P-чужая" })]);
+    expect(v.system.R23.status).toBe("bad");
+    expect(conditionsView(v).nodes.find((n) => n.id === "У2")).toMatchObject({ status: "bad", objs: [], system: true });
+  });
+
+  it("уточнение 2: конфликт звеньев — плитка У2 «ещё не дошло» с пометкой «конфликт звеньев»", () => {
+    const one = purchase("K3", { skip: ["order", "start", "pay", "done"] });
+    const two = purchase("K4", { skip: ["order", "start", "pay", "done"] });
+    const tail = [
+      step("order.placed", { order_id: "OK3", mandate_id: "CK3", merchant_id: "MER-1" }),
+      step("payment.started", { order_id: "OK3" }),
+      call(PAY, { shop_id: "SHOP-1", order_id: "OK3" }, "agent_merchant"),
+      event("operation.authorized", { op_ref: "PK3", order_id: "OK3" }),
+      step("outcome", { op_ref: "PK3", order_id: "OK3", mandate_id: "CK3" }),
+      step("order.placed", { order_id: "OK3", mandate_id: "CK4", merchant_id: "MER-2" }),
+      step("payment.started", { order_id: "OK3" }),
+      call(PAY, { shop_id: "SHOP-2", order_id: "OK3" }, "agent_merchant"),
+      event("operation.authorized", { op_ref: "PK4", order_id: "OK3" }),
+      step("outcome", { op_ref: "PK4", order_id: "OK3", mandate_id: "CK4" }),
+    ];
+    const c = conditionsView(run([...one, ...two, ...tail]));
+    expect(c.nodes.find((n) => n.id === "У2")).toMatchObject({ status: "wait", notes: ["link_conflict"] });
   });
 });

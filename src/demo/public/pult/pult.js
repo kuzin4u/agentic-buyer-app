@@ -21,13 +21,16 @@
   const STORE = "pult.layout.v1";
   // mode — вид панели «Ход»: board (доска) или graph («График», П-2.2).
   const MODES = ["board", "graph"];
-  const state = { layout: "grid", max: null, tab: PANES[0], mode: "board" };
+  // ctlView — вид «Контроля» (П-4.2): «Приоритет» или «Все 89».
+  const CTL_VIEWS = ["prio", "all"];
+  const state = { layout: "grid", max: null, tab: PANES[0], mode: "board", ctlView: "prio" };
 
   function load() {
     try {
       const v = JSON.parse(localStorage.getItem(STORE) || "null");
       if (v && (v.layout === "grid" || v.layout === "tabs")) state.layout = v.layout;
       if (v && MODES.indexOf(v.mode) >= 0) state.mode = v.mode;
+      if (v && CTL_VIEWS.indexOf(v.ctlView) >= 0) state.ctlView = v.ctlView;
       if (v && PANES.indexOf(v.tab) >= 0) state.tab = v.tab;
       if (v && PANES.indexOf(v.max) >= 0) state.max = v.max;
     } catch {
@@ -61,6 +64,7 @@
     }
     for (const t of tabbar.querySelectorAll("[data-tab]")) t.setAttribute("aria-pressed", String(t.dataset.tab === state.tab));
     for (const m of document.querySelectorAll("[data-mode]")) m.setAttribute("aria-pressed", String(m.dataset.mode === state.mode));
+    for (const v of document.querySelectorAll("[data-ctl-view]")) v.setAttribute("aria-pressed", String(v.dataset.ctlView === state.ctlView));
   }
 
   document.addEventListener("click", (ev) => {
@@ -476,15 +480,282 @@
   const dueKey = (ws) => ws.map((w) => w.kind + ":" + w.obj + ":" + (w.confirmationId || "")).join("|");
   const waitSeconds = (since) => Math.max(0, Math.round((nowMs() - Date.parse(since)) / 1000));
 
+  // ---- «Условия» (П-4.2, модель 1.23 `nodeTiles`, `sectLights`, `list89`): «Приоритет» и «Все 89» ----
+  // Справочник 89 правил — данными страницы (`#rules89`), статусы — только из `board.conditions` (движок, инвариант 2): экран
+  // статус не считает. «Внимание» у сектора — признак экрана по строкам «Идёт к нарушению» за порогом: значок, цвет сектора
+  // от него не меняется (уточнение 3 к плану П-4.2). Панель инструментов «Все 89» (поиск, зоны, сектор) строится один раз —
+  // перестройка по новой доске не трогает поле поиска; перестраивается только тело.
+  let R89 = null;
+  try {
+    R89 = JSON.parse(document.getElementById("rules89").textContent);
+  } catch {
+    R89 = null; // справочника нет — «Контроль» без «Условий», как в П-4.1
+  }
+  const cv = { q: "", zone: "", sector: "", open: "", groups: {} };
+  const ctlBar = el("div", undefined, "cv-bar");
+  const allBar = el("div", undefined, "c89bar");
+  const ctlBody = el("div", undefined, "ctl-body");
+  const qInput = el("input");
+  const secChip = el("button", undefined, "cv-sec");
+  const countsEl = el("span", undefined, "muted c89-count");
+  const has = (o, k) => o && Object.prototype.hasOwnProperty.call(o, k);
+  const stName = (s) => (R89 && has(R89.statuses, s) ? R89.statuses[s] : String(s));
+  if (ctlBox) {
+    if (R89) {
+      ctlBar.setAttribute("role", "group");
+      ctlBar.setAttribute("aria-label", label("cv.label"));
+      ctlBar.appendChild(el("span", label("cv.label") + ": ", "muted"));
+      for (const v of CTL_VIEWS) {
+        const b = el("button", label("cv." + v));
+        b.type = "button";
+        b.dataset.ctlView = v;
+        ctlBar.appendChild(b);
+      }
+      qInput.type = "search";
+      qInput.setAttribute("aria-label", label("cv.search"));
+      qInput.setAttribute("placeholder", label("cv.search"));
+      allBar.appendChild(qInput);
+      const zones = el("span", label("cv.zone") + ": ", "cv-zones");
+      for (const z of [{ id: "", name: label("cv.zone.all") }].concat(R89.zones)) {
+        const b = el("button", z.name, "chip" + (z.id ? " z-" + z.id : ""));
+        b.type = "button";
+        b.dataset.zone = z.id;
+        zones.appendChild(b);
+      }
+      allBar.appendChild(zones);
+      secChip.type = "button";
+      secChip.dataset.sectorClear = "1";
+      secChip.title = label("cv.sector.clear");
+      secChip.hidden = true;
+      allBar.appendChild(secChip);
+      allBar.appendChild(countsEl);
+      allBar.hidden = true;
+      qInput.addEventListener("input", () => {
+        cv.q = qInput.value;
+        cv.groups = {};
+        renderCtl();
+      });
+    }
+    while (ctlBox.firstChild) ctlBody.appendChild(ctlBox.firstChild);
+    if (R89) ctlBox.appendChild(ctlBar);
+    if (R89) ctlBox.appendChild(allBar);
+    ctlBox.appendChild(ctlBody);
+  }
+
+  /** Плитки узлов У1–У5: статус узла, объекты с «нарушено» / «сработало», пометки, правила и условия, «к нарушению». */
+  function renderNodes(wrap, C) {
+    wrap.appendChild(el("h3", label("cv.nodes"), "ctl-h"));
+    const box = el("div", undefined, "tiles");
+    for (const n of R89.nodes) {
+      const t = (Array.isArray(C.nodes) ? C.nodes : []).find((x) => x && x.id === n.id);
+      // Узла нет в данных движка — статуса нет («—»), экран его не подставляет (ревью П-4.2 № 6).
+      const st = t ? t.status : null;
+      const hit = st === "bad" || st === "fired";
+      const objs = t && Array.isArray(t.objs) ? t.objs : [];
+      const where = objs.slice();
+      // Часть записью системы (П-3.2г) — «система», одна или рядом с объектами (уточнение 1; ревью П-4.2 № 2).
+      if (hit && (t.system || objs.length === 0)) where.push(label("cv.node.system"));
+      const tile = el("div", undefined, "tile st-" + (st || "none"));
+      tile.dataset.node = n.id;
+      tile.appendChild(el("div", n.id + " " + n.name, "tl-h"));
+      tile.appendChild(el("div", (st ? stName(st) : "—") + (hit ? ": " + where.join(" · ") : ""), "tl-s"));
+      for (const nt of (t && Array.isArray(t.notes) ? t.notes : [])) tile.appendChild(el("div", has(R89.notes, nt) ? R89.notes[nt] : String(nt), "tl-n"));
+      tile.appendChild(el("div", label("cv.node.rules") + " " + n.rules.join(", ") + " · " + label("cv.node.conds") + " " + n.conds.join(", "), "tl-r muted"));
+      // Кнопка — только у «нарушено»: сработавшая защита — не нарушение, кнопки нет (ревью П-4.2 № 1, Р-1505).
+      if (st === "bad") {
+        const noTx = objs.length === 0;
+        const b = el("button", label(noTx ? "cv.node.no_tx" : "cv.node.go"), "tl-go");
+        b.type = "button";
+        if (noTx) b.setAttribute("disabled", "");
+        else b.dataset.go = String(objs[0]);
+        tile.appendChild(b);
+      }
+      box.appendChild(tile);
+    }
+    wrap.appendChild(box);
+  }
+
+  /** Светофоры секторов: статус — из движка; «внимание» — значком по строкам «Идёт к нарушению» за порогом. */
+  function renderSectors(wrap, C, due) {
+    wrap.appendChild(el("h3", label("cv.sectors"), "ctl-h"));
+    const box = el("div", undefined, "sects");
+    for (const s of R89.sectors) {
+      const l = (Array.isArray(C.sectors) ? C.sectors : []).find((x) => x && x.id === s.id);
+      const st = l ? l.status : null;
+      const b = el("button", undefined, "sect st-" + (st || "none"));
+      b.type = "button";
+      b.dataset.sector = s.id;
+      b.title = label("cv.sector.hint");
+      b.appendChild(el("i", undefined, "dot"));
+      b.appendChild(el("span", s.name));
+      b.appendChild(el("span", " · " + (st ? stName(st) : "—"), "muted"));
+      const att = due.filter((w) => w.cond && s.conds.indexOf(w.cond) >= 0).length;
+      if (att > 0) b.appendChild(el("span", " ⚑ " + label("cv.attention") + ": " + att, "sect-att"));
+      box.appendChild(b);
+    }
+    wrap.appendChild(box);
+  }
+
+  const ruleMatch = (r, q) =>
+    r.id.toLowerCase().indexOf(q) >= 0 ||
+    r.conds.some((c) => c.toLowerCase().indexOf(q) >= 0) ||
+    r.text.rule.toLowerCase().indexOf(q) >= 0 ||
+    r.text.evidence.toLowerCase().indexOf(q) >= 0;
+
+  function ruleCard(r) {
+    const d = el("dl", undefined, "c89card");
+    d.dataset.card89 = r.id;
+    const add = (k, v) => {
+      if (v === undefined || v === null || v === "") return;
+      d.appendChild(el("dt", label("cv.card." + k)));
+      d.appendChild(el("dd", String(v)));
+    };
+    const node = r.node ? R89.nodes.find((n) => n.id === r.node) : undefined;
+    const sector = r.sector ? R89.sectors.find((s) => s.id === r.sector) : undefined;
+    add("who", r.text.who);
+    add("evidence", r.text.evidence);
+    add("owner", r.owner);
+    add("kind", r.kind);
+    add("control", r.control);
+    add("conds", r.conds.join(", "));
+    add("node", node ? node.id + " " + node.name : undefined);
+    add("sector", sector ? sector.name : undefined);
+    add("point", r.point);
+    add("coverage", r.coverage);
+    add("score", r.v + " × " + r.c + " = " + r.score);
+    add("why_vuln", r.text.whyVuln);
+    add("why_crit", r.text.whyCrit);
+    return d;
+  }
+
+  /** «Все 89»: поиск, зона, сектор; группы А–Р; строка — статус из движка, номер, зона с баллом, формулировка. */
+  function renderAll(wrap, C) {
+    const counts = C && C.counts ? C.counts : null;
+    countsEl.textContent = counts
+      ? label("cv.counts") + ": " + Object.keys(R89.statuses).filter((k) => counts[k] > 0).map((k) => stName(k) + " " + counts[k]).join(" · ")
+      : label("cv.no_data");
+    for (const b of allBar.querySelectorAll("[data-zone]")) b.setAttribute("aria-pressed", String(b.dataset.zone === cv.zone));
+    const sec = cv.sector ? R89.sectors.find((s) => s.id === cv.sector) : undefined;
+    secChip.hidden = !sec;
+    secChip.textContent = sec ? label("cv.sector") + ": " + sec.name + " ×" : "";
+    const q = cv.q.trim().toLowerCase();
+    const rows = R89.rules.filter((r) => (!cv.zone || r.zone === cv.zone) && (!cv.sector || r.sector === cv.sector) && (!q || ruleMatch(r, q)));
+    const stOf = (r) => (C && C.rules && has(C.rules, r.id) ? C.rules[r.id] : undefined);
+    const zoneName = (z) => {
+      const x = R89.zones.find((y) => y.id === z);
+      return x ? x.name : z;
+    };
+    for (const g of R89.groups) {
+      const gr = rows.filter((r) => r.group === g.id);
+      if (gr.length === 0) continue;
+      const nb = gr.filter((r) => stOf(r) === "bad").length;
+      const auto = Boolean(q || cv.zone || cv.sector || nb > 0 || gr.some((r) => r.id === cv.open));
+      const open = has(cv.groups, g.id) ? cv.groups[g.id] : auto;
+      const box = el("section", undefined, "cgroup");
+      const h = el("button", g.id + ". " + g.name + " · " + gr.length + (nb > 0 ? " · " + label("cv.group.bad") + " " + nb : ""), "cg-h");
+      h.type = "button";
+      h.dataset.group = g.id;
+      h.setAttribute("aria-expanded", String(open));
+      box.appendChild(h);
+      if (open) {
+        for (const r of gr) {
+          const s = stOf(r);
+          const row = el("button", undefined, "r89 z-" + r.zone + (s === "bad" ? " bad" : "") + (cv.open === r.id ? " open" : ""));
+          row.type = "button";
+          row.dataset.rule = r.id;
+          row.setAttribute("aria-expanded", String(cv.open === r.id));
+          row.appendChild(el("span", s ? stName(s) : "—", "s89 st-" + (s || "none")));
+          row.appendChild(el("span", r.id, "cid"));
+          row.appendChild(el("span", zoneName(r.zone) + " " + r.score, "zb z-" + r.zone));
+          row.appendChild(el("span", r.text.rule + (r.enLater ? " (" + R89.enLater + ")" : ""), "cru"));
+          box.appendChild(row);
+          if (cv.open === r.id) box.appendChild(ruleCard(r));
+        }
+      }
+      wrap.appendChild(box);
+    }
+    if (rows.length === 0) wrap.appendChild(el("p", label("cv.empty"), "muted"));
+  }
+
+  const FOCUS_KEYS = ["rule", "group", "go", "sector"];
   function renderCtl() {
     if (!ctlBox || !board || !board.control) return;
-    const c = board.control;
+    const view = R89 ? state.ctlView : "prio";
+    for (const b of ctlBar.querySelectorAll("[data-ctl-view]")) b.setAttribute("aria-pressed", String(b.dataset.ctlView === view));
+    allBar.hidden = view !== "all";
+    // Кнопка, на которой стоял фокус клавиатуры, получает его обратно после перестройки (как карточка доски).
+    const active = document.activeElement;
+    const keepKey = active && ctlBody.contains(active) && active.dataset ? FOCUS_KEYS.find((k) => active.dataset[k] !== undefined) : undefined;
+    const keepVal = keepKey ? active.dataset[keepKey] : undefined;
     const wrap = document.createDocumentFragment();
     const due = dueWaits();
     ctlDueKey = dueKey(due);
+    if (view === "all") renderAll(wrap, board.conditions);
+    else renderPrio(wrap, due);
+    while (ctlBody.firstChild) ctlBody.removeChild(ctlBody.firstChild);
+    ctlBody.appendChild(wrap);
+    if (keepKey) {
+      for (const b of ctlBody.querySelectorAll("[data-" + keepKey + "]")) {
+        if (b.dataset[keepKey] === keepVal) {
+          b.focus();
+          break;
+        }
+      }
+    }
+  }
+
+  if (ctlBox) {
+    // Переходы «Условий». «К нарушению» — фокус на транзакцию (`pult:select`), и по нажатию мыши: тело могло перестроиться
+    // до отпускания (как у карточки доски); повторный выбор той же транзакции — без перерисовки (П-1.4 № 2).
+    ctlBox.addEventListener("pointerdown", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("[data-go]") : null;
+      if (b) document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: b.dataset.go } }));
+    });
+    ctlBox.addEventListener("click", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("button") : null;
+      if (!b || !ctlBox.contains(b) || b.hasAttribute("disabled")) return;
+      const d = b.dataset;
+      if (d.ctlView !== undefined) {
+        if (CTL_VIEWS.indexOf(d.ctlView) < 0) return;
+        state.ctlView = d.ctlView;
+        save();
+      } else if (d.zone !== undefined) {
+        cv.zone = d.zone;
+        cv.groups = {};
+      } else if (d.sectorClear !== undefined) {
+        cv.sector = "";
+        cv.groups = {};
+      } else if (d.sector !== undefined) {
+        // Щелчок по сектору — «Все 89» с правилами этого сектора (поле справочника, а не поиск по тексту).
+        cv.sector = d.sector;
+        cv.zone = "";
+        cv.q = "";
+        qInput.value = "";
+        cv.groups = {};
+        state.ctlView = "all";
+        save();
+      } else if (d.group !== undefined) {
+        cv.groups[d.group] = b.getAttribute("aria-expanded") !== "true";
+      } else if (d.rule !== undefined) {
+        cv.open = cv.open === d.rule ? "" : d.rule;
+      } else if (d.go !== undefined) {
+        document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: d.go } }));
+        return;
+      } else return;
+      renderCtl();
+    });
+  }
+
+  /** «Приоритет»: строка состояния, плитки узлов, сектора, затем блоки П-4.1 — паспорта, «Идёт к нарушению», «В работе». */
+  function renderPrio(wrap, due) {
+    const c = board.control;
     wrap.appendChild(
       el("p", label("ctl.status") + ": " + c.counts.txs + " · " + label("ctl.status.wrong") + ": " + c.counts.wrong + " · " + label("ctl.status.waits") + ": " + due.length, "ctl-status"),
     );
+    if (R89 && board.conditions) {
+      renderNodes(wrap, board.conditions);
+      renderSectors(wrap, board.conditions, due);
+    } else if (R89) wrap.appendChild(el("p", label("cv.no_data"), "muted"));
     wrap.appendChild(el("h3", label("ctl.passports"), "ctl-h"));
     if (c.passports.length === 0) wrap.appendChild(el("p", label("ctl.passports.none"), "muted"));
     for (const ps of c.passports) {
@@ -527,8 +798,6 @@
       row.appendChild(t);
       wrap.appendChild(row);
     }
-    while (ctlBox.firstChild) ctlBox.removeChild(ctlBox.firstChild);
-    ctlBox.appendChild(wrap);
   }
 
   document.addEventListener("pult:focus", renderProc);

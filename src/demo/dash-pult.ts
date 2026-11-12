@@ -5,7 +5,9 @@
 import type { Brand } from "../brand.js";
 import type { WireLang } from "../dashboards/wire.js";
 import { BOARD_COLUMNS } from "../pult/board.js";
+import { rulesForPage } from "../pult/conditions.js";
 import { PANES, PULT, type Pane } from "../pult/phrases.js";
+import type { Rule89 } from "../pult/rules89.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { switcherHtml } from "./switcher.js";
 
@@ -36,8 +38,9 @@ function paneHtml(pane: Pane, lang: WireLang): string {
   </section>`;
 }
 
-/** `faults` — режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» под шапкой. */
-export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean } = {}): string {
+/** `faults` — режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» под шапкой. `rules` — справочник 89
+ *  правил для «Условий» (П-4.2); подмена — только для теста экранирования. */
+export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[] } = {}): string {
   const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
   const other: WireLang = lang === "ru" ? "en" : "ru";
   const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
@@ -75,6 +78,7 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   </div>
 </main>
 <script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES })}</script>
+<script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>
 </body>

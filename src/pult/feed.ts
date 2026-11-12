@@ -7,6 +7,7 @@ import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { SourceStatus } from "../dashboards/source.js";
 import { boardView, type BoardCard, type BoardColumn } from "./board.js";
+import { conditionsView, type ConditionsView } from "./conditions.js";
 import { controlView, WAIT_MS, type ControlState } from "./control.js";
 import { evaluate } from "./engine.js";
 import { graphView, type GraphView } from "./graph.js";
@@ -35,6 +36,8 @@ export interface PultBoardState {
   readonly graph: GraphView;
   /** «Контроль» (П-4.1): паспорта по правилу паспорта, «Идёт к нарушению», «В работе сейчас». */
   readonly control: ControlState;
+  /** «Условия» (П-4.2): статусы 89 правил, плитки узлов, сектора — из движка. Нет — движок ещё не отработал ни разу. */
+  readonly conditions?: ConditionsView;
 }
 
 export type PultFeedEvent =
@@ -133,12 +136,16 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     // Движок условий и вердикты — в своём блоке: ошибка в условии оставляет прежний «Контроль», доска обновляется (ревью
     // П-4.1 № 5 — иначе одна ошибка гасит доску, и на прогоне это выглядит как зависание стенда). Журнал сбоев стенда на
     // шину выводит П-11.2 (после PR #11): до него условия журнала — «на стенде не проверяется».
-    // Прежними при сбое — только паспорта и число транзакций с паспортом (они от движка); ожидания, «В работе сейчас» и
+    // Прежними при сбое — только паспорта, число транзакций с паспортом и «Условия» (они от движка); ожидания, «В работе сейчас» и
     // число транзакций — свежие: показывать устаревшее там, где доступно свежее, нельзя (ревью П-4.1 № 16).
+    // «Условия» (П-4.2) — из того же результата движка; при сбое остаются прежние, как паспорта.
     let control: ControlState;
+    let conditions = state.conditions;
     try {
-      const vs = verdicts((o.evaluate ?? evaluate)(model, items, { now }), model, items);
+      const ev = (o.evaluate ?? evaluate)(model, items, { now });
+      const vs = verdicts(ev, model, items);
       control = controlView(model, items, vs, active, o.waitMs);
+      conditions = conditionsView(ev);
     } catch {
       try {
         const fresh = controlView(model, items, [], active, o.waitMs);
@@ -147,7 +154,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
-    state = { now, cards, jumps: [...jumps], graph, control };
+    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }) };
     emit({ type: "board", board: state });
   };
 

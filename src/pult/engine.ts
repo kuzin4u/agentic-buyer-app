@@ -47,7 +47,8 @@ export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   ),
   unconfirmed_paid: p("второе «оплачено» связано с корзиной только номером заказа — связь не подтверждена", "a second “paid” is linked to the cart only by the order number — link not confirmed"),
   amounts_after_mvp: p("сравнение сумм — после MVP; на стенде сумму первой проверяет Платформа (MANDATE_SCOPE)", "amount comparison — after MVP; on the stand the Platform checks the amount first (MANDATE_SCOPE)"),
-  stand_log: p("проверяется по журналу сбоев стенда — подключается в П-3.2в", "checked from the stand fault log — connected in P-3.2c"),
+  // Без внутренних кодов задач на экране (ревью П-4.1 № 10; ревью П-3.2б № 14): пометка видна в плитке узла «Условий» (П-4.2).
+  stand_log: p("проверяется по журналу сбоев стенда — журнал подключается позже", "checked from the stand fault log — the log is connected later"),
   link_conflict: p("конфликт звеньев — две покупки с одним номером заказа; решает человек", "link conflict — two purchases share an order number; a human decides"),
   event_pending: p("агент сообщил о подписи корзины — ждём событие Платформы", "the agent reported the cart signature — waiting for the Platform event"),
 };
