@@ -306,6 +306,19 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     checkClientSteps(s);
     return s;
   }
+  /** П-11.5в: события подтверждения Платформы прогона несут поручение корзины прогона (из записи подтверждения). */
+  async function expectConfirmationCart(s: readonly ScenarioLine[], want: readonly string[]): Promise<void> {
+    const cart = String(s.find((x) => x.step === "cart.created")?.params.mandate_id);
+    const from = s[0]!.seq;
+    const events = () =>
+      demo.bus.history().flatMap((i) => (i.stream === "monitor" && i.event.seq > from && i.event.source === "pao_event" && i.event.ids.confirmation_id ? [i.event] : []));
+    const end = Date.now() + 15_000;
+    while (!want.every((w) => events().some((e) => e.what === w))) {
+      if (Date.now() > end) throw new Error(`нет событий ${want.join(", ")}: ${events().map((e) => e.what).join(", ")}`);
+      await pause(50);
+    }
+    for (const e of events()) expect(e.ids.mandate_id, `${e.what} ${e.ids.confirmation_id}`).toBe(cart);
+  }
   async function fault(test: string): Promise<{ last: ScenarioLine; s: ScenarioLine[] }> {
     await demo.scenarios.settled();
     await demo.faulty!.settled();
@@ -347,6 +360,8 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     expect(names).toContain("upk.declined");
     expect(names).not.toContain("client.confirmed");
     expect(names).not.toContain("outcome");
+    // П-11.5в: `confirmation.rejected` по ПАО несёт только номер запроса — поручение корзины добавляет шина из записи.
+    await expectConfirmationCart(s, ["confirmation.required", "confirmation.rejected"]);
   });
 
   it("драйвер Н-07 «ПР»: эмулятор подписывает только поручение, корзину — нет; защита PRINCIPAL_SIGNATURE_PENDING", async () => {
@@ -379,6 +394,7 @@ describe("П-11.4б: живой стенд в «Авто» (DEMO_FAULTS=1) — �
     const s = await run("upk", ["outcome", "upk.declined"]);
     expect(s.map((x) => x.step)).toContain("client.confirmed");
     expect(s.map((x) => x.step)).toContain("outcome");
+    await expectConfirmationCart(s, ["confirmation.required", "confirmation.approved"]);
     expect(JSON.stringify(s.filter((x) => x.step.startsWith("client.")))).not.toMatch(/upk_url|\/c\//);
     expect(Object.keys(s.find((x) => x.step === "client.confirmed")!.params).sort()).toEqual(["confirmation_id", "source"]);
   });
