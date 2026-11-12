@@ -362,6 +362,16 @@ export const CONTROL = {
   "early.next": p("следующий сюжет запущен до срока — события Платформы могли попасть в чужой прогон", "the next scenario started before the deadline — Platform events may have landed in another run"),
   "early.prev": p("запущен до срока предыдущего — события Платформы могли попасть в чужой прогон", "started before the previous run's deadline — Platform events may have landed in another run"),
   "no.passport": p("паспорта нет — сюжет не сверяется", "no passport — the scenario is not checked"),
+  // Прогон драйвера нарушителя «ПР» (П-4.1а): код теста и исход — из полей шагов, не из текста.
+  "fault.title": p("Нарушитель (ПР)", "Violator (ПР)"),
+  "fault.outcome.none": p("идёт — исхода ещё нет", "in progress — no outcome yet"),
+  "fault.outcome.marked": p("совершено и помечено на стенде — ловит пульт", "committed and marked on the stand — the console catches it"),
+  "fault.outcome.refused": p("остановлено защитой", "stopped by a safeguard"),
+  // П7 доп. 2: самостоятельный исход «только записи стенда» (Н-05) — не защита и не исполнение.
+  "fault.outcome.recorded": p("записи стенда сделаны — не защита и не исполнение", "stand records made — neither a safeguard nor execution"),
+  "fault.test.missing": p("код теста не указан", "test code not given"),
+  "fault.outcome.unplayed": p("помечено, но не разыграно", "marked but not played"),
+  "fault.outcome.failed": p("не разыграно, на стенде не помечено", "not played, not marked on the stand"),
   "verdict.title": p("Вердикт владельца", "Owner's verdict"),
   "verdict.accept": p("Принять прогон", "Accept the run"),
   "verdict.reject": p("Не принимать прогон", "Reject the run"),

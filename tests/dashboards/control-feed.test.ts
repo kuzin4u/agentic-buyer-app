@@ -118,6 +118,35 @@ describe("лента «Контроля» (К2.3б)", () => {
     expect(s.c.markdown("en")).toContain("no passport — the scenario is not checked");
   });
 
+  it("П-4.1а: прогон драйвера нарушителя (run.fault) — «Нарушитель (ПР) — Н-xx», исход по последнему шагу исхода (fault.sent — не исход), до исхода — «идёт»; в выгрузке ACC-1", () => {
+    const s = setup();
+    const t = (r: Interpretation, test = "Н-05"): Interpretation => ({ ...r, test });
+    s.add([t(rec(10, { stream: "scenario", ref: "run.fault" }, T0)), t(rec(11, { stream: "scenario", ref: "fault.sent" }, T0 + 1))]);
+    s.at(T0 + 2);
+    // Исхода ещё нет: fault.sent — промежуточный шаг; вердикта нет — паспорта нет.
+    expect(s.c.runs()[0]).toMatchObject({ key: 10, name: "fault", fault: { test: "Н-05" } });
+    expect(s.c.runs()[0]!.fault!.outcome).toBeUndefined();
+    expect(s.c.markdown("ru")).toContain("| Нарушитель (ПР) — Н-05 |");
+    expect(s.c.markdown("ru")).toContain("идёт — исхода ещё нет");
+    expect(s.vote(10, "accepted")).toEqual({ ok: false, code: "NO_PASSPORT" });
+    // Два исхода подряд — последний; исход чужого теста в прогоне не учитывается.
+    s.add([
+      { ...t(rec(12, { stream: "scenario", ref: "fault.failed" }, T0 + 3)), testCode: "NO_SECOND_MERCHANT" },
+      { ...t(rec(13, { stream: "scenario", ref: "fault.refused" }, T0 + 4)), testCode: "MANDATE_SCOPE" },
+      t(rec(14, { stream: "scenario", ref: "fault.marked" }, T0 + 5), "Н-01"),
+    ]);
+    s.at(T0 + 6);
+    expect(s.c.runs()[0]!.fault).toEqual({ test: "Н-05", outcome: "refused", code: "MANDATE_SCOPE" });
+    expect(s.c.markdown("ru")).toContain("| остановлено защитой — MANDATE_SCOPE |");
+    expect(s.c.markdown("en")).toContain("| Violator (ПР) — Н-05 |");
+    expect(s.c.markdown("en")).toContain("| stopped by a safeguard — MANDATE_SCOPE |");
+    // «Совершено и помечено» — без кода; обычная метка без драйвера — без `fault`.
+    s.add([t(rec(15, { stream: "scenario", ref: "fault.marked" }, T0 + 7)), rec(20, { stream: "scenario", ref: "run.unknown" }, T0 + 8)]);
+    s.at(T0 + 9);
+    expect(s.c.runs()[0]!.fault).toEqual({ test: "Н-05", outcome: "marked" });
+    expect(s.c.runs()[1]!.fault).toBeUndefined();
+  });
+
   it("выгрузка ACC-1: таблица Markdown на ru и en — сюжет, итог, «принято N из N», вердикт, не принятые пункты словами без кодов", () => {
     const s = setup();
     const list = run1(100, T0).filter((r) => r.ref !== "mandate.signed");

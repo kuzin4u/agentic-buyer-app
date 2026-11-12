@@ -10,7 +10,7 @@
 // Платформы предыдущего могло попасть в следующий прогон — оба помечаются; пометка видна у вердикта и в выгрузке. Относить
 // события к прогону по идентификаторам — П-4 (STATUS «Открыто»).
 import { randomUUID } from "node:crypto";
-import { control, DEFAULT_WAIT_MS, splitRuns, type CheckState, type ControlResult } from "./control.js";
+import { control, DEFAULT_WAIT_MS, faultOf, splitRuns, type CheckState, type ControlResult, type FaultRun } from "./control.js";
 import type { FeedEvent, InterpretFeed } from "./feed.js";
 import type { Interpretation } from "./interpret.js";
 import type { Texts } from "./passports.js";
@@ -45,6 +45,8 @@ export interface RunView {
   readonly closed: boolean;
   readonly early: { readonly next: boolean; readonly prev: boolean };
   readonly verdict?: OwnerVerdict;
+  /** Прогон драйвера нарушителя «ПР» (`run.fault`, П-4.1а): код теста и исход; паспорта у него нет. */
+  readonly fault?: FaultRun;
 }
 
 /** `epoch` — поколение ленты: новое при создании и при перезапуске источника (номера seq начинаются заново). Экран шлёт
@@ -93,7 +95,9 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
       const next = runs[i + 1];
       const prevDeadline = i > 0 ? (results[i - 1] ? Date.parse(results[i - 1]!.deadline) : runs[i - 1]!.startedAt.getTime() + waitMs) : undefined;
       const v = verdicts.get(r.startSeq);
+      const fault = faultOf(r);
       return {
+        ...(fault && { fault }),
         key: r.startSeq,
         name: r.name,
         ...(r.passport && { no: r.passport.no, title: r.passport.title }),
@@ -131,6 +135,9 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
 
   const L = (k: keyof typeof CONTROL, lang: WireLang) => CONTROL[k][lang];
   const cell = markdownCell;
+  const faultTitle = (f: FaultRun, lang: WireLang) => `${L("fault.title", lang)} — ${f.test ?? L("fault.test.missing", lang)}`;
+  const faultText = (f: FaultRun, lang: WireLang) =>
+    (f.outcome ? L(`fault.outcome.${f.outcome}`, lang) : L("fault.outcome.none", lang)) + (f.code !== undefined ? ` — ${f.code}` : "");
 
   return {
     runs: () => views,
@@ -163,6 +170,8 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
       const head = (["col.no", "col.scenario", "col.started", "col.state", "col.accepted", "col.verdict", "col.notes", "col.failed"] as const).map((k) => L(k, lang));
       const rows = views.map((v) => {
         const notes = [v.early.next && L("early.next", lang), v.early.prev && L("early.prev", lang)].filter(Boolean).join("; ");
+        // Прогон «ПР» (П-4.1а): «Нарушитель (ПР) — Н-xx» и исход по последнему шагу исхода; вердикта нет — паспорта нет.
+        if (!v.result && v.fault) return [String(v.key), faultTitle(v.fault, lang), v.startedAt, faultText(v.fault, lang), "—", "—", notes || L("export.none", lang), "—"];
         if (!v.result) return [String(v.key), v.name, v.startedAt, L("no.passport", lang), "—", "—", notes || L("export.none", lang), "—"];
         const r = v.result;
         const failed = r.items

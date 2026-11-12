@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { codeWords, interpret, LOCAL_STAND_EMULATED, STAGES, type InterpretEnv } from "../../src/dashboards/interpret.js";
-import { CODE_WORDS, PHRASES } from "../../src/dashboards/phrases.js";
+import { CODE_WORDS, CONTROL, PHRASES } from "../../src/dashboards/phrases.js";
+import { FAULT_OUTCOMES, faultOf, splitRuns } from "../../src/dashboards/control.js";
 import { rawInHumanText } from "./human-text.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
@@ -245,6 +246,35 @@ describe("интерпретатор: квалификация по правил
     expect(suspended.phrase.ru).toBe("Платформа: агент приостановлен оператором Системы");
     const pay = interpret(mon({ source: "agent_merchant", cls: "payment", what: "POST /v1/shops/{shop_id}/orders/{order_id}/payment", status: 200 }), ENV);
     expect(pay.phrase).toEqual({ ru: "Агент передал оплату заказа продавцу", en: "The agent sent payment for order to the merchant" });
+  });
+
+  it("П-4.1а: код теста задания — из поля шага `test`, только по форме Н-NN; латинская N, разметка и чужая строка — не берутся", () => {
+    expect(interpret(step("run.fault", { test: "Н-05" }), ENV).test).toBe("Н-05");
+    expect(interpret(step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE", status: 409 }), ENV)).toMatchObject({ test: "Н-08", who: { code: "MANDATE_SCOPE" } });
+    for (const bad of ["N-05", "<b>Н-05</b>", "Н-5", "Н-005", "П-01"]) expect(interpret(step("run.fault", { test: bad }), ENV).test, bad).toBeUndefined();
+    expect(interpret(step("run.fault"), ENV).test).toBeUndefined();
+  });
+
+  it("П-4.1а, ревью № 1–3 (Р-1511): шаги драйвера в его форме → интерпретатор → прогон «ПР»: пять исходов, fault.sent и заметки — не исход, составной код — целиком", () => {
+    const runOf = (...steps: WireItem[]) => faultOf(splitRuns(steps.map((s) => interpret(s, ENV)))[0]!);
+    const head = (test: string) => [step("run.fault", { test }), step("fault.note.prepared", { test }), step("fault.sent", { test })];
+    expect(runOf(...head("Н-05"))).toEqual({ test: "Н-05" });
+    expect(runOf(...head("Н-01"), step("fault.marked", { test: "Н-01", order_id: "ORD-1" }))).toEqual({ test: "Н-01", outcome: "marked" });
+    expect(runOf(...head("Н-08"), step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE", status: 409 }))).toEqual({ test: "Н-08", outcome: "refused", code: "MANDATE_SCOPE" });
+    // Н-05 (П7 доп. 2): «записи стенда сделаны» — самостоятельный исход, после заметок о взводе и чтении каталога.
+    const n05 = [step("fault.note.armed", { test: "Н-05", shop_id: "SHOP-1" }), step("fault.note.catalog_read", { test: "Н-05", shop_id: "SHOP-1" }), step("fault.note.disarmed", { test: "Н-05", shop_id: "SHOP-1" })];
+    expect(runOf(step("run.fault", { test: "Н-05" }), ...n05, step("fault.recorded", { test: "Н-05", shop_id: "SHOP-1" }))).toEqual({ test: "Н-05", outcome: "recorded" });
+    expect(runOf(...head("Н-06"), step("fault.unplayed", { test: "Н-06", code: "PREP_FAILED,NO_RESPONSE" }))).toEqual({ test: "Н-06", outcome: "unplayed", code: "PREP_FAILED,NO_RESPONSE" });
+    expect(runOf(...head("Н-09"), step("fault.failed", { test: "Н-09", code: "NO_SECOND_MERCHANT" }))).toEqual({ test: "Н-09", outcome: "failed", code: "NO_SECOND_MERCHANT" });
+  });
+
+  it("П-4.1а (Р-1511): перечень исходов экрана = итоговые шаги драйвера нарушителя (`src/demo/faulty.ts`, кроме fault.sent и fault.note.*)", () => {
+    const src = readFileSync(join(import.meta.dirname, "../../src/demo/faulty.ts"), "utf8");
+    const steps = new Set([...src.matchAll(/"fault\.([a-z_]+)"/g)].map((m) => m[1]!));
+    steps.delete("sent");
+    expect([...steps].sort()).toEqual([...FAULT_OUTCOMES].sort());
+    // У каждого исхода — подпись ru и en.
+    for (const o of FAULT_OUTCOMES) for (const lang of ["ru", "en"] as const) expect(CONTROL[`fault.outcome.${o}`][lang].length, o).toBeGreaterThan(0);
   });
 
   it("словарь покрывает все шаги сюжетов демо-стенда, кроме скрытых с линии (ревью № 14)", () => {
