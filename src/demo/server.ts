@@ -276,6 +276,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
   const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
   const pultFeedsJs = o.dashboards ? PUBLIC("pult/feeds.js") : "";
+  const pultKeysJs = o.dashboards ? PUBLIC("pult/keys.js") : "";
   const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
   const scenarioNames: ReadonlySet<string> = new Set([...BASE_SCENARIOS, ...(o.moreScenarios ?? []).map((s) => s.name)]);
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
@@ -468,6 +469,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return send(res, 200, "text/javascript; charset=utf-8", pultFocusJs);
         case "/pult/feeds.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultFeedsJs);
+        case "/pult/keys.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultKeysJs);
         case "/pult/feeds": {
           // «Ленты» (П-5.2, Р-1523 В17 (а)): подписи на языке страницы, текущий вид, затем новые виды. Только чтение; запись —
           // только в открытый поток (sseWrite). Журнала стенда и полей вне интерпретаций здесь нет.
