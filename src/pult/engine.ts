@@ -11,7 +11,7 @@
 // переданного аргументом.
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { Phrase } from "./phrases.js";
-import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Rule89 } from "./rules89.js";
+import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Party, type Rule89 } from "./rules89.js";
 import { STAND_DELAY_MAX_MS, type StandLogEntry, type StandLogWhat, type StandTest } from "./standlog.js";
 
 /** Срок позднего итога R31 по умолчанию: наибольшая задержка стенда (60 с) + запас 15 с — законно задержанное событие
@@ -79,7 +79,14 @@ export const RULE_CAUSES = [
   "expired_platform_decline", // R09: срок поручения истёк — отказала Платформа
   "inactive_agent_stop", // R09: MANDATE_NOT_ACTIVE без признака отзыва или срока — агент остановился сам
   "inactive_platform_decline", // R09: то же — отказала Платформа
-  "mandate_scope", // R17: Платформа отказала — вне пределов поручения
+  // R09: остановка видна только в шаге сюжета (рассказ стенда) — кто остановил, не доказано (П-5.1, Р-1519)
+  "revoked_undetermined",
+  "expired_undetermined",
+  "inactive_undetermined",
+  // R17: остановка вне пределов поручения (MANDATE_SCOPE); кто остановил — `stoppedBy` (П-5.1, ревью П-5.1 № 1, Р-1519)
+  "mandate_scope_platform", // отказ Платформы на запрос
+  "mandate_scope_agent", // журнал агента
+  "mandate_scope_undetermined", // только шаг сюжета
   "agent_pay_after_expiry", // R21: агент начал оплату после истечения срока подтверждения
   "operation_after_expiry", // R21: операция Платформы после истечения срока подтверждения
   "confirmation_expired", // R21: срок подтверждения истёк без оплаты
@@ -110,19 +117,68 @@ export interface EngineOptions {
 }
 export type CondResults = Readonly<Record<CheckableCondition, CondResult>>;
 
-/** Сработавшие защиты: отказ Платформы по пределам поручения, приостановленный агент, остановка агента по отзыву, отказ
- *  банка по лимиту клиента. `guarantee` — гарантия стыка модели (`JOINTS`), если она есть. */
-export const GUARANTEES = ["mandate_scope", "agent_suspended", "revoke", "limit_client"] as const;
+/** Сработавшие защиты: вне пределов поручения, приостановленный агент, поручение отозвано или не действует, лимит клиента в
+ *  банке. `guarantee` — гарантия стыка модели (`JOINTS`), если она есть. Кто защитил — не в названии, а в `protector`
+ *  остановки (по источнику, П-5.1). */
+export const GUARANTEES = ["mandate_scope", "agent_suspended", "revoke", "limit_client", "pay_refused"] as const;
 export type Guarantee = (typeof GUARANTEES)[number];
 export const GUARANTEE_INFO: Readonly<Record<Guarantee, { readonly name: Phrase; readonly guarantee?: string }>> = {
-  mandate_scope: { name: p("Платформа отказала: вне пределов поручения (MANDATE_SCOPE)", "The Platform declined: outside the mandate (MANDATE_SCOPE)"), guarantee: "g1d" },
-  agent_suspended: { name: p("Платформа отказала: агент приостановлен (403)", "The Platform declined: the agent is suspended (403)") },
-  revoke: { name: p("Агент остановил покупку сам после отзыва поручения", "The agent stopped the purchase itself after the mandate was revoked"), guarantee: "g3c" },
-  limit_client: { name: p("Банк отказал: превышен лимит клиента", "The bank declined: the client's limit was exceeded") },
+  mandate_scope: { name: p("Покупка вне пределов поручения остановлена (MANDATE_SCOPE)", "A purchase outside the mandate was stopped (MANDATE_SCOPE)"), guarantee: "g1d" },
+  agent_suspended: { name: p("Приостановленный агент остановлен (403)", "The suspended agent was stopped (403)") },
+  revoke: { name: p("Покупка по отозванному или недействующему поручению остановлена", "A purchase under a revoked or inactive mandate was stopped"), guarantee: "g3c" },
+  limit_client: { name: p("Оплата сверх лимита клиента в банке отклонена", "A payment above the client's bank limit was declined") },
+  // Р-1524: отказ витрины на запрос оплаты (повтор оплаченного заказа, Н-01) — «защитил продавец».
+  pay_refused: { name: p("Повторная оплата заказа отклонена продавцом", "A repeated payment for the order was declined by the merchant") },
 };
+
+/** Кто остановил: Платформа, агент, банк или «не определён» (П-5.1; ревью П-3.2б № 4, П-3.3 № 3; Р-1519). */
+export type Stopper = Party | "undetermined";
+/** Коды остановки «поручение не действует». */
+export const STOP_CODES_NOT_ACTIVE: readonly string[] = ["MANDATE_NOT_ACTIVE", "MANDATE_REVOKED", "MANDATE_EXPIRED"];
+/** Коды остановки по виду защиты — один перечень для `guaranteesOf` и сверки с реестрами (Р-1511; ревью П-5.1 № 15). */
+export const GUARANTEE_CODE_BY_KIND: Readonly<Record<Guarantee, readonly string[]>> = {
+  mandate_scope: ["MANDATE_SCOPE"],
+  agent_suspended: ["AGENT_SUSPENDED"],
+  revoke: STOP_CODES_NOT_ACTIVE,
+  limit_client: ["LIMIT_EXCEEDED"],
+  pay_refused: ["ORDER_NOT_PAYABLE"],
+};
+/** Коды отказа продавца (реестр продавца, `MERCHANT_DIAG`) — по ним, и только по ответу витрины, «защитил продавец». */
+export const MERCHANT_STOP_CODES: readonly string[] = GUARANTEE_CODE_BY_KIND.pay_refused;
+/** Все коды, по которым пульт засчитывает сработавшую защиту, — сверяются с реестрами агента и ПАО (Р-1511). */
+export const GUARANTEE_CODES: readonly string[] = Object.values(GUARANTEE_CODE_BY_KIND).flat();
+
+/** Ответ Платформы с отказом: запись монитора от нашего агента к Платформе с кодом (интерпретатор ставит код записи
+ *  монитора только при `status ≥ 400` или `cls: decline`). */
+const platformAnswer = (x: Interpretation, codes: ReadonlySet<string>) =>
+  x.stream === "monitor" && (x.source === "agent_platform" || x.source === "agent_platform_open") && x.who?.code !== undefined && codes.has(x.who.code);
+/** Журнал агента с кодом остановки. */
+const agentJournal = (x: Interpretation, codes: ReadonlySet<string>) => x.stream === "console" && x.who?.code !== undefined && codes.has(x.who.code);
+
+/** Кто остановил по записям одной остановки — правило «кто защитил» (П-5.1; ревью П-3.2б № 4, П-3.3 № 3; Р-1519):
+ *  ответ Платформы с кодом — Платформа (и тогда, когда агент тоже записал отказ: он лишь узнал о нём); иначе журнал агента
+ *  с кодом — агент; иначе (только шаг сюжета — рассказ стенда, не доказательство) — «не определён». */
+export function stoppedBy(recs: readonly Interpretation[], codes: readonly string[]): Stopper {
+  const set = new Set(codes);
+  if (recs.some((x) => platformAnswer(x, set))) return "platform";
+  // Продавец — только по кодам отказа продавца (`ORDER_NOT_PAYABLE`): ответ витрины с кодом другого участника защитой
+  // продавца не считается.
+  if (codes.every((c) => MERCHANT_STOP_CODES.includes(c)) && recs.some((x) => merchantAnswer(x, set))) return "merchant";
+  if (recs.some((x) => agentJournal(x, set))) return "agent";
+  return "undetermined";
+}
+/** Ответ витрины с отказом на запрос нашего агента (≥ 400 с кодом; Р-1524, как у Платформы в Р-1522). */
+const merchantAnswer = (x: Interpretation, codes: ReadonlySet<string>) =>
+  x.stream === "monitor" && x.source === "agent_merchant" && x.who?.code !== undefined && codes.has(x.who.code);
+
 export interface GuaranteeHit {
   readonly kind: Guarantee;
+  /** Первая запись остановки. */
   readonly seq: number;
+  /** Все записи одной остановки (ответ Платформы, журнал агента, шаг сюжета): одна остановка — одна защита. */
+  readonly seqs: readonly number[];
+  /** Кто остановил — по источнику (`stoppedBy`); лимит клиента — банк. */
+  readonly protector: Stopper;
   /** Транзакция или поручение, где сработала защита; нет — запись вне транзакций. */
   readonly obj?: string;
 }
@@ -142,7 +198,7 @@ export interface EngineView {
 const PAY_CALL = "POST /v1/shops/{shop_id}/orders/{order_id}/payment";
 const SIGN_CALL = "POST /participants/v1/mandates/{mandate_id}/sign";
 const STAND_LOG: readonly CheckableCondition[] = ["R20", "R23", "R25", "R27", "R31", "R32", "R47"];
-const NOT_ACTIVE = new Set(["MANDATE_NOT_ACTIVE", "MANDATE_REVOKED", "MANDATE_EXPIRED"]);
+const NOT_ACTIVE: ReadonlySet<string> = new Set(STOP_CODES_NOT_ACTIVE);
 /** Запись нашего агента: журнал агента или обращение его ключом. */
 const byOurAgent = (x: Interpretation) =>
   x.stream === "console" || x.source === "agent_platform" || x.source === "agent_platform_open" || x.source === "agent_merchant";
@@ -197,7 +253,7 @@ function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: Checkabl
   // вместе с причиной по шине (решение владельца по П-3.3, 1).
   // Причина по шине — и у уже стоящей пометки (вторая пометка Н-08 не теряет отказ Платформы; повторное ревью П-3.3 № 1).
   const bus = cur.cause?.kind === "rule" ? cur.cause.rule : cur.cause?.kind === "mark" ? cur.cause.bus : undefined;
-  const stopped = e.what === "MARKED" && e.test === "Н-08" && c === "R17" && cur.status === "fired" && bus === "mandate_scope";
+  const stopped = e.what === "MARKED" && e.test === "Н-08" && c === "R17" && cur.status === "fired" && bus?.startsWith("mandate_scope_") === true;
   const want: CondStatus = stopped ? "fired" : status;
   const st: CondStatus = weak && RANK[want] < RANK.wait ? "wait" : want;
   const own = st === "bad" || st === "fired" ? causeOf(e) : undefined;
@@ -239,6 +295,12 @@ export function hasCardNumber(text: string): boolean {
   return false;
 }
 const leaks = (x: Interpretation) => [x.phrase.ru, x.phrase.en, ...Object.values(x.ids ?? {})].some((s) => typeof s === "string" && hasCardNumber(s));
+
+/** Фраза записи, похожей на номер карты (инвариант 1; ревью П-5.1 № 5). */
+export const HIDDEN_RECORD: Phrase = p("запись скрыта: в ней похожее на номер карты", "record hidden: it contains something like a card number");
+/** Фраза записи для экрана и ленты пульта: запись с похожим на номер карты — скрыта здесь, на сервере, — номер не уходит ни
+ *  в доску, ни в «Причины», ни в SSE (инвариант 1). Нарушение R41 при этом остаётся — по записи шины. */
+export const safePhrase = (x: Interpretation): Phrase => (leaks(x) ? HIDDEN_RECORD : x.phrase);
 
 /** R41 по записям: есть похожее на номер карты — «нарушено»; записи есть — «соблюдено». */
 function r41(recs: readonly Interpretation[]): CondResult {
@@ -340,11 +402,14 @@ function txConds(
   const notActive = notActiveRecs.map((x) => x.seq);
   // Почему поручение не действует — по положительному признаку (ревью П-3.3 № 1): отзыв — код MANDATE_REVOKED или событие
   // отзыва корзины или намерения; срок — MANDATE_EXPIRED; иначе (один MANDATE_NOT_ACTIVE) — не определён. Кто остановил —
-  // по источнику: запись агента — агент сам, ответ Платформы — Платформа.
+  // то же правило, что у сработавших защит (`stoppedBy`, П-5.1): ответ Платформы — Платформа, иначе журнал агента — агент,
+  // иначе (только шаг сюжета) — не определён (ревью П-3.3 № 3; Р-1519).
   const stopCause = (): RuleCause => {
     const codes = new Set(notActiveRecs.map((x) => x.who!.code));
     const revokedEv = all.some((x) => isEvent(x, "mandate.revoked") && [t.cartMandateId, t.intentId].includes(mid(x)));
-    const by = notActiveRecs.some((x) => x.stream !== "monitor") ? "agent_stop" : "platform_decline";
+    // По всем записям транзакции и её намерения: журнал агента может сослаться на поручение-намерение (ревью П-5.1 № 2).
+    const s = stoppedBy(all.filter((x) => x.who?.code !== undefined && NOT_ACTIVE.has(x.who.code)), STOP_CODES_NOT_ACTIVE);
+    const by = s === "platform" ? "platform_decline" : s === "agent" ? "agent_stop" : "undetermined";
     const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : "inactive";
     return `${why}_${by}` as RuleCause;
   };
@@ -361,8 +426,11 @@ function txConds(
             : r("na");
 
   // R17 (В8): до MVP — только «сработало» по MANDATE_SCOPE; сравнение сумм — после MVP.
+  // Кто остановил — то же правило «кто защитил», что у защит и R09 (`stoppedBy`; ревью П-5.1 № 1, Р-1519).
   const scope = codes("MANDATE_SCOPE");
-  out.R17 = scope.length > 0 ? rc("fired", "mandate_scope", scope) : r("none", [], "amounts_after_mvp");
+  // По записям транзакции и её намерения — как у R09 (ревью П-5.1 повторное № 5).
+  const scopeBy = stoppedBy(all.filter((x) => x.who?.code === "MANDATE_SCOPE"), ["MANDATE_SCOPE"]);
+  out.R17 = scope.length > 0 ? rc("fired", `mandate_scope_${scopeBy === "platform" || scopeBy === "agent" ? scopeBy : "undetermined"}`, scope) : r("none", [], "amounts_after_mvp");
 
   // R18: согласие клиента с корзиной на стенде — подпись поручения корзины клиентом в банке. Доказательство — только
   // событие Платформы `mandate.signed` корзины; шаг агента «корзина подписана» даёт только время (событие ленты может прийти
@@ -508,17 +576,38 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
   return { ids: [], weak: false };
 }
 
+/** Сработавшие защиты: записи одной остановки — один вид защиты в одном объекте — склеиваются в одну (ревью П-3.2б № 4:
+ *  ответ 403, журнал агента и шаг `failed` иначе дали бы тройной счёт в «Журнале» и «Отчёте»). Кто остановил — `stoppedBy`;
+ *  лимит клиента — банк (отказ банка, о котором сообщает событие Платформы). */
 function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<number, string>): GuaranteeHit[] {
-  const hits: GuaranteeHit[] = [];
-  const hit = (kind: Guarantee, x: Interpretation) => hits.push({ kind, seq: x.seq, ...(objOf.has(x.seq) && { obj: objOf.get(x.seq)! }) });
+  const groups = new Map<string, { kind: Guarantee; obj?: string; recs: Interpretation[] }>();
+  const add = (kind: Guarantee, x: Interpretation) => {
+    const obj = objOf.get(x.seq);
+    const key = `${kind}|${obj ?? ""}`;
+    const g = groups.get(key) ?? { kind, ...(obj !== undefined && { obj }), recs: [] };
+    g.recs.push(x);
+    groups.set(key, g);
+  };
+  const CODES = GUARANTEE_CODE_BY_KIND;
+  const has = (k: Guarantee, code: string | undefined) => code !== undefined && CODES[k].includes(code);
   for (const x of items) {
     const code = x.who?.code;
-    if (code === "MANDATE_SCOPE") hit("mandate_scope", x);
-    else if (code === "AGENT_SUSPENDED") hit("agent_suspended", x);
-    else if (x.ref === "revoke.refused" || (x.stream !== "monitor" && code !== undefined && NOT_ACTIVE.has(code))) hit("revoke", x);
-    else if (isEvent(x, "operation.declined") && code === "LIMIT_EXCEEDED" && x.who?.codeDetail === "CLIENT") hit("limit_client", x);
+    if (has("mandate_scope", code)) add("mandate_scope", x);
+    else if (has("agent_suspended", code)) add("agent_suspended", x);
+    else if (x.ref === "revoke.refused" || has("revoke", code)) add("revoke", x);
+    else if (isEvent(x, "operation.declined") && has("limit_client", code) && x.who?.codeDetail === "CLIENT") add("limit_client", x);
+    // Р-1524: только ответ витрины на запрос оплаты нашего агента — запись сюжета или пометка «ПР» защиты не дают.
+    else if (x.ref === PAY_CALL && merchantAnswer(x, new Set(CODES.pay_refused))) add("pay_refused", x);
   }
-  return hits;
+  return [...groups.values()]
+    .map((g): GuaranteeHit => ({
+      kind: g.kind,
+      seq: g.recs[0]!.seq,
+      seqs: g.recs.map((x) => x.seq),
+      protector: g.kind === "limit_client" ? "bank" : stoppedBy(g.recs, CODES[g.kind]),
+      ...(g.obj !== undefined && { obj: g.obj }),
+    }))
+    .sort((a, b) => a.seq - b.seq);
 }
 
 /** Условия по транзакциям и поручениям без покупки, сводно по системе, сработавшие защиты. Журнал сбоев стенда и
@@ -594,7 +683,11 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
       if (lost && system.R31!.status === "bad") system.R31 = { ...system.R31!, cause: { kind: "rule", rule: "late_lost" } };
     }
   }
-  return { objs, system: system as CondResults, guarantees: guaranteesOf(items, objOf) };
+  // Остановка, записанная по поручению-намерению с одной покупкой, — остановка этой покупки: одна остановка — одна защита
+  // (ревью П-5.1 № 2).
+  const viaTx = new Map(model.mandates.filter((m) => m.txIds.length === 1).map((m) => [m.id, m.txIds[0]!] as const));
+  const guaranteeObj = new Map([...objOf].map(([s, o]) => [s, viaTx.get(o) ?? o] as const));
+  return { objs, system: system as CondResults, guarantees: guaranteesOf(items, guaranteeObj) };
 }
 
 /** Статус правила справочника по статусам его проверяемых условий; без проверяемых — «на стенде не проверяется», а

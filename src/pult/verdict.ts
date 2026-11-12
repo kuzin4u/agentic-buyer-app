@@ -5,7 +5,8 @@
 // пометкой, а не субъект по умолчанию. «Решение клиента» — отдельная категория: выбор человека, а не чьё-то нарушение
 // (П-03, П-04, П-05, П-08; в акте ACC-1 читается как выбор человека). Узел У1–У5 — по `NODES.conds` справочника.
 // Отступления от задания v1.0 — STATUS «Открыто» (В7: Н-03, Н-12; В8: Н-08) и «Расхождения» № 7 (Н-06, строки таблицы,
-// которых нет в задании). Вердикты по сработавшим защитам (`view.guarantees`) — П-5.1 (Р-1484).
+// которых нет в задании). Вердикты по сработавшим защитам (`view.guarantees`; П-05, П-07, отзыв без покупки) — сделаны в
+// П-5.1 (Р-1484, Р-1519): защитник — по источнику остановки (`stoppedBy`), одна остановка — одна защита.
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { Cause, CondResult, EngineView, Guarantee, RuleCause } from "./engine.js";
 import type { Phrase } from "./phrases.js";
@@ -32,7 +33,7 @@ export const SUBJECT_LABEL: Readonly<Record<"client_decision" | "undetermined", 
 
 interface Row {
   readonly violator?: Subject;
-  readonly protector?: Party;
+  readonly protector?: Party | "undetermined";
   /** Почему субъект «не определён» — для человека и акта. */
   readonly note?: "race_c28";
 }
@@ -54,7 +55,14 @@ const BY_RULE: Readonly<Record<RuleCause, Row>> = {
   expired_platform_decline: { protector: "platform" },
   inactive_agent_stop: { violator: "undetermined", protector: "agent" }, // MANDATE_NOT_ACTIVE: отзыв или срок — не различить
   inactive_platform_decline: { violator: "undetermined", protector: "platform" },
-  mandate_scope: { protector: "platform" }, // П-06: не нарушение — система защитила; Н-08 — по пометке
+  // Остановка только в шаге сюжета — рассказ стенда, не доказательство: защитник «не определён» (П-5.1, Р-1519).
+  revoked_undetermined: { violator: "client_decision", protector: "undetermined" },
+  expired_undetermined: { protector: "undetermined" },
+  inactive_undetermined: { violator: "undetermined", protector: "undetermined" },
+  // П-06: не нарушение — защита сработала; кто остановил — по источнику (ревью П-5.1 № 1); Н-08 — по пометке.
+  mandate_scope_platform: { protector: "platform" },
+  mandate_scope_agent: { protector: "agent" },
+  mandate_scope_undetermined: { protector: "undetermined" },
   agent_pay_after_expiry: { violator: "agent" }, // агент начал оплату после срока подтверждения
   operation_after_expiry: { violator: "platform" }, // операция после срока подтверждения — Платформа должна была отказать
   confirmation_expired: { violator: "client_decision", protector: "platform" }, // П-04: клиент не подтвердил
@@ -73,6 +81,18 @@ const BY_FAULT: Partial<Record<StandLogWhat, Row>> = {
   PAID_BEFORE_OUTCOME: { violator: "merchant", protector: "operator" }, // Н-03 (В7): защитил пульт
   FULFILLED_BEFORE_OUTCOME: { violator: "merchant" }, // Н-04
 };
+/** Сработавшая защита без вердикта условия → нарушитель (защитник — по источнику остановки, `GuaranteeHit.protector`).
+ *  Задание v1.0: П-05 — решение клиента (лимит в банке), защитил банк; П-07 — защитила Платформа (403); отзыв поручения без
+ *  покупки — решение клиента. */
+const BY_GUARANTEE: Readonly<Record<Guarantee, { readonly violator?: Subject }>> = {
+  limit_client: { violator: "client_decision" },
+  agent_suspended: {},
+  revoke: { violator: "client_decision" },
+  mandate_scope: {},
+  // Р-1524: отказ витрины на повтор оплаты — защита, нарушитель — по вердикту условия R46 (пометка Н-01).
+  pay_refused: {},
+};
+
 /** Пометка «ПР» (нарушение, разыгранное приложением ключом агента) → субъекты. */
 const BY_MARK: Partial<Record<StandTest, Row>> = {
   "Н-01": { violator: "agent" },
@@ -94,7 +114,8 @@ export function subjectsOf(cause: Cause | undefined): Row | undefined {
   if (row === undefined) return undefined;
   // Защитник из причины по шине — только Н-08 при отказе Платформы MANDATE_SCOPE (решение по П-3.3, 1); у других
   // пометок — нет (повторное ревью П-3.3 № 2: иначе Н-05 после #113 дал бы «нарушил агент, защитил агент»).
-  const protector = cause.test === "Н-08" && cause.bus === "mandate_scope" ? BY_RULE.mandate_scope.protector : undefined;
+  // Защитник — по источнику остановки (ревью П-5.1 № 1): только ответ Платформы даёт «Платформа».
+  const protector = cause.test === "Н-08" && cause.bus?.startsWith("mandate_scope_") ? BY_RULE[cause.bus].protector : undefined;
   return { ...row, ...(protector && { protector }) };
 }
 
@@ -142,7 +163,7 @@ function fromCond(c: CheckableCondition, res: CondResult, obj?: string): Verdict
 }
 
 /** Вердикты: по условиям объектов («нарушено», «сработало»), по записям системы без объекта и решения клиента (отказ от
- *  корзины — П-03). По сработавшим защитам — П-5.1. */
+ *  корзины — П-03) и по сработавшим защитам без вердикта условия (П-5.1). */
 export function verdicts(view: EngineView, model: TxModel, items: readonly Interpretation[]): Verdict[] {
   const out: Verdict[] = [];
   for (const o of view.objs)
@@ -157,8 +178,34 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
     const v = fromCond(c, s);
     if (v) out.push(v);
   }
-  // Вердикты по сработавшим защитам (`view.guarantees`: П-05, П-07; «кто защитил» по источнику, одна остановка — одна
-  // защита) — в П-5.1 (Р-1484; ревью П-3.3 № 3, решение владельца по П-3.3). Здесь — только условия.
+  // Вердикты по сработавшим защитам (П-5.1; Р-1484, ревью П-3.3 № 3): одна остановка — одна защита, «кто защитил» — по
+  // источнику (`GuaranteeHit.protector`). Защита, у которой в том же объекте уже есть вердикт условия (вне пределов — R17,
+  // отзыв в транзакции — R09), второй раз не считается.
+  const COVERED: Readonly<Record<Guarantee, readonly CheckableCondition[]>> = {
+    mandate_scope: ["R17"],
+    agent_suspended: [],
+    revoke: ["R09", "R37"],
+    limit_client: [],
+    // R46 — нарушение (попытка), а не та же защита: отказ продавца — отдельный вердикт защиты.
+    pay_refused: [],
+  };
+  const bySeqG = new Map(items.map((x) => [x.seq, x] as const));
+  for (const g of view.guarantees) {
+    if (out.some((v) => v.obj === g.obj && v.cond !== undefined && COVERED[g.kind].includes(v.cond))) continue;
+    // Отзыв или не действует — субъект по коду, как у R09 (`stopCause`; повторное ревью П-5.1 № 4): отзыв — решение
+    // клиента; срок — нарушителя нет; один MANDATE_NOT_ACTIVE — не определён.
+    const codes = new Set(g.seqs.map((s) => bySeqG.get(s)).flatMap((x) => (x?.who?.code !== undefined ? [x.who.code] : x?.ref === "revoke.refused" ? ["MANDATE_REVOKED"] : [])));
+    const row =
+      g.kind !== "revoke" ? BY_GUARANTEE[g.kind] : codes.has("MANDATE_REVOKED") ? BY_GUARANTEE.revoke : codes.has("MANDATE_EXPIRED") ? {} : { violator: "undetermined" as const };
+    out.push({
+      kind: row.violator === "client_decision" ? "client_decision" : "protection",
+      ...(g.obj !== undefined && { obj: g.obj }),
+      guarantee: g.kind,
+      ...(row.violator && { violator: row.violator }),
+      protector: g.protector,
+      seqs: g.seqs,
+    });
+  }
   const bySeq = new Map(items.map((x) => [x.seq, x] as const));
   // П-03: клиент отказался подписать корзину — событие Платформы `mandate.rejected` по поручению корзины.
   for (const t of model.txs) {

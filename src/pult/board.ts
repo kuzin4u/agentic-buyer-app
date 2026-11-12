@@ -5,6 +5,7 @@
 import type { Interpretation, Kind, Stage, Texts } from "../dashboards/interpret.js";
 // Отрезки колонок (`segments`) — здесь, а не в `graph.ts`: «График» импортирует доску, обратный импорт дал бы цикл.
 import type { PultMandate, PultTx, TxModel, TxOpKind, TxOutcomeKind } from "./tx.js";
+import { safePhrase } from "./engine.js";
 
 /** Колонки доски — как в модели 1.23 (`BOARD_COLS`). «После операции» — расчёт и возврат после итога (после MVP на стенде
  *  событий расчёта нет: колонка пустая, но остаётся — структура экранов модели сохраняется, Р-1426). */
@@ -137,7 +138,8 @@ export function doneOf(
 function lastKey(seqs: readonly number[], bySeq: ReadonlyMap<number, Interpretation>): BoardCard["last"] {
   for (let i = seqs.length - 1; i >= 0; i--) {
     const r = bySeq.get(seqs[i]!);
-    if (r && r.level === "key") return { at: r.at, phrase: r.phrase };
+    // Запись с похожим на номер карты — скрыта (инвариант 1; ревью П-5.1 № 5): номер не уходит в SSE пульта.
+    if (r && r.level === "key") return { at: r.at, phrase: safePhrase(r) };
   }
   return undefined;
 }
