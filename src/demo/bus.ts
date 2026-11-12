@@ -10,8 +10,10 @@
 // Инвариант 2: класс — подпись для человека, а не решение. Шина ничего не проверяет и не меняет: она только читает.
 // Сумма — из записи подтверждения стенда (П6, чтение) или из операции, которую вернуло ядро после события (К2.1), в
 // минимальных единицах и с валютой.
-// Четвёртый поток (К2.1) — шаги сюжетов демо-стенда: код шага и параметры, текст — по словарю на странице.
-import type { StandCall } from "agentic-ps-platform/stand";
+// Потоки шины — `monitor` (обращения и события), `console` (журнал агента), `scenario` (шаги сюжетов демо-стенда, К2.1: код
+// шага и параметры, текст — по словарю на странице) и `stand` (журнал сбоев и действий стенда, только при режиме сбоев,
+// П-11.2а: в `/events` — только по заголовку `STAND_LOG_HEADER`, `x-stand-log: 1`).
+import type { DemoLogEntry, StandCall } from "agentic-ps-platform/stand";
 import type { JournalEntry } from "agentic-buyer-ref/src/agent/journal/index.js";
 import type { FeedItem } from "agentic-buyer-ref/src/agent/ports/events.js";
 import type { Money } from "agentic-buyer-ref/src/shared/domain.js";
@@ -89,10 +91,26 @@ export interface ConsoleLine {
 
 const CONSOLE_FIELDS = ["reason", "detail", "ref", "mandate", "merchant", "method", "result", "status", "check"] as const;
 
+/** Запись журнала сбоев и действий стенда (`stand.demo.log()`) — форма `StandLogEntry` движка пульта (`src/pult/standlog.ts`):
+ *  только перечисленные поля; `review` записи «Передать на разбор» не переносится. */
+export type StandEntry = Pick<DemoLogEntry, "seq" | "at" | "kind" | "test" | "what" | "ids">;
+
+/** Идентификаторы записи стенда, которые идут на шину (РП75 п. 4) — закрытый перечень: новое поле стенда на шину и в `/events`
+ *  не попадает (инвариант 1; ревью П-11.2а № 2). Равенство с линией (`WIRE_STAND_ID_KEYS`) и пультом — тест. */
+export const STAND_ENTRY_ID_KEYS = ["mandate_id", "confirmation_id", "op_ref", "merchant_id", "shop_id", "order_id", "order_ref"] as const;
+
+/** Строка потока `stand` (П-11.2а, Р-1514): `seq` — номер шины, общий счёт с остальными потоками; `entry` — запись стенда. */
+export interface StandLine {
+  readonly seq: number;
+  readonly at: string;
+  readonly entry: StandEntry;
+}
+
 export type BusItem =
   | { readonly stream: "monitor"; readonly event: MonitorEvent }
   | { readonly stream: "console"; readonly line: ConsoleLine }
-  | { readonly stream: "scenario"; readonly line: ScenarioLine };
+  | { readonly stream: "scenario"; readonly line: ScenarioLine }
+  | { readonly stream: "stand"; readonly line: StandLine };
 
 const seqOf = (i: BusItem): number => (i.stream === "monitor" ? i.event.seq : i.line.seq);
 
@@ -256,6 +274,8 @@ export interface BusSources {
   confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
   /** Сумма (у ядра), причина отказа (ответ ADP) и чей предел (уведомление банку) по операции; нет — событие без них. */
   operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string; orderRef?: string } | undefined>;
+  /** Журнал сбоев и действий стенда (`stand.demo.log()`) — только при режиме сбоев; нет — потока `stand` на шине нет. */
+  standLog?(): readonly DemoLogEntry[];
   now(): Date;
 }
 
@@ -277,13 +297,14 @@ const openKey = (method: string, template: string, status: number | string) => `
 export class MonitorBus {
   readonly #src: BusSources;
   /** История — по потокам отдельно: шумная консоль не вытесняет события монитора (ревью К1.3 № 13). */
-  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [], scenario: [] };
+  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [], scenario: [], stand: [] };
   readonly #subs = new Set<(i: BusItem) => void>();
   readonly #limit: number;
   #seq = 0;
   #calls = 0;
   #merchantCalls = 0;
   #journal = 0;
+  #standLog = 0;
   /** Обращения агента к открытым адресам по журналу (pao.call), ещё не сопоставленные с журналом стенда. Живут
    *  OPEN_MATCH_POLLS опросов: устаревшая запись чужой запрос агенту не припишет (ревью К2.1 № 2). */
   #openByAgent: { key: string; polls: number }[] = [];
@@ -357,6 +378,20 @@ export class MonitorBus {
       const c = mc[this.#merchantCalls]!;
       const k = classifyCall(c, "merchants");
       if (k) this.#monitor({ ...k, source: this.#byAgent(c) ? "agent_merchant" : "network_merchant" });
+    }
+    // Журнал стенда — после обращений: сбой, сработавший в обращении, встаёт ниже его строки (порядок возникновения, З4).
+    // Чтение по индексу, как у журналов выше: допущение — стенд журнал не обрезает (v0.48.0 — только дописывает).
+    const log = this.#src.standLog?.() ?? [];
+    for (; this.#standLog < log.length; this.#standLog++) {
+      const e = log[this.#standLog]!;
+      const ids: Record<string, string> = {};
+      // Пустая строка — не идентификатор: на линии запись придёт без поля, а не будет отброшена целиком (повторное ревью № 3).
+      for (const k of STAND_ENTRY_ID_KEYS) {
+        const v = e.ids[k];
+        if (typeof v === "string" && v !== "") ids[k] = v;
+      }
+      const entry: StandEntry = { seq: e.seq, at: e.at, kind: e.kind, ...(e.test !== undefined && { test: e.test }), what: e.what, ids };
+      this.#push({ stream: "stand", line: { seq: ++this.#seq, at: e.at, entry } });
     }
     if (age) this.#openByAgent = this.#openByAgent.filter((o) => ++o.polls < OPEN_MATCH_POLLS);
   }
@@ -458,7 +493,7 @@ export class MonitorBus {
 
   /** История всех потоков по порядку seq. */
   history(): readonly BusItem[] {
-    return [...this.#history.monitor, ...this.#history.console, ...this.#history.scenario].sort((a, b) => seqOf(a) - seqOf(b));
+    return [...this.#history.monitor, ...this.#history.console, ...this.#history.scenario, ...this.#history.stand].sort((a, b) => seqOf(a) - seqOf(b));
   }
 
   subscribe(fn: (i: BusItem) => void): () => void {

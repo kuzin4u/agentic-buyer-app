@@ -75,7 +75,8 @@ export interface Interpretation {
   readonly testCode?: string;
 }
 
-/** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаг `cart.created`). */
+/** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаги `cart.created`, `cart.card`
+ *  (Р-1506), `scope.refused`). */
 export const TX_ID_KEYS = [...WIRE_ID_KEYS, "intent_id"] as const;
 export type TxIds = Partial<Record<(typeof TX_ID_KEYS)[number], string>>;
 
@@ -372,6 +373,10 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   expiry: "mandate",
   // Драйвер нарушителя «ПР» (П7): служебная стадия — нарушение не стадия покупки эталонного агента.
   fault: "service",
+  // Эмулятор клиента «Авто» (П5, доп. 1): пометка действия за клиента; сам факт (подпись, решение) — запись стенда.
+  client: "service",
+  // Сбой стенда «П», взведённый человеком (П-11.2б): настройка стенда, не стадия покупки.
+  stand_fault: "service",
   failed: "outcome",
   aborted: "service",
 };
@@ -422,7 +427,15 @@ const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
   const head = l.step.split(".")[0]!;
-  const actor = own(STEP_ACTOR, l.step) ?? "agent";
+  // Шаги эмулятора клиента «Авто» (П5, доп. 1) — действия за клиента: участник — клиент, всегда эмулированный. Код в таком шаге
+  // (отказ банка или сбой самого эмулятора — CLIENT_CALL_FAILED, CART_ANSWER_FAILED, NOT_AWAITING) — не ошибка агента и
+  // квалификации не получает. Признак — имя шага: параметр `source: "client-emulator"` есть на шине, но линия дашбордов его не
+  // несёт (WIRE_SCENARIO_PARAMS), поэтому префикс `client.` закреплён за эмулятором — шагов сюжета с ним нет.
+  const byEmulator = head === "client";
+  // Сбой стенда «П» человеком (П-11.2б) — не действие агента: участник — Платформа (эмулятор), потому что стенд сам называет
+  // сбои своего перечня «сбоем Платформы» (РП75 п. 3, `dist/stand/demo.js`); образец — шаги оператора Системы `operator.*`.
+  const byStand = head === "stand_fault";
+  const actor = byEmulator ? "client" : byStand ? "platform" : own(STEP_ACTOR, l.step) ?? "agent";
   const p = own(PHRASES.scenario, l.step);
   const phrase = p ? fill(p, l.params) : fallback("Шаг сюжета", "Scenario step", l.step);
   let kind: Kind = "norm";
@@ -431,7 +444,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   // Коды шага: отказ, который агент получил от Платформы или поймал сам (сюжет пересказывает ядро агента), и сигналы A5.
   const codes = [l.params.code, l.params.codes].filter((c): c is string => typeof c === "string").flatMap((c) => c.split(","));
   const code = codes.find((c) => CODE_RE.test(c) && !TO_HUMAN_CODES.has(c));
-  if (code !== undefined) {
+  if (code !== undefined && !byEmulator) {
     // Отказ Платформы (лимит) и сбой эмулятора оператора Системы (сюжет 9) — не агента (ревью П-11.1г № 8).
     const platform = l.step === "limit.declined" || head === "operator";
     const q = qualifyCode(env, code, { origin: platform ? "platform" : "agent", sender: platform ? "platform" : "agent" });
@@ -439,6 +452,10 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     who = q.who;
     situation = q.situation ?? situation;
   }
+  // Действие эмулятора не прошло — «конфликт» без нарушителя (вердикта «агент» нет), чтобы сбой не выглядел нормой (ревью
+  // П-11.4б № 6). Паспорт 1 («Конфликтов нет») такой прогон не примет; в паспортах 2–10 — только косвенно, по недостающим
+  // шагам: общий запрет «действие эмулятора не прошло» — П-11.5 окна А.
+  if (byEmulator && l.step.endsWith("_failed")) kind = "conflict";
   const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
   const test = typeof l.params.test === "string" && TEST_RE.test(l.params.test) ? l.params.test : undefined;
   const testCode = test !== undefined && typeof l.params.code === "string" && l.params.code.split(",").every((c) => CODE_RE.test(c)) ? l.params.code : undefined;
@@ -454,7 +471,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
     stage: (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
     actor,
-    emulated: env.emulated.includes(actor),
+    emulated: byEmulator || byStand || env.emulated.includes(actor),
     kind,
     phrase,
     ...(who && { who }),
@@ -540,7 +557,7 @@ export function interpret(item: WireItem, env: InterpretEnv): Interpretation {
 
 /** Идентификаторы записи — для модели транзакций пульта (П-1.2, Р-1442): транзакция собирается по ним, а не по времени
  *  (Р-1396 п. 2). Обращение и событие — ids линии; шаг сюжета — параметры-идентификаторы (`intent_id` — поручение-намерение
- *  у шага `cart.created`); журнал агента — поручение, витрина и операция (`operation.status`). Только идентификаторы. */
+ *  у шагов `cart.created`, `cart.card` и `scope.refused`); журнал агента — поручение, витрина и операция (`operation.status`). Только идентификаторы. */
 function idsOf(item: WireItem): TxIds {
   if (item.stream === "monitor") return { ...item.event.ids };
   const out: Record<string, string> = {};

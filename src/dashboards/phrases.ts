@@ -83,6 +83,22 @@ const scenario: Readonly<Record<string, Phrase>> = {
   ),
   "fault.note.prepared": p("Нарушитель (ПР): подготовка к нарушению {test}", "Violator (ПР): preparing violation {test}"),
   "fault.sent": p("Нарушитель (ПР): нарушающий запрос {test} отправлен", "Violator (ПР): violating request {test} sent"),
+  // Эмулятор клиента «Авто» (П5, доп. 1): решение за человека принимает эмулятор — каждое помечено.
+  "client.auto_on": p("Эмулятор клиента: «Решения людей» — «Авто» (только прогон тестов)", "Client emulator: “Human decisions” — “Auto” (test runs only)"),
+  "client.auto_off": p("Эмулятор клиента: «Решения людей» — «Вручную»", "Client emulator: “Human decisions” — “Manual”"),
+  "client.cart_agreed": p("Эмулятор клиента: «согласен» на карточку корзины[ {merchant_id}] по поручению[ {mandate_id}]", "Client emulator: “agree” to the cart card[ {merchant_id}] under mandate[ {mandate_id}]"),
+  "client.cart_failed": p("Эмулятор клиента: ответ на карточку корзины не принят[ — {code}]", "Client emulator: the answer to the cart card was not accepted[ — {code}]"),
+  "client.signed": p("Эмулятор клиента: подписал поручение[ {mandate_id}] в банке", "Client emulator: signed mandate[ {mandate_id}] in the bank"),
+  "client.cart_rejected": p("Эмулятор клиента: отказался от корзины[ {mandate_id}] в банке", "Client emulator: refused cart[ {mandate_id}] in the bank"),
+  "client.sign_failed": p("Эмулятор клиента: подпись поручения[ {mandate_id}] не прошла[ — {code}]", "Client emulator: signing mandate[ {mandate_id}] failed[ — {code}]"),
+  "client.confirmed": p("Эмулятор клиента: подтвердил запрос[ {confirmation_id}] в банке", "Client emulator: approved request[ {confirmation_id}] in the bank"),
+  "client.confirm_rejected": p("Эмулятор клиента: отклонил запрос[ {confirmation_id}] в банке", "Client emulator: rejected request[ {confirmation_id}] in the bank"),
+  "client.confirm_failed": p("Эмулятор клиента: решение по запросу[ {confirmation_id}] не прошло[ — {code}]", "Client emulator: the decision on request[ {confirmation_id}] failed[ — {code}]"),
+  "client.revoked": p("Эмулятор клиента: отозвал поручение[ {mandate_id}] в банке", "Client emulator: revoked mandate[ {mandate_id}] in the bank"),
+  "client.revoke_failed": p("Эмулятор клиента: отзыв поручения[ {mandate_id}] не прошёл[ — {code}]", "Client emulator: revoking mandate[ {mandate_id}] failed[ — {code}]"),
+  // Сбой стенда «П», взведённый человеком (П-11.2б).
+  "stand_fault.armed": p("Сбой стенда (П) {test} взведён человеком[ — продавец {merchant_id}]", "Stand fault (П) {test} armed by a person[ — merchant {merchant_id}]"),
+  "stand_fault.disarmed": p("Сбой стенда (П) {test} снят человеком", "Stand fault (П) {test} disarmed by a person"),
   "fault.failed": p("Нарушитель (ПР): нарушение {test} не разыграно — {code}", "Violator (ПР): violation {test} not played — {code}"),
   "run.expired": p("Начат сюжет 10 «Срок поручения истёк»", "Scenario 10 “The mandate has expired” started"),
   "expiry.wait": p("Поручение[ {mandate_id}] действует до {valid_to} — сюжет ждёт конца срока", "Mandate[ {mandate_id}] is valid until {valid_to} — the scenario waits for it to expire"),
@@ -198,6 +214,10 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   NO_SECOND_MERCHANT: p("нет второго продавца на стенде", "no second merchant on the stand"),
   INSTRUCTION_NOT_SERVED: p("витрина не отдала инструкцию — записи стенда нет", "the shop did not serve the instruction — no stand record"),
   ARM_REJECTED: p("стенд не взвёл сбой для нарушения", "the stand refused to arm the fault for the violation"),
+  ARMED_ELSEWHERE: p(
+    "сбой стенда уже взведён — не на витрину нарушителя или неизвестно куда; нарушение не идёт по чужому сбою",
+    "the stand fault is already armed — on another shop or on an unknown one; the violation does not run on someone else's fault",
+  ),
   ORDER_ID_MALFORMED: p("номер заказа в ответе витрины не по форме", "the order number in the shop reply is malformed"),
   FIRST_PAYMENT_NOT_AUTHORIZED: p(
     "у Платформы нет авторизованной первой оплаты заказа с номером операции по форме — повторять нечего",

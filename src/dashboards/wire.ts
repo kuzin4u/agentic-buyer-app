@@ -73,6 +73,10 @@ export type WireItem =
 /** Заголовок ответа ленты `/events`: номер экземпляра шины. Новый номер — лента начата заново, seq снова с 1. */
 export const INSTANCE_HEADER = "x-bus-instance";
 
+/** Заголовок запроса ленты `/events`: `1` — с журналом стенда (поток `stand`, П-11.2а). Без него лента журнал не отдаёт:
+ *  страница монитора его не просит и неизвестный поток не рисует строкой консоли (ревью П-11.2а № 1). */
+export const STAND_LOG_HEADER = "x-stand-log";
+
 export const seqOfItem = (i: WireItem): number => (i.stream === "monitor" ? i.event.seq : i.line.seq);
 
 /** Машинный код: тот же образец, что у шины. Иное (текст продавца) не переносится (инварианты 1, 4). */
@@ -209,6 +213,59 @@ export function parseWireItem(raw: unknown): WireItem | undefined {
     return line && { stream: "scenario", line };
   }
   return undefined;
+}
+
+// --- Журнал сбоев и действий демо-стенда — поток линии `stand` (П-11.2а, Р-1514) ---
+// Только при режиме сбоев стенда (`DEMO_FAULTS=1`). Записи — не действия участников: в `interpret` они не идут, лента экранов
+// отдаёт их отдельно (`feed.ts`, событие `stand`) — для движка условий пульта. Форма записи — контракт `src/pult/standlog.ts`
+// (`StandLogEntry`) и `stand.demo.log()` стенда v0.48.0; перечни — свои копии (экраны не импортируют пульт и Платформу), их
+// равенство с пультом и стендом проверяет тест. Поле `review` записи «Передать на разбор» на линию не идёт.
+
+export const WIRE_STAND_TESTS = ["Н-01", "Н-02", "Н-03", "Н-04", "Н-05", "Н-06", "Н-07", "Н-08", "Н-09", "Н-10", "Н-11", "Н-12"] as const;
+export const WIRE_STAND_WHAT = [
+  "ARMED", "DISARMED", "MARKED", "PAID_BEFORE_OUTCOME", "FULFILLED_BEFORE_OUTCOME", "INSTRUCTION_SERVED", "UPK_CODE_LEAKED",
+  "OUTCOME_EVENT_DELAYED", "OUTCOME_EVENTS_REORDERED", "SECOND_CREDENTIAL_ISSUED", "PURCHASE_STOPPED", "CONFIRMATION_REJECTED",
+  "CLIENT_REMINDED", "REMIND_REPEATED", "MANDATE_REVOKED", "ACTION_REFUSED", "SENT_TO_REVIEW",
+] as const;
+export const WIRE_STAND_ID_KEYS = ["mandate_id", "confirmation_id", "op_ref", "merchant_id", "shop_id", "order_id", "order_ref"] as const;
+
+/** Запись журнала стенда: `seq` — номер журнала стенда (не шины), `at` — часы стенда. */
+export interface WireStandEntry {
+  readonly seq: number;
+  readonly at: string;
+  readonly kind: "fault" | "action";
+  readonly test?: (typeof WIRE_STAND_TESTS)[number];
+  readonly what: (typeof WIRE_STAND_WHAT)[number];
+  readonly ids: Partial<Record<(typeof WIRE_STAND_ID_KEYS)[number], string>>;
+}
+
+/** Строка потока `stand`: `seq` — номер шины (общий счёт с остальными потоками), `entry` — запись журнала стенда. */
+export interface WireStandLine {
+  readonly seq: number;
+  readonly at: string;
+  readonly entry: WireStandEntry;
+}
+
+export type WireStandItem = { readonly stream: "stand"; readonly line: WireStandLine };
+
+function parseStandEntry(e: unknown): WireStandEntry | undefined {
+  if (!isObj(e) || !isSeq(e.seq) || !isAt(e.at) || (e.kind !== "fault" && e.kind !== "action") || !isIn(WIRE_STAND_WHAT, e.what) || !isObj(e.ids))
+    return undefined;
+  if (e.test !== undefined && !isIn(WIRE_STAND_TESTS, e.test)) return undefined;
+  const ids: Partial<Record<(typeof WIRE_STAND_ID_KEYS)[number], string>> = {};
+  for (const [k, v] of Object.entries(e.ids)) {
+    // Идентификатор вне перечня или не строка — запись не по форме целиком (fail-closed), а не «без поля».
+    if (!isIn(WIRE_STAND_ID_KEYS, k) || !isStr(v) || v === "") return undefined;
+    ids[k] = v;
+  }
+  return { seq: e.seq, at: e.at, kind: e.kind, ...(e.test !== undefined && { test: e.test }), what: e.what, ids };
+}
+
+/** Строка потока `stand` из линии; иной поток или запись не по форме — undefined. */
+export function parseWireStand(raw: unknown): WireStandItem | undefined {
+  if (!isObj(raw) || raw.stream !== "stand" || !isObj(raw.line) || !isSeq(raw.line.seq) || !isAt(raw.line.at)) return undefined;
+  const entry = parseStandEntry(raw.line.entry);
+  return entry && { stream: "stand", line: { seq: raw.line.seq, at: raw.line.at, entry } };
 }
 
 // --- Снимок реестров диагностики (Р-1273 п. 3, Р-1275 п. 1) ---

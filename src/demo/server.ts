@@ -10,8 +10,9 @@ import { parseBrand, type Brand } from "../brand.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
 import { localStandSource } from "../dashboards/source.js";
-import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
-import type { MonitorBus } from "./bus.js";
+import { INSTANCE_HEADER, STAND_LOG_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
+import type { BusItem, MonitorBus } from "./bus.js";
+import { isStandFaultTest, type StandFaultResult, type StandFaultTest } from "./stand-faults.js";
 import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
@@ -71,7 +72,20 @@ export interface MonitorServerOptions {
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
   /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
-  faulty?: { start(test: FaultTest): FaultStart; abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } };
+  faulty?: {
+    start(test: FaultTest, o?: { humanArm?: { readonly shop_id?: string; readonly merchant_id?: string } }): FaultStart;
+    abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" };
+  };
+  /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
+   *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
+  clientEmulator?: { setAuto(on: boolean): boolean };
+  /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев: маршрут
+   *  `POST /stand-fault/<Н-xx>/arm|disarm`. Нет — маршрута нет (404). */
+  standFaults?: {
+    arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult;
+    disarm(test: StandFaultTest): StandFaultResult;
+    armedTarget(test: StandFaultTest): { readonly shop_id?: string; readonly merchant_id?: string } | undefined;
+  };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -333,11 +347,41 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       }
       if (isFaultTest(test)) {
         if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
-        const r = o.faulty.start(test);
+        // Куда сбой этого теста взвёл человек (П-11.2г, Р-1520): драйвер идёт только по взводу на витрину нарушителя.
+        const humanArm = isStandFaultTest(test) ? o.standFaults?.armedTarget(test) : undefined;
+        const r = o.faulty.start(test, humanArm ? { humanArm } : {});
         return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
       }
       // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
       return send(res, 404, plain, t(lang, "http.not_found"));
+    }
+    // Сбой стенда «П» человеком (П-11.2б, В10): только POST, только при режиме сбоев, только со страниц этого сервера (Origin);
+    // тест — только из перечня «П», настройки — параметрами адреса из перечня теста. Всё прочее под `/stand-fault/` — 404; без
+    // режима сбоев — 404 на любой путь, до разбора (как `/fault/`). Путь сверяется сырым — раскодируется только сегмент теста,
+    // `%2F` разделителем не становится (ревью П-11.2б № 3).
+    if (u.pathname.startsWith("/stand-fault/")) {
+      if (!o.standFaults) return send(res, 404, plain, t(lang, "http.not_found"));
+      const m = /^\/stand-fault\/([^/]+)\/(arm|disarm)$/.exec(u.pathname);
+      let test: string | undefined;
+      try {
+        test = m ? decodeURIComponent(m[1]!) : undefined;
+      } catch {
+        test = undefined;
+      }
+      if (req.method !== "POST" || !m || test === undefined || !isStandFaultTest(test)) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const r = m[2] === "arm" ? o.standFaults.arm(test, u.searchParams) : o.standFaults.disarm(test);
+      return send(res, r.ok ? 200 : r.code === "BAD_OPTION" ? 400 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
+    // «Решения людей: Авто» (П5 п. 4, доп. 1; Р-1499): только POST, только при эмуляторе (его создаёт лишь сборка `run.ts` при
+    // режиме сбоев), только со страниц этого сервера (Origin), без тела. Всё прочее под `/client/` — 404 на любой метод, и при
+    // эмуляторе тоже: маршрута нет, а не «метод не тот» (намеренное отличие от `/fault/`, где иной метод получает 405). После
+    // закрытия эмулятора (окно до закрытия сервера) ответ — `{auto: false}`.
+    if (u.pathname.startsWith("/client/")) {
+      const auto = /^\/client\/auto\/(on|off)$/.exec(u.pathname);
+      if (req.method !== "POST" || !o.clientEmulator || !auto) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      return send(res, 200, "application/json; charset=utf-8", JSON.stringify({ auto: o.clientEmulator.setAuto(auto[1] === "on") }));
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {
@@ -449,7 +493,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             connection: "keep-alive",
           });
           sseWrite(res, { type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() });
-          const off = f.subscribe((e: FeedEvent) => void sseWrite(res, e));
+          // Журнал стенда (`stand`, П-11.2а) экрану «Интерпретация» не нужен — он для движка пульта.
+          const off = f.subscribe((e: FeedEvent) => void (e.type !== "stand" && sseWrite(res, e)));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -482,8 +527,12 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           connection: "keep-alive",
           [INSTANCE_HEADER]: instance,
         });
-        for (const item of o.bus.history()) sseWrite(res, item);
-        const off = o.bus.subscribe((item) => void sseWrite(res, item));
+        // Журнал стенда (поток `stand`, П-11.2а) — только по заголовку STAND_LOG_HEADER (источник дашбордов): страница монитора
+        // его не просит и неизвестный поток не рисует строкой консоли (ревью П-11.2а № 1).
+        const withStand = req.headers[STAND_LOG_HEADER] === "1";
+        const pass = (item: BusItem) => withStand || item.stream !== "stand";
+        for (const item of o.bus.history()) if (pass(item)) sseWrite(res, item);
+        const off = o.bus.subscribe((item) => void (pass(item) && sseWrite(res, item)));
         sse.add(res);
         req.on("close", () => {
           off();

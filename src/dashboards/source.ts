@@ -2,7 +2,18 @@
 // получают записи шины и снимок реестров диагностики только через DashboardSource: сейчас — локальный стенд по HTTP
 // (`localStandSource`), для ACC-2 — песочница только на чтение, через Платформу. Код агента и Платформы не импортируется.
 // Источник только читает: методов, которые что-то меняют на стенде, у него нет.
-import { INSTANCE_HEADER, isHiddenScenarioItem, parseDiagSnapshot, parseWireItem, seqOfItem, type DiagSnapshot, type WireItem } from "./wire.js";
+import {
+  INSTANCE_HEADER,
+  isHiddenScenarioItem,
+  parseDiagSnapshot,
+  parseWireItem,
+  parseWireStand,
+  seqOfItem,
+  STAND_LOG_HEADER,
+  type DiagSnapshot,
+  type WireItem,
+  type WireStandItem,
+} from "./wire.js";
 
 /** `reset` — источник начал ленту заново (перезапуск стенда): потребитель сбрасывает то, что накопил. */
 export type SourceStatus = "connecting" | "open" | "reset" | "closed";
@@ -29,6 +40,9 @@ export interface DashboardSource {
    *  приёме, а уходит после ожидания суммы (шина демо-стенда, ревью К2.2б Н3). Вернуть — отписка; линию закрывает
    *  только `close()`, отписка последнего слушателя её не останавливает. */
   subscribe(onItem: (item: WireItem) => void): () => void;
+  /** Журнал сбоев и действий стенда — поток линии `stand` (П-11.2а, Р-1514), только при режиме сбоев; отдельно от записей
+   *  участников. Повторы номеров источник отсекает сам, как у записей. Необязателен: источник без журнала (песочница ACC-2) его не даёт. Вернуть — отписка. */
+  subscribeStand?(onItem: (item: WireStandItem) => void): () => void;
   /** Состояние линии; слушатель сразу получает текущее. Вернуть — отписка. */
   onStatus(listener: (s: SourceStatus) => void): () => void;
   /** Снимок реестров диагностики источника. */
@@ -68,10 +82,23 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
   const seenLimit = o.seenLimit ?? 10_000;
   const closeWaitMs = o.closeWaitMs ?? 1000;
   const items = new Set<(i: WireItem) => void>();
+  const stands = new Set<(i: WireStandItem) => void>();
   const statuses = new Set<(s: SourceStatus) => void>();
   /** Полученные номера по потокам, в порядке получения: Set хранит порядок вставки, старые вытесняются по пределу потока.
-   *  Шумная консоль не вытесняет номера монитора (ревью К1.2 Н1). */
-  const seen: Record<WireItem["stream"], Set<number>> = { monitor: new Set(), console: new Set(), scenario: new Set() };
+   *  Шумная консоль не вытесняет номера монитора (ревью К1.2 Н1); журнал стенда — тоже свой поток. */
+  const seen: Record<WireItem["stream"] | WireStandItem["stream"], Set<number>> = {
+    monitor: new Set(),
+    console: new Set(),
+    scenario: new Set(),
+    stand: new Set(),
+  };
+  const remember = (stream: keyof typeof seen, seq: number): boolean => {
+    const s = seen[stream];
+    if (s.has(seq)) return false;
+    s.add(seq);
+    if (s.size > seenLimit) s.delete(s.values().next().value!);
+    return true;
+  };
   const clearSeen = () => Object.values(seen).forEach((s) => s.clear());
   let instance: string | undefined;
   let status: SourceStatus = "closed";
@@ -111,17 +138,29 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
     }
     // Шаг, скрытый по правилу (код «SMS банка»), — не испорченная запись: в счётчик не идёт (ревью К1.2 Н3).
     if (isHiddenScenarioItem(raw)) return;
+    // Журнал стенда — свой поток и свои слушатели: в записи участников (и в `interpret`) он не попадает.
+    if (typeof raw === "object" && raw !== null && (raw as { stream?: unknown }).stream === "stand") {
+      const st = parseWireStand(raw);
+      if (!st) {
+        rejected++;
+        return;
+      }
+      if (!remember("stand", st.line.seq)) return;
+      for (const l of [...stands])
+        try {
+          l(st);
+        } catch {
+          // Сбой слушателя не обрывает линию и не мешает остальным.
+        }
+      return;
+    }
     const item = parseWireItem(raw);
     if (!item) {
       rejected++;
       return;
     }
     // История приходит заново на каждом подключении: уже переданные номера не повторяются.
-    const seq = seqOfItem(item);
-    const s = seen[item.stream];
-    if (s.has(seq)) return;
-    s.add(seq);
-    if (s.size > seenLimit) s.delete(s.values().next().value!);
+    if (!remember(item.stream, seqOfItem(item))) return;
     for (const l of [...items])
       try {
         l(item);
@@ -131,7 +170,8 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
   };
 
   const readOnce = async (signal: AbortSignal) => {
-    const res = await fetch(new URL("/events", base), { signal, redirect: "error", headers: { accept: "text/event-stream" } });
+    // С журналом стенда (поток `stand`, П-11.2а) — по заголовку: без него лента журнал не отдаёт (страница монитора).
+    const res = await fetch(new URL("/events", base), { signal, redirect: "error", headers: { accept: "text/event-stream", [STAND_LOG_HEADER]: "1" } });
     if (closed) {
       // Ответ пришёл, когда close() уже вызван (гонка в один такт или fetch, не слушающий отмену) — тело не читается.
       await res.body?.cancel().catch(() => undefined);
@@ -211,6 +251,11 @@ export function localStandSource(baseUrl: string, o: LocalStandSourceOptions = {
       items.add(onItem);
       if (!loop && !closed) loop = run();
       return () => void items.delete(onItem);
+    },
+    subscribeStand(onItem) {
+      stands.add(onItem);
+      if (!loop && !closed) loop = run();
+      return () => void stands.delete(onItem);
     },
     onStatus(listener) {
       statuses.add(listener);

@@ -14,7 +14,8 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv } from "../../src/da
 import { parseDiagSnapshot, parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { ScenarioLine } from "../../src/demo/bus.js";
 import { FAULT_TESTS, type FaultTest } from "../../src/demo/fault-tests.js";
-import { BRANCH_STEPS, FAULT_PLAN, FaultyDriver, ID_FIELDS, n08Branch, n09Branch, otherMerchant, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
+import { CODE_WORDS } from "../../src/dashboards/phrases.js";
+import { BRANCH_STEPS, BRANCH_STOP_CODES, FAULT_PLAN, FaultyDriver, SETTLE_CODES, STOP_CODES, ID_FIELDS, n08Branch, n09Branch, otherMerchant, type BranchStep, type FaultBranch, type FaultContext, type Guard } from "../../src/demo/faulty.js";
 import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { DemoScenarios } from "../../src/demo/scenarios.js";
@@ -1227,13 +1228,14 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(demo.stand.merchantCalls().slice(callsFrom)).toEqual([]);
     });
 
-    it("Н-05, взведённый до прогона (человеком, сбой «П»), драйвер не трогает: ни перезаписи, ни снятия", async () => {
+    it("Н-05, взведённый до прогона (человеком, сбой «П») на все витрины, драйвер не трогает: ни перезаписи, ни снятия", async () => {
       demo.stand.stand.demo!.arm("Н-05");
       try {
         const from = log().length;
         const n = steps().length;
         const d = real();
-        d.start("Н-05");
+        // Взвод человека на все витрины покрывает витрину нарушителя (П-11.2г): сведения о взводе — от маршрута сбоев «П».
+        d.start("Н-05", { humanArm: {} });
         await d.settled();
         expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.recorded", params: { test: "Н-05" } });
         expect(log().slice(from).filter((e) => e.test === "Н-05" && (e.what === "ARMED" || e.what === "DISARMED"))).toEqual([]);
@@ -1244,6 +1246,43 @@ describe("драйвер нарушителя «ПР» — при режиме �
       }
       expect(n05Armed()).toBe(false);
     });
+
+    it("П-11.2г (б): Н-05 взведён, а куда — драйвер не знает (или не на витрину нарушителя) — «не разыграно» ARMED_ELSEWHERE: ветка не идёт, взвод цел", async () => {
+      demo.stand.stand.demo!.arm("Н-05");
+      try {
+        for (const o of [{}, { humanArm: { shop_id: "SHOP-0000" } }, { humanArm: { merchant_id: "MRC-OTHER" } }]) {
+          const from = log().length;
+          const n = steps().length;
+          let ran = false;
+          const d = withBranch(async () => void (ran = true));
+          d.start("Н-05", o);
+          expect(d.holds("Н-05")).toBe(false);
+          await d.settled();
+          expect(ran, JSON.stringify(o)).toBe(false);
+          expect(steps().slice(n).at(-1), JSON.stringify(o)).toMatchObject({ step: "fault.failed", params: { test: "Н-05", code: "ARMED_ELSEWHERE" } });
+          expect(log().slice(from).filter((e) => e.test === "Н-05"), JSON.stringify(o)).toEqual([]); // ни пометки, ни снятия
+          expect(n05Armed()).toBe(true);
+          await d.close();
+        }
+      } finally {
+        demo.stand.stand.demo!.disarm("Н-05");
+      }
+    });
+  });
+
+  it("Р-1511, Р-1520 (б): каждый код итога драйвера — в закрытом перечне и с фразой ru/en в CODE_WORDS; коды в исходнике драйвера — только из перечня", () => {
+    const codes = [...STOP_CODES, ...BRANCH_STOP_CODES, ...SETTLE_CODES, ...Object.values(FAULT_PLAN).flatMap((p) => (p.recordOnly ? [p.recordOnly.missing] : []))];
+    expect(codes).toContain("ARMED_ELSEWHERE");
+    for (const c of codes) {
+      const w = CODE_WORDS[c];
+      expect(w?.ru.trim(), c).toBeTruthy();
+      expect(w?.en.trim(), c).toBeTruthy();
+    }
+    // Остановка в исходнике драйвера — `stop ??= "X"`, `halt("X")`, `new BranchStop("X")`, `unplayed("X")` / `failed("X")`: X — из перечня.
+    const src = readFileSync(resolve(import.meta.dirname, "../../src/demo/faulty.ts"), "utf8");
+    const used = [...src.matchAll(/(?:stop \?\?= |halt\(|new BranchStop\(|unplayed\(|failed\()"([A-Z_]+)"/g)].map((m) => m[1]!);
+    expect(used.length).toBeGreaterThan(5);
+    expect(used.filter((c) => !codes.includes(c))).toEqual([]);
   });
 
   it("тексты итоговых шагов — с пометкой «нарушитель (ПР)», ru и en; «не помечено» — только у fault.failed", () => {
