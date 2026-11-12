@@ -270,19 +270,52 @@ describe("П-11.2в: человек и драйвер «ПР» не мешают
       if (how === "abort") await d.close();
     });
 
-  it("взвод человека до ветки драйвер не трогает и не «держит» — человек снимает его сам", async () => {
-    const shop = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+  it("П-11.2г (а): взвод человека на витрину нарушителя ветка держит всё время (человек — 409) и не снимает; после ветки человек снимает сам", async () => {
     let release!: () => void;
     const gate = new Promise<void>((ok) => (release = ok));
     const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), { branches: { "Н-05": { run: async () => gate } }, otherBusy: () => demo.scenarios.busy });
     const human = new StandFaults({ demo: demo.stand.stand.demo!, currentMerchant: () => undefined, emit: (s) => demo.bus.scenario(s), held: (t) => d.holds(t) });
-    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${shop.id}`))).toMatchObject({ ok: true });
-    expect(d.start("Н-05")).toEqual({ ok: true });
-    expect(d.holds("Н-05")).toBe(false); // взвод человека уже был — драйвер его не взводил и не держит (сразу, без ожидания)
+    const log = () => demo.stand.stand.demo!.log();
+    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${VIOLATOR_SHOP.id}`))).toMatchObject({ ok: true });
+    expect(human.armedTarget("Н-05")).toEqual({ shop_id: VIOLATOR_SHOP.id });
+    const from = log().length;
+    expect(d.start("Н-05", { humanArm: human.armedTarget("Н-05")! })).toEqual({ ok: true });
+    expect(d.holds("Н-05")).toBe(true); // сразу, в том же такте
+    expect(human.disarm("Н-05")).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
+    expect(human.arm("Н-05", new URLSearchParams(`shop_id=${VIOLATOR_SHOP.id}`))).toEqual({ ok: false, code: "HELD_BY_DRIVER" });
     release();
     await d.settled();
-    expect(human.disarm("Н-05")).toMatchObject({ ok: true }); // сбой человека цел — драйвер его не снял
+    expect(d.holds("Н-05")).toBe(false);
+    expect(log().slice(from).filter((e) => e.test === "Н-05" && (e.what === "ARMED" || e.what === "DISARMED"))).toEqual([]); // драйвер не взводил и не снимал
+    expect(human.disarm("Н-05")).toMatchObject({ ok: true }); // сбой человека цел — снимает сам
+    expect(human.armedTarget("Н-05")).toBeUndefined();
     await d.close();
+  });
+
+  it("П-11.2г через сборку: человек взвёл Н-05 на чужую витрину — /fault/Н-05 «не разыграно» ARMED_ELSEWHERE; на витрину нарушителя — ветка идёт по нему, итог «записи стенда сделаны»", async () => {
+    const other = demo.stand.stand.shops.find((s) => s.id !== VIOLATOR_SHOP.id)!;
+    const post = (p: string) => fetch(`${demo.monitor.url}${p}`, { method: "POST", headers: { origin: demo.monitor.url } });
+    const faultSteps = () => demo.bus.history().flatMap((i) => (i.stream === "scenario" && i.line.step.startsWith("fault.") ? [i.line] : []));
+    const runFault = async () => {
+      await demo.faulty!.settled();
+      const n = faultSteps().length;
+      expect((await post(`/fault/${encodeURIComponent("Н-05")}`)).status).toBe(202);
+      await demo.faulty!.settled();
+      return faultSteps().slice(n).at(-1)!;
+    };
+    expect((await post(`/stand-fault/${encodeURIComponent("Н-05")}/arm?shop_id=${other.id}`)).status).toBe(200);
+    try {
+      expect(await runFault()).toMatchObject({ step: "fault.failed", params: { test: "Н-05", code: "ARMED_ELSEWHERE" } });
+    } finally {
+      expect((await post(`/stand-fault/${encodeURIComponent("Н-05")}/disarm`)).status).toBe(200);
+    }
+    expect((await post(`/stand-fault/${encodeURIComponent("Н-05")}/arm?shop_id=${VIOLATOR_SHOP.id}`)).status).toBe(200);
+    try {
+      expect(await runFault()).toMatchObject({ step: "fault.recorded", params: { test: "Н-05" } });
+    } finally {
+      // Взвод человека драйвер не снял — снимает человек.
+      expect((await post(`/stand-fault/${encodeURIComponent("Н-05")}/disarm`)).status).toBe(200);
+    }
   });
 });
 

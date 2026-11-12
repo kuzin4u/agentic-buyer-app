@@ -72,13 +72,20 @@ export interface MonitorServerOptions {
   /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
   faults?: boolean;
   /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
-  faulty?: { start(test: FaultTest): FaultStart; abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" } };
+  faulty?: {
+    start(test: FaultTest, o?: { humanArm?: { readonly shop_id?: string; readonly merchant_id?: string } }): FaultStart;
+    abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" };
+  };
   /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
    *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
   clientEmulator?: { setAuto(on: boolean): boolean };
   /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев: маршрут
    *  `POST /stand-fault/<Н-xx>/arm|disarm`. Нет — маршрута нет (404). */
-  standFaults?: { arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult; disarm(test: StandFaultTest): StandFaultResult };
+  standFaults?: {
+    arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult;
+    disarm(test: StandFaultTest): StandFaultResult;
+    armedTarget(test: StandFaultTest): { readonly shop_id?: string; readonly merchant_id?: string } | undefined;
+  };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -340,7 +347,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       }
       if (isFaultTest(test)) {
         if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
-        const r = o.faulty.start(test);
+        // Куда сбой этого теста взвёл человек (П-11.2г, Р-1520): драйвер идёт только по взводу на витрину нарушителя.
+        const humanArm = isStandFaultTest(test) ? o.standFaults?.armedTarget(test) : undefined;
+        const r = o.faulty.start(test, humanArm ? { humanArm } : {});
         return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
       }
       // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.

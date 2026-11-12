@@ -95,9 +95,19 @@ export interface StandFaultPorts {
 
 export class StandFaults {
   readonly #p: StandFaultPorts;
+  /** Куда взведён сбой человеком — по тесту (П-11.2г, Р-1520): стенд настройки взвода наружу не отдаёт, драйвер «ПР» узнаёт
+   *  их отсюда при запуске (`/fault/<Н-xx>`). Пишется при успешном взводе, стирается при снятии (и при ответе стенда «не
+   *  взведено»). Допущение: цель верна, пока взводят через этот маршрут; взвод мимо него драйвер видит как «неизвестно
+   *  куда» — ARMED_ELSEWHERE. */
+  readonly #targets = new Map<StandFaultTest, { readonly shop_id?: string; readonly merchant_id?: string }>();
 
   constructor(p: StandFaultPorts) {
     this.#p = p;
+  }
+
+  /** Витрина и продавец последнего взвода теста человеком; не взводил — undefined. */
+  armedTarget(test: StandFaultTest): { readonly shop_id?: string; readonly merchant_id?: string } | undefined {
+    return this.#targets.get(test);
   }
 
   arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult {
@@ -115,6 +125,10 @@ export class StandFaults {
     } catch {
       return { ok: false, code: "ARM_REJECTED" };
     }
+    this.#targets.set(test, {
+      ...(options.shop_id !== undefined && { shop_id: options.shop_id }),
+      ...(options.merchant_id !== undefined && { merchant_id: options.merchant_id }),
+    });
     this.#p.emit({
       step: "stand_fault.armed",
       params: {
@@ -136,6 +150,8 @@ export class StandFaults {
     } catch {
       return { ok: false, code: "ARM_REJECTED" };
     }
+    // Стенд говорит, что взвода нет (Н-02 снимается сам при срабатывании; сняли мимо маршрута) — цель тоже стирается.
+    this.#targets.delete(test);
     if (!removed) return { ok: false, code: "NOT_ARMED" };
     this.#p.emit({ step: "stand_fault.disarmed", params: { test } });
     return { ok: true, test, options: {} };
