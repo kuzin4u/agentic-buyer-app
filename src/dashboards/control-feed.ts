@@ -10,7 +10,7 @@
 // Платформы предыдущего могло попасть в следующий прогон — оба помечаются; пометка видна у вердикта и в выгрузке. Относить
 // события к прогону по идентификаторам — П-4 (STATUS «Открыто»).
 import { randomUUID } from "node:crypto";
-import { control, DEFAULT_WAIT_MS, faultOf, splitRuns, type CheckState, type ControlResult, type FaultRun } from "./control.js";
+import { control, DEFAULT_WAIT_MS, faultOf, runDeadline, splitRuns, type CheckState, type ControlResult, type FaultRun } from "./control.js";
 import type { FeedEvent, InterpretFeed } from "./feed.js";
 import type { Interpretation } from "./interpret.js";
 import type { Texts } from "./passports.js";
@@ -47,6 +47,8 @@ export interface RunView {
   readonly verdict?: OwnerVerdict;
   /** Прогон драйвера нарушителя «ПР» (`run.fault`, П-4.1а): код теста и исход; паспорта у него нет. */
   readonly fault?: FaultRun;
+  /** Прогон при эмуляторе клиента «Авто» (П5 п. 3, Р-1507): пометка в акте ACC-1; на экране — П-11.5 (Р-1512). */
+  readonly clientAuto?: true;
 }
 
 /** `epoch` — поколение ленты: новое при создании и при перезапуске источника (номера seq начинаются заново). Экран шлёт
@@ -90,14 +92,18 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
     const now = o.now();
     const runs = splitRuns([...items.values()]);
     const results = runs.map((r) => (r.passport ? control(r.passport, r.items, { now, startedAt: r.startedAt, waitMs }) : undefined));
+    // Срок прогона без паспорта — по тому же правилу, что у контролёра: от последней записи, а не от метки (ревью К2.3б № 6,
+    // П-4.3); прогон «ПР» длинный, и от метки пометка раннего запуска у следующего вставала ложно или не вставала.
+    const deadlines = runs.map((r, i) => (results[i] ? Date.parse(results[i]!.deadline) : runDeadline(r.items, r.startedAt, waitMs)));
     views = runs.map((r, i) => {
-      const deadline = results[i] ? Date.parse(results[i]!.deadline) : r.startedAt.getTime() + waitMs;
+      const deadline = deadlines[i]!;
       const next = runs[i + 1];
-      const prevDeadline = i > 0 ? (results[i - 1] ? Date.parse(results[i - 1]!.deadline) : runs[i - 1]!.startedAt.getTime() + waitMs) : undefined;
+      const prevDeadline = i > 0 ? deadlines[i - 1] : undefined;
       const v = verdicts.get(r.startSeq);
       const fault = faultOf(r);
       return {
         ...(fault && { fault }),
+        ...(r.clientAuto && { clientAuto: true as const }),
         key: r.startSeq,
         name: r.name,
         ...(r.passport && { no: r.passport.no, title: r.passport.title }),
@@ -169,7 +175,7 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
     markdown(lang) {
       const head = (["col.no", "col.scenario", "col.started", "col.state", "col.accepted", "col.verdict", "col.notes", "col.failed"] as const).map((k) => L(k, lang));
       const rows = views.map((v) => {
-        const notes = [v.early.next && L("early.next", lang), v.early.prev && L("early.prev", lang)].filter(Boolean).join("; ");
+        const notes = [v.clientAuto && L("client.auto", lang), v.early.next && L("early.next", lang), v.early.prev && L("early.prev", lang)].filter(Boolean).join("; ");
         // Прогон «ПР» (П-4.1а): «Нарушитель (ПР) — Н-xx» и исход по последнему шагу исхода; вердикта нет — паспорта нет.
         if (!v.result && v.fault) return [String(v.key), faultTitle(v.fault, lang), v.startedAt, faultText(v.fault, lang), "—", "—", notes || L("export.none", lang), "—"];
         if (!v.result) return [String(v.key), v.name, v.startedAt, L("no.passport", lang), "—", "—", notes || L("export.none", lang), "—"];
@@ -203,11 +209,15 @@ export function createControlFeed(feed: InterpretFeed, o: ControlFeedOptions): C
 
 /** Ячейка Markdown-таблицы выгрузки для акта ACC-1 (К2.3в; находка CodeQL `js/incomplete-sanitization` на PR #7):
  *  сначала «\» — иначе «\|» из входа стал бы «\\|», то есть экранированная косая и настоящий разделитель колонки; затем «|»;
- *  перевод строки — пробел; затем «&» (первым из сущностей), «<», «>» — чтобы HTML в акте не отрисовывался. */
+ *  прочая разметка Markdown «` [ ] * _» — обратной косой (П-4.3, ревью К2.3в № 2); перевод строки — пробел; затем «&»
+ *  (первым из сущностей), «<», «>» — чтобы HTML в акте не отрисовывался. Автоссылки GFM и «~~» не нейтрализуются — STATUS
+ *  «Открыто» (ревью П-4.3 № 3). */
 export function markdownCell(s: string): string {
   return s
     .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")
+    // Прочая разметка Markdown — текстом: имя прогона из метки шины не станет ссылкой или выделением (ревью К2.3в № 2, П-4.3).
+    .replace(/[`[\]*_]/g, (c) => "\\" + c)
     .replace(/[\r\n]+/g, " ")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

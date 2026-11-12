@@ -32,20 +32,37 @@ export interface Run {
   readonly startedAt: Date;
   /** Записи прогона по возрастанию seq, метка — первой. */
   readonly items: readonly Interpretation[];
+  /** В прогоне работал эмулятор клиента «Авто» (П5 п. 3): режим был включён на метке (последний `client.auto_*` до неё —
+   *  `client.auto_on`) или внутри прогона встретился `client.auto_on` (дополнение к Р-1507, 13.11). */
+  readonly clientAuto: boolean;
 }
 
 const RUN_PREFIX = "run.";
+/** Шаги эмулятора клиента о режиме (окно Б, PR #13; Р-1507): вне прогонов. Перечень сверяется с кодом эмулятора после
+ *  слияния PR #13 (Р-1512). */
+const CLIENT_AUTO_ON = "client.auto_on";
+const CLIENT_AUTO_OFF = "client.auto_off";
 
 /** Разбивка ленты на прогоны по меткам начала сюжета: прогон — от метки до следующей метки. Записи до первой метки — вне
  *  сюжетов, в прогоны не входят; угадывать сюжет по шагам нельзя (Р-1391). Метка неизвестного сюжета начинает прогон без
- *  паспорта — его показывают, но не сверяют (ревью К2.3а № 5). Порядок — по seq шины (П2, дополнение 5). */
+ *  паспорта — его показывают, но не сверяют (ревью К2.3а № 5). Порядок — по seq шины (П2, дополнение 5).
+ *  Шаги режима эмулятора клиента (`client.auto_on` / `client.auto_off`) ни в какой прогон не входят и срок не сдвигают; прогон
+ *  помечается «Авто», если режим был включён на его метке или внутри него встретился `client.auto_on` (Р-1507 и дополнение
+ *  13.11). */
 export function splitRuns(list: readonly Interpretation[]): Run[] {
-  const runs: { name: string; passport?: Passport; startSeq: number; startedAt: Date; items: Interpretation[] }[] = [];
+  const runs: { name: string; passport?: Passport; startSeq: number; startedAt: Date; items: Interpretation[]; clientAuto: boolean }[] = [];
+  let auto = false;
   for (const r of [...list].sort((a, b) => a.seq - b.seq)) {
-    if (r.stream === "scenario" && r.ref.startsWith(RUN_PREFIX)) {
+    if (r.stream === "scenario" && (r.ref === CLIENT_AUTO_ON || r.ref === CLIENT_AUTO_OFF)) {
+      auto = r.ref === CLIENT_AUTO_ON;
+      // Включение внутри прогона помечает прогон — и тогда, когда там же «Авто» выключили: эмулятор работал (дополнение к
+      // Р-1507, ответ чата 13.11 по П-4.3, вариант (а)).
+      const cur = runs[runs.length - 1];
+      if (auto && cur) cur.clientAuto = true;
+    } else if (r.stream === "scenario" && r.ref.startsWith(RUN_PREFIX)) {
       const name = r.ref.slice(RUN_PREFIX.length);
       const passport = PASSPORTS.find((p) => p.name === name);
-      runs.push({ name, ...(passport && { passport }), startSeq: r.seq, startedAt: new Date(r.at), items: [r] });
+      runs.push({ name, ...(passport && { passport }), startSeq: r.seq, startedAt: new Date(r.at), items: [r], clientAuto: auto });
     } else runs[runs.length - 1]?.items.push(r);
   }
   return runs;
@@ -60,7 +77,8 @@ export type FaultOutcome = (typeof FAULT_OUTCOMES)[number];
 export interface FaultRun {
   /** Код теста задания (Н-NN) — из поля шага (`Interpretation.test`), не из текста. */
   readonly test?: string;
-  /** Нет — исхода ещё нет: «идёт», без срока (Р-1510; срок прогона без паспорта — П-4.3). */
+  /** Нет — исхода ещё нет: «идёт» (Р-1510). Срок прогона без паспорта — от последней записи (`runDeadline`, П-4.3); на
+   *  исход он не влияет, только на пометки раннего запуска. */
   readonly outcome?: FaultOutcome;
   /** Код защиты или причины целиком, составной — через запятую (`PREP_FAILED,NO_RESPONSE`; у «остановлено», «не
    *  разыграно», «помечено, но не разыграно»). */
@@ -147,19 +165,45 @@ const processClock = (r: Interpretation) => r.stream !== "monitor" || r.source !
 
 const first = (seqs: readonly number[]) => (seqs.length > 0 ? Math.min(...seqs) : undefined);
 
-/** Сверка прогона сюжета с паспортом. `list` — интерпретации только этого прогона (порядок не важен). */
-export function control(passport: Passport, list: readonly Interpretation[], o: ControlOptions): ControlResult {
-  const waitMs = o.waitMs ?? DEFAULT_WAIT_MS;
+/** Срок ожидания прогона, мс: max(начало, последняя запись по часам шины) + waitMs; события Платформы в отсчёт не входят.
+ *  Одно правило для прогона с паспортом (`control`) и без него (ревью К2.3б № 6, П-4.3). */
+export function runDeadline(list: readonly Interpretation[], startedAt: Date, waitMs: number): number {
   if (!Number.isFinite(waitMs) || waitMs < 0) throw new ControlInputError(`срок ожидания не по форме: ${String(waitMs)}`);
-  const now = time(o.now, "сейчас");
-  let last = time(o.startedAt, "начало прогона");
+  let last = time(startedAt, "начало прогона");
   for (const r of list) {
     if (!processClock(r)) continue;
     const at = Date.parse(r.at);
     if (!Number.isFinite(at)) throw new ControlInputError(`запись ${r.seq}: время не читается`);
     last = Math.max(last, at);
   }
-  const deadline = last + waitMs;
+  return last + waitMs;
+}
+
+/** Индексы наибольшей возрастающей подпоследовательности `fs` (строго по возрастанию); из равных по длине — с наименьшими
+ *  индексами, то есть ближе к порядку паспорта (Р-1386 п. 2, ревью К2.2 № 4). */
+function longestIncreasing(fs: readonly number[]): Set<number> {
+  const n = fs.length;
+  // len[i] — длина наибольшей возрастающей подпоследовательности, начинающейся в i.
+  const len = new Array<number>(n).fill(1);
+  for (let i = n - 1; i >= 0; i--) for (let j = i + 1; j < n; j++) if (fs[j]! > fs[i]! && len[j]! + 1 > len[i]!) len[i] = len[j]! + 1;
+  const keep = new Set<number>();
+  let need = Math.max(0, ...len);
+  let prev = -Infinity;
+  for (let i = 0; i < n && need > 0; i++) {
+    if (len[i] === need && fs[i]! > prev) {
+      keep.add(i);
+      prev = fs[i]!;
+      need--;
+    }
+  }
+  return keep;
+}
+
+/** Сверка прогона сюжета с паспортом. `list` — интерпретации только этого прогона (порядок не важен). */
+export function control(passport: Passport, list: readonly Interpretation[], o: ControlOptions): ControlResult {
+  const waitMs = o.waitMs ?? DEFAULT_WAIT_MS;
+  const now = time(o.now, "сейчас");
+  const deadline = runDeadline(list, o.startedAt, waitMs);
   const open = now < deadline;
 
   const hits = (e: Forbid) => list.filter((r) => matches(r, e.match)).map((r) => r.seq);
@@ -171,14 +215,15 @@ export function control(passport: Passport, list: readonly Interpretation[], o: 
     return { e, seqs, reasons, short };
   });
 
-  // Порядок шагов сюжета (stream scenario): первые совпадения — по возрастанию seq. Отношение «после» — для любых записей.
-  let prev = -Infinity;
+  // Порядок шагов сюжета (stream scenario): первые совпадения — по возрастанию seq. Виновник — шаг вне наибольшей
+  // возрастающей подпоследовательности, а не правильные шаги после опоздавшего (Р-1386 п. 2, ревью К2.2 № 4; П-4.3).
+  const steps = expects.filter((x) => x.e.match.stream === "scenario" && first(x.seqs) !== undefined);
+  const inOrder = longestIncreasing(steps.map((x) => first(x.seqs)!));
+  steps.forEach((x, i) => {
+    if (!inOrder.has(i)) x.reasons.push("order");
+  });
   for (const x of expects) {
     const f = first(x.seqs);
-    if (x.e.match.stream === "scenario" && f !== undefined) {
-      if (f < prev) x.reasons.push("order");
-      else prev = f;
-    }
     if (x.e.after !== undefined && f !== undefined) {
       const before = expects.find((y) => y.e.id === x.e.after);
       const fb = before ? first(before.seqs) : undefined;

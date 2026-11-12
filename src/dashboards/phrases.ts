@@ -377,6 +377,8 @@ export const CONTROL = {
   "no.passport": p("паспорта нет — сюжет не сверяется", "no passport — the scenario is not checked"),
   // Прогон драйвера нарушителя «ПР» (П-4.1а): код теста и исход — из полей шагов, не из текста.
   "fault.title": p("Нарушитель (ПР)", "Violator (ПР)"),
+  // П5 п. 3, Р-1507: прогон при эмуляторе клиента «Авто» — пометка в акте ACC-1 (на экране К2 — П-11.5, Р-1512).
+  "client.auto": p("эмулятор клиента: авто — решения клиента принимал эмулятор", "client emulator: auto — the client's decisions were made by the emulator"),
   "fault.outcome.none": p("идёт — исхода ещё нет", "in progress — no outcome yet"),
   "fault.outcome.marked": p("совершено и помечено на стенде — ловит пульт", "committed and marked on the stand — the console catches it"),
   "fault.outcome.refused": p("остановлено защитой", "stopped by a safeguard"),

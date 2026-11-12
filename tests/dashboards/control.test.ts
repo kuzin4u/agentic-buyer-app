@@ -5,7 +5,7 @@
 // passports.test.ts и живая сверка пяти сюжетов (tests/demo/interpret-live.test.ts).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { control, ControlInputError, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
+import { control, ControlInputError, DEFAULT_WAIT_MS, runDeadline, splitRuns } from "../../src/dashboards/control.js";
 import type { Interpretation } from "../../src/dashboards/interpret.js";
 import { PASSPORTS, type Match, type Passport } from "../../src/dashboards/passports.js";
 
@@ -119,6 +119,26 @@ describe("контролёр (К2.2)", () => {
     expect(item(run(ab, many, end(many) + 1), "b").reasons).toEqual(["too_many", "order"]);
   });
 
+  it("П-4.3 (Р-1386 п. 2, ревью К2.2 № 4): «порядок» — только у опоздавшего шага (вне наибольшей возрастающей подпоследовательности), правильные — без причины", () => {
+    const abcd: Passport = {
+      ...P1,
+      expect: (["a", "b", "c", "d"] as const).map((id) => ({ id, what: P1.title, match: { stream: "scenario" as const, ref: id } })),
+      forbid: [],
+    };
+    const at = (seqs: Record<"a" | "b" | "c" | "d", number>) => Object.entries(seqs).map(([ref, s]) => rec(s, { stream: "scenario", ref }));
+    const orderOf = (list: Interpretation[]) => run(abcd, list, end(list) + W).items.filter((i) => i.reasons.includes("order")).map((i) => i.id);
+    // Опоздал ранний шаг «a»: виноват он один, а не b, c, d (жадная проверка винила бы три правильных).
+    expect(orderOf(at({ a: 40, b: 10, c: 20, d: 30 }))).toEqual(["a"]);
+    // Опоздал средний «b».
+    expect(orderOf(at({ a: 10, b: 40, c: 20, d: 30 }))).toEqual(["b"]);
+    // Два соседа перепутаны (пришли a, c, b, d): из равных по длине (a, b, d и a, c, d) — с наименьшими номерами пунктов
+    // паспорта, a, b, d; виноват «c», пришедший раньше «b».
+    expect(orderOf(at({ a: 10, b: 30, c: 20, d: 40 }))).toEqual(["c"]);
+    // Правильный порядок — без причин; вердикт при нарушении — «не принято».
+    expect(orderOf(at({ a: 10, b: 20, c: 30, d: 40 }))).toEqual([]);
+    expect(run(abcd, at({ a: 40, b: 10, c: 20, d: 30 }), T0 + 10_000).state).toBe("rejected");
+  });
+
   it("итог сюжета раньше события Платформы «оплачено» — «не принято» по отношению «после», а не по порядку шагов (инвариант 6, ревью № 5)", () => {
     // Итог — на своём месте среди шагов сюжета; событие «оплачено» пришло позже итога (seq больше).
     const list = full(P2).map((r) => (r.ref === "operation.authorized" ? { ...r, seq: 10_000 } : r));
@@ -154,6 +174,40 @@ describe("контролёр (К2.2)", () => {
     expect(splitRuns([x(1), x(2)])).toEqual([]);
     // Метка — только шаг сюжета: обращение с ref «run.*» прогон не начинает.
     expect(splitRuns([rec(1, { stream: "monitor", ref: "run.intent" })])).toEqual([]);
+  });
+
+  it("П-4.3 (Р-1507): шаги client.auto_* — вне прогонов, срок не сдвигают; режим «Авто» — по последнему такому шагу до метки", () => {
+    const m = (seq: number, name: string) => rec(seq, { stream: "scenario", ref: `run.${name}` });
+    const x = (seq: number) => rec(seq, { stream: "monitor", ref: "GET /v1/shops" });
+    const auto = (seq: number, on: boolean) => rec(seq, { stream: "scenario", ref: on ? "client.auto_on" : "client.auto_off" });
+    const runs = splitRuns([auto(1, true), m(10, "intent"), x(11), auto(50, false), m(60, "purchase"), x(61), auto(70, true), auto(71, false), m(80, "revoke")]);
+    // «purchase» начат при выключенном режиме, но внутри него включали (70) и выключали (71) — помечен (дополнение 13.11).
+    expect(runs.map((r) => [r.name, r.clientAuto, r.items.map((i) => i.seq)])).toEqual([
+      ["intent", true, [10, 11]],
+      ["purchase", true, [60, 61]],
+      ["revoke", false, [80]],
+    ]);
+    // Шаг client.auto_off в конце прогона его срок не сдвигает.
+    expect(runDeadline(runs[0]!.items, runs[0]!.startedAt, W)).toBe(T0 + 11 + W);
+    expect(splitRuns([m(1, "intent")])[0]!.clientAuto).toBe(false);
+    // Дополнение к Р-1507 (13.11, вариант (а)): «Авто» включили внутри прогона — прогон помечен; включили и выключили внутри
+    // одного прогона — тоже помечен (эмулятор работал); следующий прогон после выключения — без пометки.
+    const mid = splitRuns([m(10, "intent"), x(11), auto(12, true), x(13), m(20, "purchase"), auto(21, true), x(22), auto(23, false), x(24), m(30, "revoke")]);
+    expect(mid.map((r) => [r.name, r.clientAuto])).toEqual([
+      ["intent", true],
+      ["purchase", true],
+      ["revoke", false],
+    ]);
+  });
+
+  it("П-4.3, ревью № 7: runDeadline — ошибки входа те же, что у контролёра (нечитаемое время, срок не по форме); пустой прогон — от начала", () => {
+    const x = rec(5, { stream: "monitor", ref: "GET /v1/shops" });
+    expect(runDeadline([], started, W)).toBe(T0 + W);
+    expect(runDeadline([x], started, W)).toBe(T0 + 5 + W);
+    expect(() => runDeadline([{ ...x, at: "вчера" }], started, W)).toThrow(ControlInputError);
+    expect(() => runDeadline([x], new Date(NaN), W)).toThrow(ControlInputError);
+    expect(() => runDeadline([x], started, -1)).toThrow(ControlInputError);
+    expect(() => runDeadline([x], started, NaN)).toThrow(ControlInputError);
   });
 
   it("срок по умолчанию — не меньше окна перестановки событий Платформы (event_reorder_window_ms, Н-12) с запасом (Р-1386 п. 4)", () => {
