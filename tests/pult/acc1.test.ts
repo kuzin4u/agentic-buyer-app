@@ -132,14 +132,24 @@ describe("К2: ячейка Markdown — текстом (инвариант 4; �
     expect(s).not.toContain("<b>");
     expect(s).toContain("http<span>:</span>//e.x");
     expect(s).toContain("m<span>@</span>e.x");
+    expect(s).toContain("www<span>.</span>e.x");
     expect(s).not.toMatch(/www\./i);
     // вне разрывающего `<span>` нет ни одного `: @ $`
     expect(s.replace(/<span>[:@$]<\/span>/g, "")).not.toMatch(/[:@$]/);
-    expect(s).not.toMatch(/(^|[^\\])[~`*_[\]]/);
+    expect(s).not.toMatch(/(^|[^\\])[`*_[\]]/);
+    // тильда — только ссылкой на символ: `<span>` и обратная косая её не гасят (Р-1550, рендер GitHub)
+    expect(s).toContain("&#126;&#126;s&#126;&#126;");
+    expect(s).not.toContain("~");
   });
-  it("обратная косая в данных не снимает экранирование: «\\~» → «\\\\\\~» (ревью К2 № 8)", () => {
-    expect(acc1MdCell("\\~")).toBe("\\\\\\~");
+  it("обратная косая в данных не снимает экранирование: «\\~» → «\\\\&#126;» (ревью К2 № 8)", () => {
+    expect(acc1MdCell("\\~")).toBe("\\\\&#126;");
     expect(acc1MdCell("\\@")).toBe("\\\\<span>@</span>");
+    expect(acc1MdCell("\\www.e")).toBe("\\\\www<span>.</span>e");
+  });
+  it("в заменах сверх `markdownCell` нет обратной косой: тильда и `www.` не зависят от удвоения косой (Р-1549, CodeQL № 4)", () => {
+    expect(acc1MdCell("~ www.e WWW.E")).toBe("&#126; www<span>.</span>e WWW<span>.</span>E");
+    // данные со своей ссылкой на символ остаются текстом: `&` гасит `markdownCell`
+    expect(acc1MdCell("&#126;")).toBe("&amp;#126;");
   });
   it("акт: заголовок, 25 строк по 8 колонок, итоги и примечание — ru и en; данные с «|» и переводом строки таблицу не ломают", () => {
     const t = withRows({ "П-01": { fact: lit("T|1\n<b> http://e ~~x~~") } });
