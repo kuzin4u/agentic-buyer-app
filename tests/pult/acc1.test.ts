@@ -7,11 +7,13 @@ import {
   ACC1_EXPORT_LABEL,
   ACC1_EXPORTS,
   ACC1_STATUS_LABEL,
+  ACC1_TITLE,
   acc1Csv,
   acc1CsvCell,
   acc1CsvExcel,
   acc1Markdown,
   acc1MdCell,
+  acc1MdTitle,
   acc1Rows,
   acc1Unlinked,
   KNOWN_NOTES,
@@ -194,10 +196,22 @@ describe("К2: ячейка Markdown — текстом (инвариант 4; �
     expect(acc1MdCell("\\@")).toBe("\\\\<span>@</span>");
     expect(acc1MdCell("\\www.e")).toBe("\\\\www<span>.</span>e");
   });
+  it("`#` — обёрткой: `#16`, `owner/repo#9` не станут ссылками на PR; тильда рядом — по-прежнему `&#126;`, не испорчена (ревью К5 № 4, Р-1550)", () => {
+    expect(acc1MdCell("PR #16, kuzin4u/agentic-buyer-app#9")).toBe("PR <span>#</span>16, kuzin4u/agentic-buyer-app<span>#</span>9");
+    expect(acc1MdCell("#1~")).toBe("<span>#</span>1&#126;");
+    // точным сравнением: порядок замен (`#` раньше тильды) держит и эта строка (ревью К7 № 2)
+    expect(acc1MdCell("a#b ~ ##")).toBe("a<span>#</span>b &#126; <span>#</span><span>#</span>");
+    // в замечании акта — тоже: запись с номером PR в данных
+    const md = acc1Markdown(withRows({ "П-01": { fact: lit("см. #16 :#9") } }), "ru");
+    expect(md).toContain("см. <span>#</span>16 <span>:</span><span>#</span>9");
+    // вне обёрток, ссылок на символ и `# ` заголовка решёток нет (ревью К7 № 3)
+    expect(md.replace(/^# /, "").replace(/<span>#<\/span>|&#126;/g, "")).not.toContain("#");
+  });
   it("в заменах сверх `markdownCell` нет обратной косой: тильда и `www.` не зависят от удвоения косой (Р-1549, CodeQL № 4)", () => {
     expect(acc1MdCell("~ www.e WWW.E")).toBe("&#126; www<span>.</span>e WWW<span>.</span>E");
     // данные со своей ссылкой на символ остаются текстом: `&` гасит `markdownCell`
-    expect(acc1MdCell("&#126;")).toBe("&amp;#126;");
+    // (с К7 `#` данных — тоже в `<span>`; рендер GitHub — «&#126;» буквально)
+    expect(acc1MdCell("&#126;")).toBe("&amp;<span>#</span>126;");
   });
   it("акт: заголовок, 25 строк по 8 колонок, итоги и примечание — ru и en; данные с «|» и переводом строки таблицу не ломают", () => {
     const t = withRows({ "П-01": { fact: lit("T|1\n<b> http://e ~~x~~") } });
@@ -211,7 +225,9 @@ describe("К2: ячейка Markdown — текстом (инвариант 4; �
       expect(md.join("\n")).not.toContain("://");
       expect(md.some((l) => l.startsWith(lang === "ru" ? "Итого<span>:</span> тестов 25" : "Total<span>:</span> 25 tests"))).toBe(true);
       // заголовок и примечание — тоже через ячейку (ревью К2 № 9)
-      expect(md[0]).toBe(`# ${acc1MdCell(md[0]!.slice(2).replace(/<span>([:@$])<\/span>/g, "$1"))}`);
+      // с исходной фразой, не с выводом; что заголовок идёт через ячейку — на фразе со спецсимволами (ревью К5 № 2)
+      expect(md[0]).toBe(acc1MdTitle(ACC1_TITLE[lang]));
+      expect(acc1MdTitle("a:#1 ~")).toBe("# a<span>:</span><span>#</span>1 &#126;");
       expect(md[md.length - 1]).toBe(acc1MdCell(TABLE_NOTE[lang]));
     }
   });

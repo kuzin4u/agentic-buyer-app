@@ -141,7 +141,7 @@ const HEAD: Readonly<Record<Acc1Lang, readonly string[]>> = {
   ru: ["№ теста", "Вид", "Ожидание на стенде (MVP, задание v1.1)", "MVP — факт", "MVP — сходится", "Замечание", "Пометки (П5, П7)", "Метка прогона"],
   en: ["Test No.", "Kind", "Expected on the stand (MVP, task v1.1)", "MVP — fact", "MVP — agrees", "Remark", "Marks (П5, П7)", "Run label"],
 };
-const TITLE: Phrase = p("Акт ACC-1 — таблица тестирования пульта (задание v1.1)", "ACC-1 record — console test table (task v1.1)");
+export const ACC1_TITLE: Phrase = p("Акт ACC-1 — таблица тестирования пульта (задание v1.1)", "ACC-1 record — console test table (task v1.1)");
 const UNLINKED_LABEL: Phrase = p("Записи без строки теста", "Records not linked to a test row");
 
 const marks = (r: Acc1Row, lang: Acc1Lang): string =>
@@ -162,18 +162,24 @@ const cells = (r: Acc1Row, lang: Acc1Lang): string[] => [
  *  - символ, который является разметкой при разборе, гасится ссылкой на символ: `~` → `&#126;` — по CommonMark ссылка на
  *    символ разметкой не бывает, и `~~s~~` из данных показывается буквально; `<span>` её не гасит: тильда в нём
  *    становится пустым зачёркиванием и пропадает из текста;
- *  - символ, который GitHub достраивает после разбора, гасится `<span>`: `:`, `@`, `$` и точка после `www` — иначе
- *    ссылка на почту, упоминание, эмодзи, формула, `www.`-ссылка (`http<span>:</span>//`, `m<span>@</span>e.x`,
- *    `www<span>.</span>e.x`); у `: @ $` обратная косая не гасит, у точки после `www` гасит, но `<span>` выбран, чтобы
- *    в заменах не было косой.
+ *  - символ, который GitHub достраивает после разбора, гасится `<span>`: `:`, `@`, `$`, `#` и точка после `www` — иначе
+ *    ссылка на почту, упоминание, эмодзи, формула, ссылка на задачу или PR (`#16`, `owner/repo#9`), `www.`-ссылка
+ *    (`http<span>:</span>//`, `m<span>@</span>e.x`, `<span>#</span>16`, `www<span>.</span>e.x`); у `: @ $` обратная
+ *    косая не гасит, у точки после `www` гасит, но `<span>` выбран, чтобы в заменах не было косой.
+ *  `#` гасится первым: в ссылке на символ `&#126;`, которую ставит замена тильды, тоже есть `#` (ревью К5 № 4).
+ *  `GH-N` и голый хэш коммита GitHub тоже делает ссылками — не гасятся, после MVP (STATUS «Открыто»).
  *  Обратной косой в этих заменах нет: правильность не зависит от того, удвоила ли `markdownCell` косую раньше (CodeQL
  *  `js/incomplete-sanitization`, оповещение № 4). `&#126;` и `<span>` — разметка акта, не данные. */
 export function acc1MdCell(s: string): string {
   return markdownCell(s)
+    .replace(/#/g, "<span>#</span>")
     .replace(/~/g, "&#126;")
     .replace(/(www)\./gi, "$1<span>.</span>")
     .replace(/[:@$]/g, (c) => `<span>${c}</span>`);
 }
+
+/** Заголовок акта: `# ` — разметка акта, текст — через ячейку (ревью К2 № 9, ревью К5 № 2). */
+export const acc1MdTitle = (s: string): string => `# ${acc1MdCell(s)}`;
 
 /** Ячейка CSV (RFC 4180): всегда в кавычках, кавычка — удвоением; перевод строки — пробел; начало `= + - @` и табуляция,
  *  в том числе после пробелов, — с апострофом, чтобы таблица не приняла текст за формулу (ревью К2 № 10). */
@@ -194,7 +200,7 @@ const totalsLine = (t: TestTable, lang: Acc1Lang): string => {
 export function acc1Markdown(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
   const line = (xs: readonly string[]) => `| ${xs.map(acc1MdCell).join(" | ")} |`;
   const head = HEAD[lang];
-  const out = [`# ${acc1MdCell(TITLE[lang])}`, "", line(head), `|${head.map(() => "---").join("|")}|`];
+  const out = [acc1MdTitle(ACC1_TITLE[lang]), "", line(head), `|${head.map(() => "---").join("|")}|`];
   for (const r of acc1Rows(table, records)) out.push(line(cells(r, lang)));
   const free = acc1Unlinked(table, records);
   if (free.length) out.push("", acc1MdCell(`${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`));
