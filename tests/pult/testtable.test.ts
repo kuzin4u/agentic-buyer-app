@@ -21,6 +21,7 @@ import {
   TEST_SPECS,
   testTable,
   testTableMarkdown,
+  type ExpectProtector,
   type TableReaction,
   type TestCode,
   type TestTable,
@@ -117,6 +118,11 @@ describe("П-11.5а: П-xx — ожидаемый итог и ни одного 
     const m: TxModel = { mandates: [{ id: "M1", status: "revoked", txIds: [], stage: "revoke", worst: "norm", seqs: [2, 4], firstAt: "", lastAt: "" }], txs: [], unattached: [] };
     expect(row(table({ items: items2, model: m, verdicts: [v] }), "П-08")).toMatchObject({ agree: "yes", objs: ["M1"] });
     expect(row(table({ items: items2, model: m, verdicts: [{ ...v, protector: "platform" }] }), "П-08").agree).toBe("yes");
+    // Р-1545: «не определён» — не защита: ни гарантией, ни условием R09, ни без защитника
+    expect(row(table({ items: items2, model: m, verdicts: [{ ...v, protector: "undetermined" }] }), "П-08").agree).toBe("no");
+    expect(row(table({ items: items2, model: m, verdicts: [{ ...v, cond: "R09", protector: "undetermined" }] }), "П-08").agree).toBe("no");
+    const noProt: Verdict = { kind: "client_decision", obj: "M1", guarantee: "revoke", violator: "client_decision", seqs: [4] };
+    expect(row(table({ items: items2, model: m, verdicts: [noProt] }), "П-08").agree).toBe("no");
     // повторное ревью № 3: отзыв вердиктом условия R09 (гарантия подавлена) — тоже «да»
     const byCond: Verdict = { kind: "client_decision", obj: "M1", cond: "R09", violator: "client_decision", protector: "agent", seqs: [4] };
     expect(row(table({ items: items2, model: m, verdicts: [byCond] }), "П-08").agree).toBe("yes");
@@ -128,6 +134,17 @@ describe("П-11.5а: П-xx — ожидаемый итог и ни одного 
     const g: Verdict = { kind: "protection", obj: "M1", guarantee: "agent_suspended", protector: "platform", seqs: [2] };
     expect(row(table({ items, verdicts: [g] }), "П-07").agree).toBe("yes");
     expect(row(table({ items, verdicts: [{ ...g, protector: "agent" }] }), "П-07").agree).toBe("yes");
+    // Р-1545: защитник «не определён» (остановка видна только в шаге сюжета — Р-1519) и защитник не из перечня — «нет»
+    expect(row(table({ items, verdicts: [{ ...g, protector: "undetermined" }] }), "П-07").agree).toBe("no");
+    expect(row(table({ items, verdicts: [{ ...g, protector: "bank" }] }), "П-07").agree).toBe("no");
+    expect(row(table({ items: [] }), "П-07").expected.ru).toContain("Платёжная система / Агенты");
+    expect(row(table({ items: [] }), "П-07").expected.en).toContain("Payment system / Agents");
+    // «не определён» — не защитник ожидания: запрет держит тип (ревью К1а № 7)
+    // @ts-expect-error — `undetermined` не входит в `ExpectProtector`
+    const undet: ExpectProtector = "undetermined";
+    // @ts-expect-error — и в перечне тоже
+    const undetList: ExpectProtector = ["agent", "undetermined"];
+    expect([undet, undetList]).toHaveLength(2);
     expect(row(table({ items, verdicts: [g, { kind: "violation", obj: "M1", cond: "R09", violator: "agent", seqs: [2] }] }), "П-07").agree).toBe("no");
   });
   it("П-03: R09 «сработало», решение клиента (`rejected_*`) — «да»; решение без R09 или ложный паспорт R09 «не определён» — «нет» (M v1.1)", () => {
@@ -168,14 +185,31 @@ describe("П-11.5а: Н-xx — ожидаемый паспорт", () => {
     expect(row(table({ items, model, verdicts: [r37, r09] }), "Н-06").agree).toBe("yes");
     expect(row(table({ items, model, verdicts: [{ ...r37, violator: "undetermined" }, r09] }), "Н-06").agree).toBe("no");
   });
-  it("Н-08 (M v1.1): паспорт R17, нарушил агент — «да» и при отказе Платформы (защитила Платформа), и при прошедшей операции (защитника нет)", () => {
-    const items = [rec(1, 0, "run.fault", { test: "Н-08" }), rec(2, 1, "cart.created"), rec(3, 2, "fault.refused", { test: "Н-08", testCode: "MANDATE_SCOPE" })];
+  it("Н-08 (M v1.1, Р-1546): по исходу прогона драйвера — отказ Платформы: только «сработало», защитила Платформа; операция прошла: только «нарушено» без защитника", () => {
+    const run = (end: string) => [rec(1, 0, "run.fault", { test: "Н-08" }), rec(2, 1, "cart.created"), rec(3, 2, end, { test: "Н-08", ...(end === "fault.refused" && { testCode: "MANDATE_SCOPE" }) })];
+    const refused = run("fault.refused");
+    const marked = run("fault.marked");
     const model = modelOf([tx("T1", [2])]);
     const fired: Verdict = { kind: "protection", obj: "T1", cond: "R17", violator: "agent", protector: "platform", seqs: [2] };
-    expect(row(table({ items, model, verdicts: [fired] }), "Н-08").agree).toBe("yes");
     const passed: Verdict = { kind: "violation", obj: "T1", cond: "R17", violator: "agent", seqs: [2] };
-    expect(row(table({ items, model, verdicts: [passed] }), "Н-08").agree).toBe("yes");
-    expect(row(table({ items, model, verdicts: [{ ...fired, violator: "platform" }] }), "Н-08").agree).toBe("no");
+    const n08 = (items: Interpretation[], v: Verdict) => row(table({ items, model, verdicts: [v] }), "Н-08").agree;
+    // отказ Платформы
+    expect(n08(refused, fired)).toBe("yes");
+    expect(n08(refused, passed)).toBe("no"); // живой стенд 13.11 (ревью К1а № 1): отказ на шине, а пульт — «нарушено»
+    expect(n08(refused, { ...fired, protector: "undetermined" })).toBe("no"); // `mandate_scope_undetermined`
+    expect(n08(refused, { ...fired, protector: "agent" })).toBe("no");
+    expect(n08(refused, { ...fired, violator: "platform" })).toBe("no");
+    // операция прошла (пометка «ПР»)
+    expect(n08(marked, passed)).toBe("yes");
+    expect(n08(marked, fired)).toBe("no");
+    expect(n08(marked, { ...passed, protector: "platform" })).toBe("no");
+    // смешанная пара: вердикт своей ветки есть, но рядом — вердикт того же условия из чужой (повторное ревью К1а № 1)
+    const both = (items: Interpretation[]) => row(table({ items, model, verdicts: [fired, { ...passed, obj: undefined }] }), "Н-08").agree;
+    expect(both(refused)).toBe("no");
+    expect(both(marked)).toBe("no");
+    // «записи стенда сделаны» — не «операция прошла» (повторное ревью К1а № 2)
+    expect(n08(run("fault.recorded"), passed)).toBe("no");
+    expect(row(table({ items: [] }), "Н-08").expected.en).toContain('refused — "triggered", protected by: Payment system');
   });
   it("ревью № 7: ожидаемый паспорт и паспорт того же условия с другим нарушителем — «нет»", () => {
     const items = [rec(1, 0, "stand_fault.armed", { test: "Н-11" }), rec(2, 1, "cart.created")];

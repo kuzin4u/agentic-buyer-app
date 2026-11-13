@@ -81,9 +81,18 @@ export interface ExpectFinding {
   readonly violator: Party;
   /** Защитник — только там, где его называет ожидание на стенде (Н-03, столбец M v1.1). */
   readonly protector?: Party;
+  /** Ветка по исходу прогона драйвера «ПР» (Р-1545, Р-1546): отказ — только «сработало» с этим защитником; операция прошла —
+   *  только «нарушено» без защитника (Н-08: отказала Платформа — защитила Платформа; паспорт в обоих случаях). На стенде ветка
+   *  «сработало» сейчас недостижима — STATUS «Расхождения» № 10. */
+  readonly firedBy?: Party;
   /** Условия, которые должны остаться без паспорта (Н-03 на стенде: R28, R30 — «соблюдено», столбец M v1.1). */
   readonly okConds?: readonly CheckableCondition[];
 }
+/** Защитник ожидания: один или перечень допустимых (П-07, П-08 — «Платформа или агент», столбец M v1.1; Р-1545). Задан —
+ *  вердикт с защитником «не определён» не подходит (Р-1519, Р-1522: «не определён» — не защита). */
+export type ExpectProtector = Party | readonly Party[];
+const protectorOk = (want: ExpectProtector | undefined, got: Party | "undetermined" | undefined): boolean =>
+  want === undefined || (got !== undefined && got !== "undetermined" && (typeof want === "string" ? want === got : want.includes(got)));
 export type Expect =
   | {
       readonly kind: "correct";
@@ -95,7 +104,7 @@ export type Expect =
         readonly kind: "client_decision" | "protection";
         readonly cond?: CheckableCondition;
         readonly guarantee?: Guarantee;
-        readonly protector?: Party;
+        readonly protector?: ExpectProtector;
       };
       /** Операции не было: поручение без покупки. */
       readonly noOperation?: true;
@@ -154,20 +163,20 @@ export const TEST_SPECS: readonly Spec[] = [
     v10: { kind: "correct", decision: { kind: "protection", cond: "R17", guarantee: "mandate_scope", protector: "platform" } },
     mvp: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R17", guarantee: "mandate_scope", protector: "agent" } },
   },
-  // M: защитник по источнику — Платформа (403) или агент (журнал агента); паспорта нет при любом.
+  // M: защитник по источнику — Платформа (403) или агент (журнал агента); «не определён» — «нет» (Р-1545).
   {
     test: "П-07",
     kind: "correct",
     v10: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended", protector: "platform" } },
-    mvp: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended" } },
+    mvp: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended", protector: ["platform", "agent"] } },
   },
   // Отзыв — гарантией `revoke` или условием R09 (гарантию подавляет вердикт R09 в том же объекте, `COVERED` в `verdict.ts`).
-  // M: защитил агент или Платформа — засчитываются оба.
+  // M: защитил агент или Платформа — засчитываются оба; «не определён» — «нет» (Р-1545).
   {
     test: "П-08",
     kind: "correct",
     v10: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke", protector: "agent" } },
-    mvp: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke" } },
+    mvp: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke", protector: ["agent", "platform"] } },
   },
   // M: поручение без покупки, отказ ядра в момент `valid_to` или позже — R09 «сработало», срок, защитил агент.
   {
@@ -193,8 +202,8 @@ export const TEST_SPECS: readonly Spec[] = [
   { test: "Н-06", kind: "incorrect", v10: bad(["R37", "R09", "R18"], "agent", "У5"), mvp: bad(["R37"], "agent", "У5") },
   { test: "Н-07", kind: "incorrect", v10: bad(["R18"], "agent") },
   // M: Платформа отказала MANDATE_SCOPE — R17 «сработало», защитила Платформа; не отказала — R17 «нарушено», защитника нет.
-  // Нарушил агент (пометка «ПР») и паспорт есть в обоих случаях (П-4.1) — структурой как E, защитник не задан.
-  { test: "Н-08", kind: "incorrect", v10: bad(["R17"], "agent") },
+  // Нарушил агент (пометка «ПР») и паспорт есть в обоих случаях (П-4.1); статус и защитник разведены полем `firedBy` (Р-1545).
+  { test: "Н-08", kind: "incorrect", v10: bad(["R17"], "agent"), mvp: { kind: "incorrect", passport: { conds: ["R17"], violator: "agent", firedBy: "platform" } } },
   { test: "Н-09", kind: "incorrect", v10: bad(["R26"], "agent") },
   { test: "Н-10", kind: "incorrect", v10: bad(["R41"], "agent"), mvp: { kind: "no_case" } },
   { test: "Н-11", kind: "incorrect", v10: bad(["R20"], "bank") },
@@ -288,6 +297,7 @@ const WAIT_LABEL: Readonly<Record<Exclude<WaitKind, "agent_step">, Phrase>> = {
   confirmation: p("подтверждение ждёт клиента", "the confirmation awaits the client"),
 };
 const party = (x: Party | "undetermined"): Phrase => (x === "undetermined" ? p("не определён", "undetermined") : PARTY_LABEL[x]);
+const parties = (x: ExpectProtector): Phrase => (typeof x === "string" ? party(x) : join(x.map(party), " / "));
 /** Примечание таблицы (Р-1534, В3): ограничение пульта — не молча. */
 export const TABLE_NOTE: Phrase = p(
   "Н-xx: «сходится» — хотя бы один паспорт с ожидаемым условием, узлом и нарушителем. «Каждая транзакция поймана» пульт не проверяет: на какой транзакции сработал сбой, знает стенд, а не пульт.",
@@ -312,7 +322,7 @@ export function expectPhrase(e: Expect): Phrase {
             d.kind === "client_decision" ? p("решение клиента", "client's decision") : p("сработала защита", "protection triggered"),
             ...(d.cond ? [lit(d.cond)] : []),
             ...(d.guarantee ? [GUARANTEE_INFO[d.guarantee].name] : []),
-            ...(d.protector ? [join([p("защитил:", "protected by:"), party(d.protector)], " ")] : []),
+            ...(d.protector ? [join([p("защитил:", "protected by:"), parties(d.protector)], " ")] : []),
           ]),
         );
       }
@@ -328,6 +338,12 @@ export function expectPhrase(e: Expect): Phrase {
         ...(e.passport.node ? [join([p("узел", "node"), lit(e.passport.node)], " ")] : []),
         join([p("нарушил:", "violator:"), party(e.passport.violator)], " "),
         ...(e.passport.protector ? [join([p("защитил:", "protected by:"), party(e.passport.protector)], " ")] : []),
+        ...(e.passport.firedBy
+          ? [
+              join([p("отказ — «сработало», защитил:", 'refused — "triggered", protected by:'), party(e.passport.firedBy)], " "),
+              p("операция прошла — «нарушено», защитника нет", 'the operation went through — "violated", no protector'),
+            ]
+          : []),
         ...(e.passport.okConds ? [join([lit(e.passport.okConds.join(", ")), p("— без паспорта", "— no passport")], " ")] : []),
       ]);
     case "toward":
@@ -399,7 +415,7 @@ function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly Pul
     const d = e.decision;
     // Условие и гарантия — равноправные признаки (Р-1538: П-06 — защитник из вердикта R17, а не из гарантии).
     const sign = (v: Verdict) => (d.cond === undefined && d.guarantee === undefined) || (d.cond !== undefined && v.cond === d.cond) || (d.guarantee !== undefined && v.guarantee === d.guarantee);
-    const hit = vs.find((v) => v.kind === d.kind && sign(v) && (d.protector === undefined || v.protector === d.protector));
+    const hit = vs.find((v) => v.kind === d.kind && sign(v) && protectorOk(d.protector, v.protector));
     const seen = vs.filter((v) => v.kind === "client_decision" || v.kind === "protection");
     for (const v of seen)
       facts.push(
@@ -424,7 +440,7 @@ function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly Pul
   return { agree: good ? "yes" : "no", fact: join(facts, "; ") };
 }
 
-function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly Verdict[], fired: readonly StandLogEntry[], model: TxModel): Judged {
+function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly Verdict[], fired: readonly StandLogEntry[], model: TxModel, driver?: FaultOutcome): Judged {
   const pass = passportsOf(vs);
   const factPass = pass.length ? join([join([p("паспортов:", "passports:"), lit(String(pass.length))], " "), ...pass.slice(0, 5).map(findingPhrase)], "; ") : p("паспортов нет", "no passports");
   if (e.passport === null) {
@@ -441,16 +457,24 @@ function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly 
     return { agree: pass.length === 0 ? "yes" : "no", fact: factPass };
   }
   const w = e.passport;
+  // `firedBy` — по фактическому исходу прогона драйвера (Р-1546): отказ (`refused`) — только вердикт защиты с защитником
+  // `firedBy`; операция прошла (`marked`) — только вердикт нарушения без защитника; другой исход — своей ветки нет.
+  // «Любой из двух» не проходит.
+  const ownBranch = (v: Verdict) =>
+    w.firedBy === undefined ||
+    (driver === "refused" ? v.kind === "protection" && v.protector === w.firedBy : driver === "marked" && v.kind === "violation" && v.protector === undefined);
+  const sameFinding = (v: Verdict) => v.cond !== undefined && w.conds.includes(v.cond) && v.violator === w.violator;
   const caught = pass.filter(
+    (v) => sameFinding(v) && (w.node === undefined || v.node === w.node) && protectorOk(w.protector, v.protector) && ownBranch(v),
+  );
+  // Паспорт того же условия с другим нарушителем, паспорт условия, которое должно остаться «ok», и при `firedBy` — паспорт
+  // того же условия и нарушителя из чужой ветки (отказ, а пульт показывает «нарушено», и наоборот; повторное ревью К1а № 1)
+  // — «нет» (Р-1534 В3, ревью № 7; Р-1546).
+  const other = pass.filter(
     (v) =>
       v.cond !== undefined &&
-      w.conds.includes(v.cond) &&
-      v.violator === w.violator &&
-      (w.node === undefined || v.node === w.node) &&
-      (w.protector === undefined || v.protector === w.protector),
+      ((w.conds.includes(v.cond) && v.violator !== w.violator) || (w.okConds ?? []).includes(v.cond) || (w.firedBy !== undefined && sameFinding(v) && !ownBranch(v))),
   );
-  // Паспорт того же условия с другим нарушителем и паспорт условия, которое должно остаться «ok», — «нет» (Р-1534 В3, ревью № 7).
-  const other = pass.filter((v) => v.cond !== undefined && ((w.conds.includes(v.cond) && v.violator !== w.violator) || (w.okConds ?? []).includes(v.cond)));
   const objs = new Set(caught.map((v) => v.obj ?? "—"));
   const head = caught.length ? join([p("поймано:", "caught:"), lit(String(objs.size))], " ") : p("ожидаемого паспорта нет", "no expected passport");
   return { agree: caught.length && !other.length ? "yes" : "no", fact: join([head, factPass], "; ") };
@@ -550,6 +574,8 @@ export function testTable(input: TestTableInput): TestTable {
     // Окно теста.
     let w: Window | undefined;
     let note: Phrase | undefined;
+    /** Исход прогона драйвера «ПР» — по нему `firedBy` выбирает ветку (Р-1546). */
+    let driver: FaultOutcome | undefined;
     if (spec.kind === "incorrect") {
       const k = standKind.get(spec.test);
       const fr = k === "violator" || k === "stand_fault_and_violator" ? lastRun((r) => faultOf(r)?.test === spec.test) : undefined;
@@ -557,6 +583,7 @@ export function testTable(input: TestTableInput): TestTable {
       if (fr && (!armed || fr.startSeq > armed.seq)) {
         w = windows.get(fr)!;
         const f = faultOf(fr)!;
+        driver = f.outcome;
         note = join([lit(`run.fault ${spec.test}:`), f.outcome ? FAULT_OUTCOME_LABEL[f.outcome] : p("идёт", "running"), ...(f.code ? [lit(f.code)] : [])], " ");
         if (f.outcome === "unplayed" || f.outcome === "failed" || f.outcome === undefined) return row({ agree: "unchecked", fact: note }, w.auto, []);
       } else if (armed) {
@@ -612,7 +639,7 @@ export function testTable(input: TestTableInput): TestTable {
         j = judgeCorrect(expect, txs, mine);
         break;
       case "incorrect":
-        j = judgeIncorrect(expect, mine, fired, model);
+        j = judgeIncorrect(expect, mine, fired, model, driver);
         break;
       case "toward":
         j = judgeToward(expect, items, W, new Set(ids), now, waitMs);
