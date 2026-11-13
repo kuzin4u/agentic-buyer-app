@@ -7,6 +7,7 @@
 // отменил ли `pult.js` или окно справки событие (Esc).
 import type { Brand } from "../brand.js";
 import type { WireLang } from "../dashboards/wire.js";
+import { ACC1_EXPORT_LABEL, ACC1_EXPORTS, ACC1_TITLE } from "../pult/acc1.js";
 import { BOARD_COLUMNS } from "../pult/board.js";
 import { rulesForPage } from "../pult/conditions.js";
 import { feedsLabels } from "../pult/feeds.js";
@@ -105,7 +106,16 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}
   </div>
 </main>
-<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES, actions: o.actions === true, faults: o.faults === true, ...(o.faults === true && o.clientAuto !== undefined && { clientAuto: o.clientAuto }) })}</script>
+<script id="i18n" type="application/json">${jsonForScript({
+    lang,
+    labels,
+    panes: PANES,
+    actions: o.actions === true,
+    faults: o.faults === true,
+    ...(o.faults === true && o.clientAuto !== undefined && { clientAuto: o.clientAuto }),
+    // «Отчёт» (П-6.2): заголовок акта и выгрузки — тексты окна Б как есть.
+    acc1: { title: ACC1_TITLE[lang], exports: ACC1_EXPORTS.map((f) => ({ format: f, label: ACC1_EXPORT_LABEL[f][lang] })) },
+  })}</script>
 <script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>

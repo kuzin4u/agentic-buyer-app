@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
 import { STAND_FAULT_TESTS } from "../../src/demo/stand-faults.js";
 import { REACTION_RECORDS } from "../../src/pult/reactions.js";
+import { ACC1_EXPORT_LABEL, ACC1_EXPORTS } from "../../src/pult/acc1.js";
 import { loadBrand } from "../../src/demo/server.js";
 import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
 import { conditionsView } from "../../src/pult/conditions.js";
@@ -1029,6 +1030,52 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(box.querySelectorAll(".proto-row").map((r) => r.dataset.status)).toEqual(["stopped"]);
       box.querySelectorAll("button[data-proto-filter]").find((b) => b.dataset.protoFilter === "")!.click();
       expect(box.querySelectorAll(".proto-row")).toHaveLength(3);
+    }
+  });
+
+  it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки ссылками на файл; отказ — с кодом; ru/en", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      const calls: string[] = [];
+      const body = {
+        builtAt: "2026-11-13T20:55:07.000Z",
+        totals: { tests: 25, yes: 1, no: 1, noCase: 0, unchecked: 23 },
+        agreeLabels: { yes: { ru: "да", en: "yes" }, no: { ru: "нет", en: "no" }, no_case: { ru: "нет случая", en: "no case" }, unchecked: { ru: "не проверено", en: "not checked" } },
+        rows: [
+          { test: "П-01", kind: { ru: "правильный", en: "correct" }, expected: { ru: "<b>x</b>", en: "<b>x</b>" }, fact: { ru: "ф", en: "f" }, agree: "yes", agreeLabel: { ru: "да", en: "yes" }, note: { ru: "", en: "" }, auto: false, violatorDriver: false, run: "run.purchase" },
+          { test: "Н-08", kind: { ru: "неправильный", en: "incorrect" }, expected: { ru: "о", en: "e" }, fact: { ru: "ф", en: "f" }, agree: "no", agreeLabel: { ru: "нет", en: "no" }, note: { ru: "", en: "" }, auto: true, violatorDriver: true, run: "run.fault Н-08" },
+        ],
+        unlinked: 2,
+      };
+      env.window.fetch = (url: string) => {
+        calls.push(url);
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      };
+      env.sources[0]!.send(boardMsg([]));
+      const box = $(env, "b-log");
+      expect(box.textContent, lang).toContain(PULT["report.none"][lang]);
+      box.querySelectorAll("button[data-report]")[0]!.click();
+      expect(calls, lang).toEqual([`/pult/report?format=json&lang=${lang}`]);
+      await new Promise((r) => setTimeout(r, 0));
+      const at = box.querySelectorAll(".report-at")[0]!.textContent;
+      expect(at, lang).toContain(PULT["report.built"][lang]);
+      // Само время сборки, а не только подпись (ревью П-6.2 № 10): минуты и секунды из `builtAt`.
+      expect(at, lang).toMatch(/\d{2}:55:07/);
+      expect(box.textContent, lang).toContain(`${PULT["report.tests"][lang]}: 25`);
+      const rows = box.querySelectorAll(".report-row");
+      expect(rows.map((r) => r.dataset.agree), lang).toEqual(["yes", "no"]);
+      // Данные — текстом (инвариант 4): разметка в данных не становится разметкой.
+      expect(rows[0]!.textContent, lang).toContain("<b>x</b>");
+      expect(rows[1]!.textContent, lang).toContain(PULT["report.violator"][lang]);
+      expect(box.textContent, lang).toContain(`${PULT["report.unlinked"][lang]}: 2`);
+      const links = box.querySelectorAll("a");
+      expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}`));
+      expect(links.map((a) => a.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
+      // Отказ сервера — «не собран» с кодом.
+      env.window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "NO_ENGINE" }) });
+      box.querySelectorAll("button[data-report]")[0]!.click();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(box.textContent, lang).toContain(`${PULT["report.failed"][lang]} · NO_ENGINE`);
     }
   });
 

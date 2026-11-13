@@ -1174,11 +1174,76 @@
         wrap.appendChild(row);
       }
     }
+    renderReport(wrap);
     while (logBox.firstChild) logBox.removeChild(logBox.firstChild);
     logBox.appendChild(wrap);
   }
+  // ---- «Отчёт» (П-6.2, Р-1552): снимок по кнопке — таблица 25 тестов и акт ACC-1 окна Б; выгрузки — файлом с сервера ----
+  // Считает сервер (`GET /pult/report`); экран только показывает, с временем сборки. Тексты акта и выгрузок — окна Б.
+  const ACC1 = cfg.acc1 && typeof cfg.acc1 === "object" ? cfg.acc1 : { title: "", exports: [] };
+  const report = { pending: false, failed: "", data: null };
+  function renderReport(wrap) {
+    wrap.appendChild(el("h3", ACC1.title, "ctl-h"));
+    const build = el("button", label("report.build"), "report-build");
+    build.type = "button";
+    build.dataset.report = "1";
+    // Пока сборка идёт — кнопка неактивна: каждое нажатие считает таблицу на сервере заново (ревью П-6.2 № 8).
+    if (report.pending) build.setAttribute("disabled", "");
+    wrap.appendChild(build);
+    const d = report.data;
+    if (report.pending) wrap.appendChild(el("p", label("report.building"), "muted"));
+    else if (report.failed) wrap.appendChild(el("p", label("report.failed") + " · " + report.failed, "muted"));
+    if (!d) {
+      if (!report.pending && !report.failed) wrap.appendChild(el("p", label("report.none"), "muted"));
+      return;
+    }
+    wrap.appendChild(el("p", label("report.built") + " " + clock(d.builtAt), "report-at"));
+    const al = d.agreeLabels && typeof d.agreeLabels === "object" ? d.agreeLabels : {};
+    const t = d.totals || {};
+    const tot = [["yes", t.yes], ["no", t.no], ["no_case", t.noCase], ["unchecked", t.unchecked]].map(([k, n]) => txt(al[k]) + ": " + (typeof n === "number" ? n : 0));
+    wrap.appendChild(el("p", tot.join(" · ") + " · " + label("report.tests") + ": " + (typeof t.tests === "number" ? t.tests : 0), "ctl-status"));
+    for (const r of Array.isArray(d.rows) ? d.rows : []) {
+      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : ""].filter((x) => x);
+      const parts = [r.test, txt(r.kind), txt(r.expected), txt(r.fact), txt(r.agreeLabel), txt(r.note), marks.join(" "), r.run].filter((x) => typeof x === "string" && x);
+      const row = el("div", parts.join(" · "), "report-row");
+      row.dataset.agree = typeof r.agree === "string" ? r.agree : "";
+      wrap.appendChild(row);
+    }
+    if (typeof d.unlinked === "number" && d.unlinked > 0) wrap.appendChild(el("p", label("report.unlinked") + ": " + d.unlinked, "muted"));
+    const ex = el("p", label("report.export") + ": ", "report-export");
+    for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
+      const a = el("a", e.label);
+      a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang }).toString());
+      a.setAttribute("download", "");
+      ex.appendChild(a);
+      ex.appendChild(el("span", " "));
+    }
+    wrap.appendChild(ex);
+  }
+  function buildReport() {
+    const f = window.fetch;
+    if (typeof f !== "function" || report.pending) return;
+    report.pending = true;
+    report.failed = "";
+    renderLog();
+    f("/pult/report?" + new URLSearchParams({ format: "json", lang: lang }).toString())
+      .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+      .then(({ ok, body }) => {
+        report.pending = false;
+        if (ok && body && Array.isArray(body.rows)) report.data = body;
+        else report.failed = body && typeof body.error === "string" ? body.error : "HTTP";
+        renderLog();
+      })
+      .catch(() => {
+        report.pending = false;
+        report.failed = label("report.no_answer");
+        renderLog();
+      });
+  }
   if (logBox) {
     logBox.addEventListener("click", (ev) => {
+      const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
+      if (rb) return buildReport();
       const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
       if (!b) return;
       logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";

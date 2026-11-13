@@ -21,6 +21,7 @@ import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.
 import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
 import type { PultActions } from "../pult/actions.js";
 import { pultAct } from "./pult-act.js";
+import { reportResponse } from "./pult-report.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -299,13 +300,14 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   /** «Ленты» пульта (П-5.2) поверх ленты «Интерпретации»: своя лента `/pult/feeds`, логику ленты пульта не трогает. */
   let feeds: FeedsFeed | undefined;
 
-  const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
+  const send = (res: ServerResponse, status: number, type: string, body: string | Buffer, extra: Readonly<Record<string, string>> = {}) => {
     res.writeHead(status, {
       "content-type": type,
       "content-security-policy": CSP,
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cache-control": "no-store",
+      ...extra,
     });
     res.end(body);
   };
@@ -522,6 +524,18 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
         }
         case "/pult/pult.css":
           return send(res, 200, "text/css; charset=utf-8", pultCss);
+        case "/pult/report": {
+          // «Отчёт» (П-6.2, Р-1552): снимок по запросу; выгрузки акта ACC-1 окна Б — файлом. Только чтение.
+          if (!pult) return send(res, 404, plain, t(lang, "http.not_found"));
+          let r;
+          try {
+            r = reportResponse(pult.report(), u.searchParams.get("format"), lang);
+          } catch {
+            return send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "REPORT_FAILED" }));
+          }
+          // Заголовки — общие `send` (CSP, nosniff, no-store); у выгрузки ещё вложение файлом (ревью П-6.2 № 3).
+          return send(res, r.status, r.type, r.body, r.filename === undefined ? {} : { "content-disposition": `attachment; filename="${r.filename}"` });
+        }
         case "/pult/events": {
           // Состояние шины и доска «Ход по стадиям» (П-2.1). Запись — только в открытый поток (sseWrite).
           const f = feed;

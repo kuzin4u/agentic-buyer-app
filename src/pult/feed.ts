@@ -16,6 +16,8 @@ import { evaluate, type EngineView } from "./engine.js";
 import { graphView, type GraphView } from "./graph.js";
 import { emptyProtocol, protocolStep, protocolView, type ProtocolInput, type ProtocolState, type ProtocolView } from "./protocol.js";
 import { linkReactions, type LinkedReaction } from "./reactions.js";
+import type { Acc1Record } from "./acc1.js";
+import { testTable, type TestTable } from "./testtable.js";
 import type { StandLogEntry } from "./standlog.js";
 import { buildTxModel } from "./tx.js";
 import { verdicts } from "./verdict.js";
@@ -75,8 +77,19 @@ export type PultFeedEvent =
   | { readonly type: "board"; readonly board: PultBoardState }
   | { readonly type: "status"; readonly status: SourceStatus };
 
+/** Отчёт (П-6.2, Р-1552): снимок на момент сборки — таблица 25 тестов (`testTable`, окно Б) и записи протокола П-6.1 для акта
+ *  ACC-1 (`Acc1Record`). Собирается по запросу (кнопка «Собрать отчёт», выгрузка), не на каждый пересчёт. */
+export interface PultReport {
+  /** Когда собран — по часам шины (Р-1552: на приёмке видно, какому моменту отчёт соответствует). */
+  readonly builtAt: string;
+  readonly table: TestTable;
+  readonly records: readonly Acc1Record[];
+}
+
 export interface PultFeed {
   board(): PultBoardState;
+  /** Собрать отчёт по входу последнего пересчёта; движок ещё не отработал — undefined. */
+  report(): PultReport | undefined;
   /** Записать реакцию (кнопку пульта) и разослать доску. Пересчёт движка не нужен: реакция — не запись шины. */
   react(r: Reaction): void;
   subscribe(l: (e: PultFeedEvent) => void): () => void;
@@ -268,6 +281,32 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
 
   return {
     board: () => state,
+    report() {
+      if (!protoIn) return undefined;
+      const log = standLog();
+      // Одно «сейчас» на весь отчёт (ревью П-6.2 № 4). Записи — окно ленты на момент сборки, модель и вердикты — последнего
+      // пересчёта (пауза 200 мс): записи моложе пересчёта таблица видит, вердикты по ним — со следующего пересчёта.
+      const builtAt = o.now().toISOString();
+      const table = testTable({
+        items: protoIn.items,
+        model: protoIn.model,
+        verdicts: protoIn.verdicts,
+        ...(log !== undefined && { standLog: log }),
+        reactions: linked(),
+        now: builtAt,
+        waitMs: protoIn.waitMs,
+      });
+      // Записи акта — протокол П-6.1 как есть (`ProtoEntry` → `Acc1Record`, К6 окна Б): статусы не пересчитываются.
+      const records: Acc1Record[] = proto.entries.map((e) => ({
+        id: e.no,
+        obj: e.obj,
+        status: e.status,
+        at: e.at,
+        ...(e.reaction !== undefined && { action: e.reaction }),
+        ...(e.reactSec !== undefined && { reactSec: e.reactSec }),
+      }));
+      return { builtAt, table, records };
+    },
     react(r) {
       reactions = [...reactions, r].slice(-REACTIONS_KEPT);
       const protocol = protoStep(state.protocol, true);

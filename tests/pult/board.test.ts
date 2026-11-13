@@ -490,6 +490,31 @@ describe("лента пульта (П-2.1)", () => {
   });
 });
 
+// П-6.2 (Р-1552): отчёт ленты — снимок по запросу: таблица 25 тестов, записи акта — протокол П-6.1 как есть, время сборки.
+describe("отчёт ленты пульта (П-6.2)", () => {
+  it("по запросу: 25 строк, время сборки — часы шины, записи акта — записи протокола без пересчёта статусов", async () => {
+    const f = fakeFeed();
+    let now = new Date("2026-11-13T20:00:00Z");
+    const p = createPultFeed(f.feed, { now: () => now, debounceMs: 0 });
+    // Нарушение R08: покупка пошла без подписи поручения — запись протокола «нарушение».
+    f.push(step("cart.created", { mandate_id: "C1", intent_id: "I1" }, { stage: "cart" }), step("payment.started", { mandate_id: "C1" }, { stage: "payment" }));
+    await tick();
+    now = new Date("2026-11-13T20:05:00Z");
+    const r = p.report()!;
+    expect(r.builtAt).toBe("2026-11-13T20:05:00.000Z");
+    expect(r.table.rows).toHaveLength(25);
+    const proto = p.board().protocol!.entries;
+    expect(proto.length).toBeGreaterThan(0);
+    expect(r.records.map((x) => [x.id, x.obj, x.status, x.at])).toEqual(proto.map((e) => [e.no, e.obj, e.status, e.at]));
+    // Реакция оператора — вид и секунды до неё переходят в запись акта как есть (ревью П-6.2 № 10).
+    const e0 = proto[0]!;
+    p.react({ at: new Date(Date.parse(e0.at) + 3_000).toISOString(), action: "review", obj: e0.obj, ...(e0.cond !== undefined && { cond: e0.cond }), outcome: "done" });
+    const rec = p.report()!.records.find((x) => x.id === e0.no)!;
+    expect([rec.action, rec.reactSec]).toEqual(["review", 3]);
+    p.close();
+  });
+});
+
 // Видимая часть П-11.4: строка «эмулятор клиента: авто» — по шагам режима на шине; перечень шагов — из кода эмулятора (Р-1511).
 describe("режим эмулятора клиента на пульте (П-11.4, Р-1511, Р-1512)", () => {
   it("перечень шагов режима «Контроля» и пульта совпадает с кодом эмулятора (`CLIENT_STEPS`)", () => {
