@@ -3,8 +3,10 @@
 import { describe, expect, it } from "vitest";
 import type { Interpretation } from "../../src/dashboards/interpret.js";
 import {
+  ACC1_ACTION_LABEL,
   ACC1_EXPORT_LABEL,
   ACC1_EXPORTS,
+  ACC1_STATUS_LABEL,
   acc1Csv,
   acc1CsvCell,
   acc1CsvExcel,
@@ -16,10 +18,15 @@ import {
   UTF8_BOM,
   type Acc1Record,
 } from "../../src/pult/acc1.js";
+import { PULT_ACTIONS } from "../../src/pult/actions.js";
+import { PULT } from "../../src/pult/phrases.js";
+import { PROTO_STATUSES } from "../../src/pult/protocol.js";
 import { TABLE_NOTE, TEST_CODES, testTable, type TestRow, type TestTable } from "../../src/pult/testtable.js";
 import type { PultTx } from "../../src/pult/tx.js";
 
 const lit = (s: string) => ({ ru: s, en: s });
+/** Время появления записи протокола (`ProtoEntry.at`). */
+const AT = "2026-11-13T12:00:05.000Z";
 const base = testTable({ items: [], model: { mandates: [], txs: [], unattached: [] }, verdicts: [], now: "2026-11-13T12:00:00.000Z" });
 /** Таблица с подменёнными строками — акт берёт их как есть. */
 const withRows = (patch: Partial<Record<string, Partial<TestRow>>>): TestTable => ({
@@ -70,16 +77,57 @@ describe("К2: строки акта ACC-1", () => {
     expect(row(rs, "Н-01").agree).toBe("yes");
     expect(row(rs, "П-01").agree).toBe("no");
   });
-  it("записи — к тесту по коду (тогда только к нему) или по объекту прогона; статус — код движка как есть (ревью К2 № 3)", () => {
+  it("записи — к тесту по коду (тогда только к нему) или по объекту прогона (ревью К2 № 3)", () => {
     const t = withRows({ "П-01": { objs: ["T1"] }, "П-02": { objs: ["T1"] } });
     const recs: Acc1Record[] = [
-      { id: "П-001", obj: "T1", status: "closed" },
-      { id: "П-002", test: "У-04", obj: "T1", status: "prevented" },
+      { id: "П-001", obj: "T1", status: "closed", at: AT },
+      { id: "П-002", test: "У-04", obj: "T1", status: "prevented", at: AT },
     ];
     const rs = acc1Rows(t, recs);
-    expect(row(rs, "П-01").note.ru).toBe("записи: П-001: closed");
-    expect(row(rs, "П-02").note.ru).toBe("записи: П-001: closed");
-    expect(row(rs, "У-04").note.en).toBe("records: П-002: prevented");
+    expect(row(rs, "П-01").note.ru).toBe(`записи: П-001 (${AT}) — закрыто`);
+    expect(row(rs, "П-02").note.ru).toBe(`записи: П-001 (${AT}) — закрыто`);
+    expect(row(rs, "У-04").note.en).toBe(`records: П-002 (${AT}) — pre-empted by a reaction`);
+  });
+  it("статус и реакция — словами ru/en из словаря пульта, не кодом; время и секунды до реакции — как дал движок (ревью К2 № 4)", () => {
+    const t = withRows({ "П-01": { objs: ["T1"] } });
+    const recs: Acc1Record[] = [
+      { id: "П-001", obj: "T1", status: "reacted", at: AT, action: "stop", reactSec: 12 },
+      { id: "П-002", obj: "T1", status: "stopped", at: AT },
+    ];
+    const n = row(acc1Rows(t, recs), "П-01").note;
+    // «до реакции … с» — подписями панели «Журнал»; записи — через « · », замечания — через «; » (ревью № 1, 2)
+    expect(n.ru).toBe(`записи: П-001 (${AT}) — отреагировано, остановить покупку, до реакции 12 с · П-002 (${AT}) — остановлено гарантией`);
+    expect(n.en).toBe(`records: П-001 (${AT}) — reacted, stop the purchase, to reaction 12 s · П-002 (${AT}) — stopped by a guarantee`);
+    expect(n.ru).toContain(`${PULT["log.react"].ru} 12 ${PULT["card.sec"].ru}`);
+    // нулевая реакция — тоже пишется (0 — не «нет»)
+    expect(row(acc1Rows(t, [{ id: "П-003", obj: "T1", status: "reacted", at: AT, reactSec: 0 }]), "П-01").note.ru).toContain("до реакции 0 с");
+    // замечание Н-08 и записи: граница видна — «; » только между замечанием и записями
+    const h = row(acc1Rows(withRows({ "Н-08": { agree: "no", driver: "refused", objs: ["T1"] } }), recs), "Н-08").note.ru;
+    expect(h.split("; ")).toHaveLength(2);
+    expect(h.split("; ")[1]).toMatch(/^записи: П-001 .* · П-002 /);
+  });
+  it("запись системы (`obj: \"\"`) в строку теста не попадает — уходит в «Записи без строки теста» (ревью № 7)", () => {
+    const t = withRows({ "П-01": { objs: ["T1"] } });
+    const sys: Acc1Record = { id: "П-004", obj: "", status: "open", at: AT };
+    expect(acc1Rows(t, [sys]).map((r) => r.note.ru).join("")).toBe("");
+    expect(acc1Unlinked(t, [sys])).toEqual([sys]);
+  });
+  it("подписи — у каждого статуса движка и каждого вида реакции, ru и en, и это подписи панели «Журнал» (один источник)", () => {
+    for (const s of PROTO_STATUSES) {
+      expect(ACC1_STATUS_LABEL[s], s).toBe(PULT[`proto.st.${s}`]);
+      expect(ACC1_STATUS_LABEL[s].ru, s).not.toBe("");
+      expect(ACC1_STATUS_LABEL[s].en, s).not.toBe("");
+    }
+    for (const a of PULT_ACTIONS) {
+      expect(ACC1_ACTION_LABEL[a], a).toBe(PULT[`act.kind.${a}`]);
+      expect(ACC1_ACTION_LABEL[a].ru, a).not.toBe("");
+      expect(ACC1_ACTION_LABEL[a].en, a).not.toBe("");
+    }
+    // ru-акт — без кодов статусов и видов реакции (ревью № 7)
+    const recs: Acc1Record[] = PROTO_STATUSES.map((s, i) => ({ id: `П-00${i}`, obj: "T1", status: s, at: AT, action: PULT_ACTIONS[i % PULT_ACTIONS.length] }));
+    expect(new Set(recs.map((x) => x.action)).size).toBe(PULT_ACTIONS.length);
+    const md = acc1Markdown(withRows({ "П-01": { objs: ["T1"] } }), "ru", recs);
+    for (const s of [...PROTO_STATUSES, ...PULT_ACTIONS]) expect(md).not.toMatch(new RegExp(`\\b${s}\\b`));
   });
   it("запись по запросу подтверждения (У-04, «Напомнить клиенту» по `cnf_…`) попадает в строку настоящей таблицы (ревью К2 № 2)", () => {
     const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
@@ -87,17 +135,17 @@ describe("К2: строки акта ACC-1", () => {
     const items = [item(1, 0, "run.upk"), item(2, 1, "cart.created")];
     const tx = { id: "T1", seqs: [2], ops: [], confirmationIds: ["cnf_1"], orderIds: [], opRefs: [], merchantIds: [], shopsByOrder: {}, stage: "confirm", worst: "norm", firstAt: "", lastAt: "" } as unknown as PultTx;
     const t = testTable({ items, model: { mandates: [], txs: [tx], unattached: [] }, verdicts: [], now: at(60) });
-    const rs = acc1Rows(t, [{ id: "П-007", obj: "cnf_1", status: "reacted" }]);
-    expect(row(rs, "У-04").note.ru).toBe("записи: П-007: reacted");
+    const rs = acc1Rows(t, [{ id: "П-007", obj: "cnf_1", status: "reacted", at: AT, action: "remind" }]);
+    expect(row(rs, "У-04").note.ru).toBe(`записи: П-007 (${AT}) — отреагировано, напомнить клиенту`);
   });
   it("записи без строки теста не теряются — отдельной строкой в Markdown и CSV (ревью К2 № 3)", () => {
-    const recs: Acc1Record[] = [{ id: "П-009", obj: "SYS", status: "open" }];
+    const recs: Acc1Record[] = [{ id: "П-009", obj: "SYS", status: "open", at: AT }];
     expect(acc1Unlinked(base, recs)).toEqual(recs);
     expect(acc1Rows(base, recs).map((r) => r.note.ru).join("")).toBe("");
-    expect(acc1Markdown(base, "ru", recs)).toContain("Записи без строки теста<span>:</span> записи<span>:</span> П-009<span>:</span> open");
+    expect(acc1Markdown(base, "ru", recs)).toContain("Записи без строки теста<span>:</span> записи<span>:</span> П-009 (2026-11-13T12<span>:</span>00<span>:</span>05.000Z) — открыто");
     const csv = parseCsv(acc1Csv(base, "en", recs));
     expect(csv).toHaveLength(27);
-    expect(csv[26]![5]).toBe("Records not linked to a test row: records: П-009: open");
+    expect(csv[26]![5]).toBe(`Records not linked to a test row: records: П-009 (${AT}) — open`);
   });
   it("Н-08 «нет» при отказе Платформы — замечание с причиной № 10 (Р-1546); «нет» при прошедшей операции, «да», без прогона — без него (ревью К2 № 12)", () => {
     const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-08": o })), "Н-08").note;

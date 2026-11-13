@@ -1,6 +1,6 @@
 // Акт ACC-1 пульта (П-6.2, часть окна Б; PR #16, К2): строки акта по 25 тестам задания v1.1 и выгрузка — Markdown-таблица и
 // CSV. Чистые функции: вход — таблица тестирования (`testTable`, «сходится» в ней уже поставлено по вердиктам движка) и
-// перечень записей, который передаёт вызывающий (журнал действий и протокол П-6.1 окна А — со статусами движка). Акт ничего
+// перечень записей, который передаёт вызывающий (протокол П-6.1 окна А — со статусами движка). Акт ничего
 // не вычисляет: ни вердиктов, ни статусов, ни «сходится» — только раскладывает готовое по колонкам (инвариант 2). Подключение
 // к экрану «Отчёт» — окно А (П-6.2).
 //
@@ -9,21 +9,52 @@
 // ячейки. В строках — только идентификаторы, коды и подписи (инвариант 1).
 import { markdownCell } from "../dashboards/control-feed.js";
 import { STAND_TEST_KIND_LABEL } from "../dashboards/stand-tests.js";
-import type { Phrase } from "./phrases.js";
+import type { PultActionKind } from "./actions.js";
+import { PULT, type Phrase } from "./phrases.js";
+import type { ProtoEntry, ProtoStatus } from "./protocol.js";
 import { AGREE_LABEL, TABLE_NOTE, TEST_KIND_LABEL, type Agree, type TestCode, type TestRow, type TestTable } from "./testtable.js";
 
 export type Acc1Lang = "ru" | "en";
 const p = (ru: string, en: string): Phrase => ({ ru, en });
 
-/** Запись, которую акт получает аргументом (журнал действий, протокол П-6.1): идентификатор (`П-NNN` или код записи),
- *  привязка — к тесту (тогда только к нему) или к объекту прогона, статус — строкой движка. Акт статус не вычисляет и не
- *  переводит: пишет код. Тип статуса, источник, время и вид действия — согласовать с П-6.1 окна А (STATUS «Открыто»). */
+/** Запись, которую акт получает аргументом (протокол П-6.1 окна А, `ProtoEntry`): идентификатор (`П-NNN`), привязка — к
+ *  тесту (тогда только к нему) или к объекту прогона, статус, время появления, вид реакции и секунд до неё — как их
+ *  поставил движок (ревью К2 № 4). Акт ничего из этого не вычисляет, только подписывает словами. Источника записи
+ *  (эмулятор клиента, драйвер «ПР», оператор) у `ProtoEntry` нет — сначала поле у окна А, затем в акте, после MVP (STATUS
+ *  «Открыто»); пометки «Авто» и «ПР» акт ставит на строке теста (П5 п. 3, П7 п. 4). */
 export interface Acc1Record {
+  /** `П-NNN` — `ProtoEntry.no`. */
   readonly id: string;
   readonly test?: TestCode;
+  /** Объект прогона — `ProtoEntry.obj`; у записи системы `""` — в строку теста не попадает. */
   readonly obj?: string;
-  readonly status: string;
+  /** Типы — по `ProtoEntry`: расхождение с П-6.1 роняет сборку (ревью № 3). */
+  readonly status: ProtoEntry["status"];
+  /** Время появления записи — `ProtoEntry.at`, как есть. */
+  readonly at: ProtoEntry["at"];
+  /** Вид реакции — `ProtoEntry.reaction`. */
+  readonly action?: ProtoEntry["reaction"];
+  /** Секунд от появления до реакции — `ProtoEntry.reactSec`. */
+  readonly reactSec?: ProtoEntry["reactSec"];
 }
+
+/** Подписи статусов и реакций — из словаря пульта окна А (один источник с панелью «Журнал»); `Record` по типу движка:
+ *  новый статус или вид реакции без подписи — ошибка сборки, а не код в акте (ревью К2 № 4). */
+export const ACC1_STATUS_LABEL: Readonly<Record<ProtoStatus, Phrase>> = {
+  open: PULT["proto.st.open"],
+  reacted: PULT["proto.st.reacted"],
+  prevented: PULT["proto.st.prevented"],
+  cleared: PULT["proto.st.cleared"],
+  closed: PULT["proto.st.closed"],
+  stopped: PULT["proto.st.stopped"],
+};
+export const ACC1_ACTION_LABEL: Readonly<Record<PultActionKind, Phrase>> = {
+  stop: PULT["act.kind.stop"],
+  remind: PULT["act.kind.remind"],
+  remind_note: PULT["act.kind.remind_note"],
+  revoke: PULT["act.kind.revoke"],
+  review: PULT["act.kind.review"],
+};
 
 /** Строка акта ACC-1. */
 export interface Acc1Row {
@@ -65,10 +96,17 @@ const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "clien
 const RECORDS_LABEL: Phrase = p("записи:", "records:");
 
 const joinP = (parts: readonly Phrase[], sep: string): Phrase => p(parts.map((x) => x.ru).join(sep), parts.map((x) => x.en).join(sep));
-const recList = (rs: readonly Acc1Record[]): Phrase => {
-  const list = rs.map((x) => `${x.id}: ${x.status}`).join(", ");
-  return joinP([RECORDS_LABEL, p(list, list)], " ");
+/** `П-001 (<время>) — закрыто, остановить покупку, до реакции 12 с` — части, которых у записи нет, не пишутся; «до
+ *  реакции … с» — подписями панели «Журнал» (`log.react`, `card.sec`), как в `pult.js` (ревью № 1). */
+const recText = (x: Acc1Record): Phrase => {
+  const parts = [ACC1_STATUS_LABEL[x.status]];
+  if (x.action) parts.push(ACC1_ACTION_LABEL[x.action]);
+  if (x.reactSec !== undefined) parts.push(joinP([PULT["log.react"], p(`${x.reactSec}`, `${x.reactSec}`), PULT["card.sec"]], " "));
+  const head = `${x.id} (${x.at}) —`;
+  return joinP([p(head, head), joinP(parts, ", ")], " ");
 };
+/** Записи — через « · », замечания строки — через «; » (`acc1Rows`): граница замечания и записи видна (ревью № 2). */
+const recList = (rs: readonly Acc1Record[]): Phrase => joinP([RECORDS_LABEL, joinP(rs.map(recText), " · ")], " ");
 /** Запись относится к строке: задан тест — только к нему; иначе — по объекту прогона (ревью К2 № 3). */
 const belongs = (x: Acc1Record, r: TestRow) => (x.test !== undefined ? x.test === r.test : x.obj !== undefined && r.objs.includes(x.obj));
 
