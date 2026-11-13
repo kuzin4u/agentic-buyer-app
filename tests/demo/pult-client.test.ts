@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
+import { STAND_FAULT_TESTS } from "../../src/demo/stand-faults.js";
 import { loadBrand } from "../../src/demo/server.js";
 import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
 import { conditionsView } from "../../src/pult/conditions.js";
@@ -17,8 +18,11 @@ const FOCUS_JS = readFileSync("src/demo/public/pult/focus.js", "utf8");
 const PULT_JS = readFileSync("src/demo/public/pult/pult.js", "utf8");
 const { brand } = loadBrand("config/brand.demo.json");
 
-function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean; rules?: readonly Rule89[]; actions?: boolean } = {}): PageEnv {
-  const env = pageEnv(pultPage(o.lang ?? "ru", brand, false, { ...(o.rules && { rules: o.rules }), ...(o.actions && { actions: true }) }), o);
+function start(o: Parameters<typeof pageEnv>[1] & { lang?: "ru" | "en"; noFocus?: boolean; rules?: readonly Rule89[]; actions?: boolean; faults?: boolean; clientAuto?: boolean } = {}): PageEnv {
+  const env = pageEnv(
+    pultPage(o.lang ?? "ru", brand, false, { ...(o.rules && { rules: o.rules }), ...(o.actions && { actions: true }), ...(o.faults && { faults: true }), ...(o.clientAuto !== undefined && { clientAuto: o.clientAuto }) }),
+    o,
+  );
   if (!o.noFocus) env.run(FOCUS_JS);
   env.run(PULT_JS);
   return env;
@@ -820,5 +824,124 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
     expect(res).toContain(ru("act.not_extended"));
     expect(res).not.toContain(ru("act.done"));
+  });
+});
+
+// Видимая часть П-11.2 / П-11.4 (Р-1482, Р-1514): блок «Поломки» и строка эмулятора клиента — только в режиме сбоев.
+describe("«Поломки» и «Авто» на пульте (видимая часть П-11.2 / П-11.4)", () => {
+  const H03 = encodeURIComponent("Н-03");
+  const withFetch = (env: PageEnv, answer: (url: string) => unknown) => {
+    const calls: string[] = [];
+    env.window.fetch = (url: string) => {
+      calls.push(url);
+      return Promise.resolve({ json: () => Promise.resolve(answer(url)) });
+    };
+    return calls;
+  };
+  const faultBtn = (env: PageEnv, test: string, op: "arm" | "disarm") =>
+    $(env, "pult-faults").querySelectorAll("button[data-fault]").find((b) => b.dataset.fault === test && b.dataset.faultOp === op)!;
+  const result = (env: PageEnv, test: string) => $(env, "pult-faults").querySelectorAll("[data-fault-result]").find((x) => x.dataset.faultResult === test)!.textContent;
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("без режима сбоев блока нет — ни кнопок, ни строки «Авто»", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      expect(env.document.getElementById("pult-faults"), lang).toBeNull();
+      expect(env.document.getElementById("client-auto"), lang).toBeNull();
+      expect(env.document.querySelectorAll("button[data-fault]"), lang).toEqual([]);
+    }
+  });
+
+  // Ответ сервера по форме `StandFaultResult`: тест из адреса, витрина — какую взвёл сервер (выбранную им самим тоже).
+  const testOf = (url: string) => decodeURIComponent(url.split("/")[2]!);
+  const serverAnswer = (url: string) =>
+    url.includes("/disarm")
+      ? { ok: false, code: "NOT_ARMED" }
+      : { ok: true, test: testOf(url), options: url.includes("merchant_id=") ? { merchant_id: new URLSearchParams(url.split("?")[1]).get("merchant_id") } : testOf(url) === "Н-02" ? {} : { merchant_id: "m-chosen" } };
+
+  it("в режиме сбоев: шесть тестов «П» стенда; витрина — только у Н-03…Н-05 и только при транзакции в фокусе; ответ — как есть, с витриной из ответа", async () => {
+    const env = start({ faults: true });
+    const calls = withFetch(env, serverAnswer);
+    expect(new Set($(env, "pult-faults").querySelectorAll("button[data-fault]").map((b) => b.dataset.fault))).toEqual(new Set(STAND_FAULT_TESTS));
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [{ ...card("T1", "pay"), merchantIds: ["m-shop1"] }], jumps: [] } });
+    // Без фокуса — витрину выбирает сервер; на экране — его выбор из ответа (ревью № 3).
+    faultBtn(env, "Н-04", "arm").click();
+    await tick();
+    expect(result(env, "Н-04")).toBe(`${ru("faults.armed")} · m-chosen`);
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T1" } }));
+    faultBtn(env, "Н-03", "arm").click();
+    faultBtn(env, "Н-02", "arm").click();
+    expect(calls).toEqual([`/stand-fault/${encodeURIComponent("Н-04")}/arm`, `/stand-fault/${H03}/arm?merchant_id=m-shop1`, `/stand-fault/${encodeURIComponent("Н-02")}/arm`]);
+    await tick();
+    expect(result(env, "Н-03")).toBe(`${ru("faults.armed")} · m-shop1`);
+    expect(result(env, "Н-02")).toBe(ru("faults.armed"));
+    // Отказ сервера — «отказано» с кодом, не «сделано»; ответ не JSON (403 текстом) — «отказано · HTTP 403» (ревью № 6).
+    faultBtn(env, "Н-03", "disarm").click();
+    await tick();
+    expect(result(env, "Н-03")).toBe(`${ru("faults.refused")} · NOT_ARMED`);
+    env.window.fetch = () => Promise.resolve({ status: 403, json: () => Promise.reject(new SyntaxError("text")) });
+    faultBtn(env, "Н-11", "arm").click();
+    await tick();
+    expect(result(env, "Н-11")).toBe(`${ru("faults.refused")} · HTTP 403`);
+  });
+
+  it("ревью № 2, 3, 7: ответ — только на последнее нажатие и только о своём тесте; витрина в фокусе не определена — запроса нет", async () => {
+    const env = start({ faults: true });
+    // Ответы приходят в обратном порядке: сначала на «снять», потом на «взвести».
+    const pending: Array<{ url: string; resolve: (v: unknown) => void }> = [];
+    env.window.fetch = (url: string) => new Promise((resolve) => pending.push({ url, resolve: (v) => resolve({ json: () => Promise.resolve(v) }) }));
+    faultBtn(env, "Н-12", "arm").click();
+    faultBtn(env, "Н-12", "disarm").click();
+    pending[1]!.resolve({ ok: true, test: "Н-12", options: {} });
+    await tick();
+    pending[0]!.resolve({ ok: true, test: "Н-12", options: {} });
+    await tick();
+    expect(result(env, "Н-12")).toBe(ru("faults.disarmed"));
+    // Ответ «ok» о другом тесте — не «сделано».
+    faultBtn(env, "Н-11", "arm").click();
+    pending[2]!.resolve({ ok: true, test: "Н-02", options: {} });
+    await tick();
+    expect(result(env, "Н-11")).toBe(ru("act.failed"));
+    // Транзакция в фокусе с двумя продавцами или без карточки — запрос не уходит, человеку сказано почему.
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [{ ...card("T2", "pay"), merchantIds: ["m-a", "m-b"] }], jumps: [] } });
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T2" } }));
+    faultBtn(env, "Н-05", "arm").click();
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T-нет" } }));
+    faultBtn(env, "Н-03", "arm").click();
+    expect(pending).toHaveLength(3);
+    expect(result(env, "Н-05")).toBe(ru("faults.shop_ambiguous"));
+    expect(result(env, "Н-03")).toBe(ru("faults.shop_ambiguous"));
+  });
+
+  it("строка «Авто»: начальный режим — с сервера (эмулятор), затем по доске; доска без шага режима известный режим не сбрасывает; переключатель — POST, ответ как есть", async () => {
+    const unknown = start({ faults: true, lang: "en" });
+    expect($(unknown, "client-auto").textContent).toBe(PULT["auto.unknown"].en);
+    const env = start({ faults: true, lang: "en", clientAuto: true });
+    const calls = withFetch(env, (url) => ({ auto: url.endsWith("/on") }));
+    expect($(env, "client-auto").textContent).toBe(PULT["auto.on"].en);
+    // Шаг режима ушёл из окна записей — доска без `clientAuto`: строка остаётся «авто» (ревью № 4, П5 п. 3).
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [] } });
+    expect($(env, "client-auto").textContent).toBe(PULT["auto.on"].en);
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], clientAuto: false } });
+    expect($(env, "client-auto").textContent).toBe(PULT["auto.off"].en);
+    $(env, "pult-faults").querySelector("button[data-auto='on']")!.click();
+    expect(calls).toEqual(["/client/auto/on"]);
+    await tick();
+    expect($(env, "client-auto").textContent).toBe(PULT["auto.on"].en);
+  });
+
+  it("ревью № 11: переподключение после перезапуска стенда — режим из `hello` источника, а не запомненный страницей", () => {
+    const env = start({ faults: true, clientAuto: true });
+    const es = env.sources[0]!;
+    es.send({ type: "hello", status: "live", faults: true, clientAuto: true });
+    es.send({ type: "board", board: { now: NOW, cards: [], jumps: [], clientAuto: true } });
+    expect($(env, "client-auto").textContent).toBe(ru("auto.on"));
+    // Стенд перезапущен: новый эмулятор во «Вручную», шага режима нет; EventSource переподключился — новый `hello`.
+    es.send({ type: "hello", status: "live", faults: true, clientAuto: false });
+    es.send({ type: "board", board: { now: NOW, cards: [], jumps: [] } });
+    expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
+    // `hello` без режима (эмулятора нет) известный режим не трогает.
+    es.send({ type: "hello", status: "live", faults: true });
+    expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
   });
 });

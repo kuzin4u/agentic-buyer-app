@@ -245,6 +245,28 @@ export const PULT = {
   // {sec} — срок из `stand.params.order_hold_sec` (ревью П-1.3 № 5, П-8.1), не литерал.
   "mode.faults_note": p("прогон тестов пульта: сбои стенда по кнопкам, срок подтверждения {sec} с", "console test run: stand faults by buttons, confirmation deadline {sec} s"),
   "status.pult_closed": p("пульт отключён от сервера стенда — обновите страницу", "the console is disconnected from the stand server — reload the page"),
+  // Видимая часть П-11.2 / П-11.4 (Р-1482, Р-1514): блок «Поломки» и строка эмулятора клиента — только в режиме сбоев.
+  "faults.title": p("Поломки стенда", "Stand faults"),
+  "faults.note": p(
+    "только прогон тестов; Н-03, Н-04, Н-05 — на витрину транзакции в фокусе, без фокуса — продавца карточки идущего сюжета",
+    "test runs only; Н-03, Н-04, Н-05 — on the shop of the focused transaction, without focus — the seller of the running story's card",
+  ),
+  "faults.arm": p("взвести", "arm"),
+  "faults.disarm": p("снять", "disarm"),
+  // Ответ на нажатие, а не состояние сбоя (стенд снимает Н-02 сам, драйвер «ПР» взводит и снимает сам — ревью № 1).
+  "faults.armed": p("ответ стенда: взведено", "stand answer: armed"),
+  "faults.disarmed": p("ответ стенда: снято", "stand answer: disarmed"),
+  "faults.refused": p("отказано", "refused"),
+  "faults.shop_ambiguous": p(
+    "витрина транзакции в фокусе не определена (карточки нет или продавцов несколько) — запрос не отправлен",
+    "the focused transaction's shop is not certain (no card or several sellers) — no request sent",
+  ),
+  "auto.title": p("Эмулятор клиента", "Client emulator"),
+  "auto.on": p("авто", "auto"),
+  "auto.off": p("вручную", "manual"),
+  "auto.unknown": p("нет данных", "unknown"),
+  "auto.set_on": p("включить «Авто»", "switch to Auto"),
+  "auto.set_off": p("перейти на «Вручную»", "switch to manual"),
 } as const;
 
 /** Переключатель «Пульт · Экран · Монитор» (Р-1332 в. 2): пульт — основной для управления; экраны (простые виды
