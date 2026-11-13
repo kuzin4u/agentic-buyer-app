@@ -2,7 +2,20 @@
 // Акт ничего не вычисляет (инвариант 2); ячейки — текстом (инвариант 4); ревью П-4.3 № 3 — автоссылки GFM и «~~».
 import { describe, expect, it } from "vitest";
 import type { Interpretation } from "../../src/dashboards/interpret.js";
-import { acc1Csv, acc1CsvCell, acc1Markdown, acc1MdCell, acc1Rows, acc1Unlinked, KNOWN_NOTES, type Acc1Record } from "../../src/pult/acc1.js";
+import {
+  ACC1_EXPORT_LABEL,
+  ACC1_EXPORTS,
+  acc1Csv,
+  acc1CsvCell,
+  acc1CsvExcel,
+  acc1Markdown,
+  acc1MdCell,
+  acc1Rows,
+  acc1Unlinked,
+  KNOWN_NOTES,
+  UTF8_BOM,
+  type Acc1Record,
+} from "../../src/pult/acc1.js";
 import { TABLE_NOTE, TEST_CODES, testTable, type TestRow, type TestTable } from "../../src/pult/testtable.js";
 import type { PultTx } from "../../src/pult/tx.js";
 
@@ -15,7 +28,7 @@ const withRows = (patch: Partial<Record<string, Partial<TestRow>>>): TestTable =
 });
 const row = (rs: ReturnType<typeof acc1Rows>, test: string) => rs.find((r) => r.test === test)!;
 /** Разбор CSV RFC 4180 (кавычки, удвоенная кавычка, CRLF) — только для проверки. */
-function parseCsv(s: string): string[][] {
+function parseCsv(s: string, sep = ","): string[][] {
   const out: string[][] = [];
   let rec: string[] = [];
   let cell = "";
@@ -29,7 +42,7 @@ function parseCsv(s: string): string[][] {
       } else if (c === '"') q = false;
       else cell += c;
     } else if (c === '"') q = true;
-    else if (c === ",") {
+    else if (c === sep) {
       rec.push(cell);
       cell = "";
     } else if (c === "\r" && s[i + 1] === "\n") {
@@ -149,6 +162,35 @@ describe("К2: ячейка Markdown — текстом (инвариант 4; �
     expect(en).not.toMatch(/[«»]/);
     expect(en).not.toMatch(/pult/i);
     expect(en).toMatch(/console/i);
+  });
+});
+
+describe("К3: CSV для Excel — UTF-8 с BOM и «;» (решение владельца 13.11)", () => {
+  it("начинается с BOM, поля через «;», 26 строк по 8 полей; машинный CSV — без BOM и через запятую", () => {
+    const t = withRows({ "П-01": { fact: lit("a; b, c") }, "П-02": { fact: lit("=1+1") } });
+    for (const lang of ["ru", "en"] as const) {
+      const xl = acc1CsvExcel(t, lang);
+      expect(parseCsv(xl.slice(1), ";")[2]![3]).toBe("'=1+1"); // защита от формул — и в выгрузке для Excel (ревью К3 № 3)
+      expect(xl.startsWith(UTF8_BOM)).toBe(true);
+      expect(Buffer.from(xl, "utf8").subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+      const recs = parseCsv(xl.slice(1), ";");
+      expect(recs).toHaveLength(26);
+      for (const r of recs) expect(r).toHaveLength(8);
+      expect(recs[1]![3]).toBe("a; b, c");
+      expect(recs[0]![0]).toBe(lang === "ru" ? "№ теста" : "Test No.");
+      const plain = acc1Csv(t, lang);
+      expect(plain.startsWith(UTF8_BOM)).toBe(false);
+      expect(parseCsv(plain)[0]).toHaveLength(8);
+      // та же таблица — те же ячейки
+      expect(parseCsv(plain)).toEqual(recs);
+    }
+  });
+  it("подписи выгрузок для кнопок «Отчёта» — у каждой ru и en", () => {
+    for (const k of ACC1_EXPORTS) {
+      expect(ACC1_EXPORT_LABEL[k].ru, k).not.toBe("");
+      expect(ACC1_EXPORT_LABEL[k].en, k).not.toBe("");
+    }
+    expect(ACC1_EXPORT_LABEL.csv_excel.ru).toBe("CSV для Excel");
   });
 });
 

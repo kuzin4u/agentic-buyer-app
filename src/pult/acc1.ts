@@ -157,12 +157,37 @@ export function acc1Markdown(table: TestTable, lang: Acc1Lang, records: readonly
   return out.join("\n");
 }
 
-/** Акт ACC-1 в CSV: строка заголовка, 25 строк и строка записей без теста (если есть); разделитель — запятая, конец строки —
- *  CRLF (RFC 4180). */
-export function acc1Csv(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
-  const line = (xs: readonly string[]) => xs.map(acc1CsvCell).join(",");
+function csvWith(sep: "," | ";", table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[]): string {
+  const line = (xs: readonly string[]) => xs.map(acc1CsvCell).join(sep);
   const out = [line(HEAD[lang]), ...acc1Rows(table, records).map((r) => line(cells(r, lang)))];
   const free = acc1Unlinked(table, records);
   if (free.length) out.push(line(["", "", "", "", "", `${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`, "", ""]));
   return out.join("\r\n") + "\r\n";
 }
+
+/** Акт ACC-1 в CSV для машинного чтения: строка заголовка, 25 строк и строка записей без теста (если есть); разделитель —
+ *  запятая, без BOM, конец строки — CRLF (RFC 4180). */
+export function acc1Csv(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
+  return csvWith(",", table, lang, records);
+}
+
+/** Знак порядка байтов UTF-8 (U+FEFF): без него Excel читает файл в кодировке системы и портит кириллицу. Кодом знака, не
+ *  литералом — невидимый знак в исходнике теряется при правке (ревью К3 № 2). */
+export const UTF8_BOM = String.fromCharCode(0xfeff);
+
+/** Акт ACC-1 в CSV для Excel с русскими настройками (К3, решение владельца 13.11): UTF-8 с BOM, разделитель «;» (так Excel
+ *  с русскими настройками делит колонки), остальное — как в `acc1Csv`. Отдавать файлом в UTF-8. */
+export function acc1CsvExcel(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
+  return UTF8_BOM + csvWith(";", table, lang, records);
+}
+
+/** Выгрузки акта и подписи кнопок для экрана «Отчёт» (кнопки — окно А, П-6.2). */
+export const ACC1_EXPORTS = ["md", "csv", "csv_excel"] as const;
+export type Acc1Export = (typeof ACC1_EXPORTS)[number];
+export const ACC1_EXPORT_LABEL: Readonly<Record<Acc1Export, Phrase>> = {
+  md: p("Markdown", "Markdown"),
+  csv: p("CSV (машинное чтение)", "CSV (machine-readable)"),
+  // «;» Excel делит на колонки только при региональных настройках с «;» (Россия, большая часть Европы) — в en это сказано
+  // прямо: при en-US файл ляжет в одну колонку (ревью К3 № 1).
+  csv_excel: p("CSV для Excel", "CSV for Excel (semicolon-separated)"),
+};
