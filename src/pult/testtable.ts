@@ -1,14 +1,14 @@
-// Таблица тестирования пульта (П-11.5а, окно Б; Р-1533, Р-1534, Р-1538): 25 тестов «Задания на тестирование пульта» v1.0
-// (`docs/reference/2026-11-07-zadanie-testirovanie-pulta-v1.0.xlsx`, лист «Задание на тестирование») ↔ вердикты движка и
-// паспорта ↔ ожидания задания; колонки задания «MVP — факт» и «MVP — сходится», итоги — как лист «Итоги». Чистая функция:
-// факты — только из интерпретаций, модели транзакций, вердиктов, журнала стенда и журнала реакций; время — параметром. UI
-// таблицы и живой прогон 25 тестов — П-11.5б окна А.
+// Таблица тестирования пульта (П-11.5а, окно Б; Р-1533, Р-1534, Р-1538): 25 тестов «Задания на тестирование пульта» v1.1
+// (`docs/reference/2026-11-13-zadanie-testirovanie-pulta-v1.1.xlsx`, лист «Задание на тестирование»; решение владельца
+// 13.11) ↔ вердикты движка и паспорта ↔ ожидания задания; колонки задания «MVP — факт» и «MVP — сходится», итоги — как лист
+// «Итоги». Чистая функция: факты — только из интерпретаций, модели транзакций, вердиктов, журнала стенда и журнала реакций;
+// время — параметром. UI таблицы и живой прогон 25 тестов — П-11.5б окна А.
 //
-// Ожидания — **структурой** (Р-1534, В1): условия, узел, нарушитель, защитник, итог. Текст колонки E не разбирается — разбор
-// текста ломается на первой новой формулировке. Перенос из файла сверен скриптом (PR #15, #issuecomment-6835117541: 25 строк,
-// 0 расхождений); файл v1.0 сменился — тест sha256 краснеет, структура пересверяется. Колонка «Ожидание на стенде (MVP)»
-// задания v1.1 — параметром `mvp` (данные — отдельным кирпичом, когда владелец положит файл); без неё — v1.0 и отступление
-// там, где оно записано в STATUS: В7 (Н-03, Н-12), В8 (Н-08), «Расхождения» № 7 (Н-06, П-09) и № 8 (П-06).
+// Ожидания — **структурой** (Р-1534, В1): условия, узел, нарушитель, защитник, итог. Текст задания не разбирается — разбор
+// текста ломается на первой новой формулировке; xlsx при работе не читается. «Сходится» — по столбцу M «Ожидание на стенде
+// (MVP)» задания v1.1, а не по E. Столбцы A–L v1.1 — те же, что в v1.0: `v10` — колонка E (сверка скриптом — PR #15,
+// #issuecomment-6835117541), `mvp` — столбец M (сверка скриптом — PR #16, К1); нет `mvp` — M структурой совпадает с E.
+// Файл v1.1 сменился — тест sha256 краснеет, структура пересверяется.
 //
 // Привязка теста к фактам (Р-1534, В2) — закрытым перечнем, тест сверяет его с метками сюжетов, перечнем драйвера «ПР» и
 // тестами стенда (Р-1511): П-xx и У-xx — последний прогон сюжета по метке `run.<имя>` без взведённого сбоя «П»; Н-xx «ПР» —
@@ -24,7 +24,6 @@
 // реакцией» (П-8.2). «Авто» (В4): у У-01…У-04 — «не засчитано: прогон не по П5 доп. 1 п. 5», у остальных — пометка, на
 // «сходится» не влияет.
 import { faultOf, splitRuns, type FaultOutcome, type Run } from "../dashboards/control.js";
-import { markdownCell } from "../dashboards/control-feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import { NOT_REPRODUCIBLE_LABEL, STAND_TEST_TABLE } from "../dashboards/stand-tests.js";
 import type { Reaction } from "./actions.js";
@@ -79,11 +78,20 @@ export interface ExpectFinding {
   readonly conds: readonly CheckableCondition[];
   readonly node?: NodeId;
   readonly violator: Party;
-  /** Защитник — только там, где его называет ожидание на стенде (Н-03, В7). */
+  /** Защитник — только там, где его называет ожидание на стенде (Н-03, столбец M v1.1). */
   readonly protector?: Party;
-  /** Условия, которые должны остаться без паспорта (Н-03 на стенде: R28, R30 — «ok», В7). */
+  /** Ветка по исходу прогона драйвера «ПР» (Р-1545, Р-1546): отказ — только «сработало» с этим защитником; операция прошла —
+   *  только «нарушено» без защитника (Н-08: отказала Платформа — защитила Платформа; паспорт в обоих случаях). Ветка
+   *  «сработало» на стенде достижима с кирпича № 10 окна А (`cf35e9e`, Р-1548) — `tests/demo/acc1-n08-live.test.ts`. */
+  readonly firedBy?: Party;
+  /** Условия, которые должны остаться без паспорта (Н-03 на стенде: R28, R30 — «соблюдено», столбец M v1.1). */
   readonly okConds?: readonly CheckableCondition[];
 }
+/** Защитник ожидания: один или перечень допустимых (П-07, П-08 — «Платформа или агент», столбец M v1.1; Р-1545). Задан —
+ *  вердикт с защитником «не определён» не подходит (Р-1519, Р-1522: «не определён» — не защита). */
+export type ExpectProtector = Party | readonly Party[];
+const protectorOk = (want: ExpectProtector | undefined, got: Party | "undetermined" | undefined): boolean =>
+  want === undefined || (got !== undefined && got !== "undetermined" && (typeof want === "string" ? want === got : want.includes(got)));
 export type Expect =
   | {
       readonly kind: "correct";
@@ -95,29 +103,26 @@ export type Expect =
         readonly kind: "client_decision" | "protection";
         readonly cond?: CheckableCondition;
         readonly guarantee?: Guarantee;
-        readonly protector?: Party;
+        readonly protector?: ExpectProtector;
       };
       /** Операции не было: поручение без покупки. */
       readonly noOperation?: true;
     }
   /** `passport: null` — паспорта нет. `fired` — сбой обязан сработать: запись журнала стенда в окне, итог по её операции
-   *  есть (Н-12 на стенде, В7); не сработал или итога ещё нет — «не проверено». */
+   *  есть (Н-12 на стенде, столбец M v1.1); не сработал или итога ещё нет — «не проверено». */
   | { readonly kind: "incorrect"; readonly passport: ExpectFinding | null; readonly fired?: readonly StandLogWhat[] }
   | { readonly kind: "toward"; readonly wait: Exclude<WaitKind, "agent_step">; readonly cond: "R08" | "R18" | "R21" }
-  | { readonly kind: "prevented"; readonly cond: "R21" };
-
-/** Отступление от задания v1.0 на стенде — номером записи STATUS. */
-export type DeviationRef = "В7" | "В8" | "№ 7" | "№ 8";
-/** Кирпич окна А, до которого строка заведомо «не сходится» (Р-1534, Р-1538). */
-export type PendingRef = "П-5.1а" | "П-8.1";
+  | { readonly kind: "prevented"; readonly cond: "R21" }
+  /** Нет случая на стенде (Н-10: данных карты нет нигде, инвариант 1). */
+  | { readonly kind: "no_case" };
 
 interface Spec {
   readonly test: TestCode;
   readonly kind: TestKind;
-  /** Ожидание задания v1.0 (колонки E и C) структурой. */
+  /** Ожидание модели — колонки E и C задания (v1.0 = v1.1) структурой. */
   readonly v10: Expect;
-  readonly stand?: { readonly expect: Expect; readonly ref: DeviationRef };
-  readonly pending?: PendingRef;
+  /** Ожидание на стенде — столбец M задания v1.1; нет — M структурой совпадает с E. */
+  readonly mvp?: Expect;
 }
 
 const ok = (outcome: TxOutcomeKind, code?: string) => ({ kind: outcome, ...(code !== undefined && { code }) });
@@ -126,63 +131,89 @@ const bad = (conds: readonly CheckableCondition[], violator: Party, node?: NodeI
   passport: { conds, violator, ...(node !== undefined && { node }) },
 });
 
-/** 25 строк задания. Источник — колонки E и C листа «Задание на тестирование» v1.0 (сверка скриптом — PR #15); отступления — STATUS. */
+/** 25 строк задания: `v10` — колонки E и C (сверка скриптом — PR #15), `mvp` — столбец M v1.1 (сверка скриптом — PR #16). */
 export const TEST_SPECS: readonly Spec[] = [
   { test: "П-01", kind: "correct", v10: { kind: "correct", outcome: ok("paid") } },
   { test: "П-02", kind: "correct", v10: { kind: "correct", outcome: ok("paid") } },
-  // Ложный паспорт R09 `inactive_agent_stop` после отказа клиента от корзины — четвёртый ложный вердикт окна А (Р-1538).
-  { test: "П-03", kind: "correct", v10: { kind: "correct", decision: { kind: "client_decision" } }, pending: "П-8.1" },
-  { test: "П-04", kind: "correct", v10: { kind: "correct", outcome: ok("rejected") } },
+  // M: R09 «сработало», причина «решение клиента» (`rejected_*`: MANDATE_NOT_ACTIVE после `mandate.rejected`), паспорта нет.
+  {
+    test: "П-03",
+    kind: "correct",
+    v10: { kind: "correct", decision: { kind: "client_decision" } },
+    mvp: { kind: "correct", decision: { kind: "client_decision", cond: "R09" } },
+  },
+  // M: R21 «сработало» — срок подтверждения истёк без оплаты, решение клиента, защитила Платформа (`confirmation_expired`).
+  // `confirmation.expired` итогом транзакции не становится (`tx.ts`) — итога в ожидании нет.
+  {
+    test: "П-04",
+    kind: "correct",
+    v10: { kind: "correct", outcome: ok("rejected") },
+    mvp: { kind: "correct", decision: { kind: "client_decision", cond: "R21", protector: "platform" } },
+  },
+  // M: «защита „лимит клиента“, защитил банк» — «защита» здесь название гарантии `limit_client`; вид вердикта у неё — решение
+  // клиента (`verdict.ts`, `BY_GUARANTEE.limit_client`), паспорта нет (ревью К1 № 6).
   {
     test: "П-05",
     kind: "correct",
     v10: { kind: "correct", outcome: ok("declined", "LIMIT_EXCEEDED"), decision: { kind: "client_decision", guarantee: "limit_client", protector: "bank" } },
   },
+  // M: агент сам отказывает продавцу (журнал агента MANDATE_OUT_OF_SCOPE) раньше `valid_to` — R17 «сработало», защитил АГЕНТ.
   {
     test: "П-06",
     kind: "correct",
     v10: { kind: "correct", decision: { kind: "protection", cond: "R17", guarantee: "mandate_scope", protector: "platform" } },
-    // № 8: на стенде агент сам отказывается от продавца вне поручения, до корзины и без запроса к Платформе; после П-5.1а —
-    // R17 «сработало, защитил агент» (заметка чата #issuecomment-6834520498).
-    stand: { expect: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R17", guarantee: "mandate_scope", protector: "agent" } }, ref: "№ 8" },
-    pending: "П-5.1а",
+    mvp: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R17", guarantee: "mandate_scope", protector: "agent" } },
   },
-  { test: "П-07", kind: "correct", v10: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended", protector: "platform" } } },
+  // M: защитник по источнику — Платформа (403) или агент (журнал агента); «не определён» — «нет» (Р-1545).
+  {
+    test: "П-07",
+    kind: "correct",
+    v10: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended", protector: "platform" } },
+    mvp: { kind: "correct", decision: { kind: "protection", guarantee: "agent_suspended", protector: ["platform", "agent"] } },
+  },
   // Отзыв — гарантией `revoke` или условием R09 (гарантию подавляет вердикт R09 в том же объекте, `COVERED` в `verdict.ts`).
-  { test: "П-08", kind: "correct", v10: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke", protector: "agent" } } },
+  // M: защитил агент или Платформа — засчитываются оба; «не определён» — «нет» (Р-1545).
+  {
+    test: "П-08",
+    kind: "correct",
+    v10: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke", protector: "agent" } },
+    mvp: { kind: "correct", decision: { kind: "client_decision", cond: "R09", guarantee: "revoke", protector: ["agent", "platform"] } },
+  },
+  // M: поручение без покупки, отказ ядра в момент `valid_to` или позже — R09 «сработало», срок, защитил агент.
   {
     test: "П-09",
     kind: "correct",
     v10: { kind: "correct", noOperation: true, decision: { kind: "protection" } },
-    // № 7: на стенде — поручение без покупки, агент остановился по сроку; после П-5.1а — R09 «сработало, срок, защитил агент».
-    stand: { expect: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R09", protector: "agent" } }, ref: "№ 7" },
-    pending: "П-5.1а",
+    mvp: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R09", protector: "agent" } },
   },
   { test: "Н-01", kind: "incorrect", v10: bad(["R46"], "agent", "У2") },
   { test: "Н-02", kind: "incorrect", v10: bad(["R23", "R25"], "platform", "У2") },
+  // M: пульт по инварианту 6 слова продавца итогом не берёт — R27 «сработало», нарушил продавец, защитил пульт; R28, R30
+  // «соблюдено»; паспорта «нарушил: оператор» нет.
   {
     test: "Н-03",
     kind: "incorrect",
     v10: bad(["R27", "R28", "R30"], "operator", "У3"),
-    // В7: пульт по инварианту 6 слова продавца итогом не берёт — R27 «сработало», нарушил продавец, защитил пульт; R28, R30 — «ok».
-    stand: { expect: { kind: "incorrect", passport: { conds: ["R27"], node: "У3", violator: "merchant", protector: "operator", okConds: ["R28", "R30"] } }, ref: "В7" },
+    mvp: { kind: "incorrect", passport: { conds: ["R27"], node: "У3", violator: "merchant", protector: "operator", okConds: ["R28", "R30"] } },
   },
   { test: "Н-04", kind: "incorrect", v10: bad(["R32"], "merchant", "У3") },
   { test: "Н-05", kind: "incorrect", v10: bad(["R47"], "agent", "У1") },
-  // № 7: R09 «оплачено после отзыва» — «не определён» (гонка С-28); R37 по пометке «ПР» — агент, У5.
-  { test: "Н-06", kind: "incorrect", v10: bad(["R37", "R09", "R18"], "agent", "У5"), stand: { expect: bad(["R37"], "agent", "У5"), ref: "№ 7" } },
+  // M: «сходится» — по R37 + агент + У5. Правило вердикта остаётся: R09 «оплачено после отзыва» — нарушитель «не определён»
+  // (гонка С-28, «Расхождения» № 7); R18 «нарушено» — только если шина покажет оплату без согласия.
+  { test: "Н-06", kind: "incorrect", v10: bad(["R37", "R09", "R18"], "agent", "У5"), mvp: bad(["R37"], "agent", "У5") },
   { test: "Н-07", kind: "incorrect", v10: bad(["R18"], "agent") },
-  // В8: R17 «сработало» при отказе Платформы, иначе «нарушено» — нарушил агент в обоих случаях, паспорт есть.
-  { test: "Н-08", kind: "incorrect", v10: bad(["R17"], "agent"), stand: { expect: bad(["R17"], "agent"), ref: "В8" } },
+  // M: Платформа отказала MANDATE_SCOPE — R17 «сработало», защитила Платформа; не отказала — R17 «нарушено», защитника нет.
+  // Нарушил агент (пометка «ПР») и паспорт есть в обоих случаях (П-4.1); статус и защитник разведены полем `firedBy` (Р-1545).
+  { test: "Н-08", kind: "incorrect", v10: bad(["R17"], "agent"), mvp: { kind: "incorrect", passport: { conds: ["R17"], violator: "agent", firedBy: "platform" } } },
   { test: "Н-09", kind: "incorrect", v10: bad(["R26"], "agent") },
-  { test: "Н-10", kind: "incorrect", v10: bad(["R41"], "agent") },
+  { test: "Н-10", kind: "incorrect", v10: bad(["R41"], "agent"), mvp: { kind: "no_case" } },
   { test: "Н-11", kind: "incorrect", v10: bad(["R20"], "bank") },
-  // В7: позднее событие пульт учитывает — R31 «ok, позднее событие учтено»: сбой сработал, итог есть, паспорта нет.
+  // M: итог пришёл до срока 75 с — R31 «соблюдено, позднее событие учтено»: сбой сработал, итог есть, паспорта нет.
   {
     test: "Н-12",
     kind: "incorrect",
     v10: bad(["R31"], "operator", "У4"),
-    stand: { expect: { kind: "incorrect", passport: null, fired: FAULT_WHAT["Н-12"] }, ref: "В7" },
+    mvp: { kind: "incorrect", passport: null, fired: FAULT_WHAT["Н-12"] },
   },
   { test: "У-01", kind: "toward", v10: { kind: "toward", wait: "sign", cond: "R08" } },
   { test: "У-02", kind: "toward", v10: { kind: "toward", wait: "consent", cond: "R18" } },
@@ -201,21 +232,21 @@ export const AGREE_LABEL: Readonly<Record<Agree, Phrase>> = {
   not_counted: p("не засчитано: прогон не по П5 доп. 1 п. 5", "not counted: the run is not per П5 add. 1 item 5"),
 };
 
-export type ExpectSource = { readonly kind: "v1.0" } | { readonly kind: "v1.1" } | { readonly kind: "deviation"; readonly ref: DeviationRef };
-
 export interface TestRow {
   readonly test: TestCode;
   readonly kind: TestKind;
+  /** Ожидание на стенде — столбец M задания v1.1. */
   readonly expected: Phrase;
-  readonly source: ExpectSource;
   /** «MVP — факт»: только идентификаторы, коды и подписи (инварианты 1, 4). */
   readonly fact: Phrase;
   readonly agree: Agree;
   /** В прогоне работал эмулятор клиента «Авто» (П5 п. 3). */
   readonly auto: boolean;
-  /** Строка «нет» до кирпича окна А — адрес. */
-  readonly pending?: PendingRef;
-  /** Объекты прогона: транзакции и поручения. */
+  /** Метка прогона теста (`run.<имя>`, `run.fault Н-xx`, `stand_fault.armed Н-xx`); нет — прогона нет. */
+  readonly run?: string;
+  /** Исход прогона драйвера нарушителя «ПР», если строка судится по нему (`run.fault Н-xx`). */
+  readonly driver?: FaultOutcome;
+  /** Объекты прогона: транзакции, поручения и запросы подтверждения транзакций окна (реакции пульта бывают и на них). */
   readonly objs: readonly string[];
 }
 export interface TestTotals {
@@ -246,8 +277,6 @@ export interface TestTableInput {
   /** «Сейчас» по часам шины. */
   readonly now: string;
   readonly waitMs?: number;
-  /** Колонка «Ожидание на стенде (MVP)» задания v1.1 — когда файл есть (Р-1534, В1). */
-  readonly mvp?: Partial<Readonly<Record<TestCode, Expect>>>;
 }
 
 // ——— подписи ———
@@ -273,22 +302,11 @@ const WAIT_LABEL: Readonly<Record<Exclude<WaitKind, "agent_step">, Phrase>> = {
   confirmation: p("подтверждение ждёт клиента", "the confirmation awaits the client"),
 };
 const party = (x: Party | "undetermined"): Phrase => (x === "undetermined" ? p("не определён", "undetermined") : PARTY_LABEL[x]);
-const DEVIATION_LABEL: Readonly<Record<DeviationRef, Phrase>> = {
-  В7: p("на стенде — отступление В7 (STATUS «Открыто»)", "on the stand — deviation В7 (STATUS, open items)"),
-  В8: p("на стенде — отступление В8 (STATUS «Открыто»)", "on the stand — deviation В8 (STATUS, open items)"),
-  "№ 7": p("на стенде — «Расхождения» № 7", "on the stand — discrepancy № 7"),
-  "№ 8": p("на стенде — «Расхождения» № 8", "on the stand — discrepancy № 8"),
-};
-export const sourceLabel = (s: ExpectSource): Phrase =>
-  s.kind === "deviation" ? DEVIATION_LABEL[s.ref] : s.kind === "v1.1" ? p("задание v1.1", "task v1.1") : p("задание v1.0", "task v1.0");
-export const PENDING_LABEL: Readonly<Record<PendingRef, Phrase>> = {
-  "П-5.1а": p("ждёт кирпича окна А П-5.1а (вердикт защиты на стенде)", "awaits window A brick П-5.1а (protection verdict on the stand)"),
-  "П-8.1": p("ждёт правки окна А (хвосты П-8.1): ложный паспорт R09 после отказа от корзины", "awaits window A fix (П-8.1 tail): false R09 passport after a cart refusal"),
-};
+const parties = (x: ExpectProtector): Phrase => (typeof x === "string" ? party(x) : join(x.map(party), " / "));
 /** Примечание таблицы (Р-1534, В3): ограничение пульта — не молча. */
 export const TABLE_NOTE: Phrase = p(
   "Н-xx: «сходится» — хотя бы один паспорт с ожидаемым условием, узлом и нарушителем. «Каждая транзакция поймана» пульт не проверяет: на какой транзакции сработал сбой, знает стенд, а не пульт.",
-  "Н-xx: «yes» means at least one passport with the expected condition, node and violator. The pult does not check that every transaction was caught: only the stand knows which transactions a fault hit.",
+  'Н-xx: "yes" means at least one passport with the expected condition, node and violator. The console does not check that every transaction was caught: only the stand knows which transactions a fault hit.',
 );
 
 const join = (parts: readonly Phrase[], sep = " · "): Phrase => p(parts.map((x) => x.ru).join(sep), parts.map((x) => x.en).join(sep));
@@ -309,7 +327,7 @@ export function expectPhrase(e: Expect): Phrase {
             d.kind === "client_decision" ? p("решение клиента", "client's decision") : p("сработала защита", "protection triggered"),
             ...(d.cond ? [lit(d.cond)] : []),
             ...(d.guarantee ? [GUARANTEE_INFO[d.guarantee].name] : []),
-            ...(d.protector ? [join([p("защитил:", "protected by:"), party(d.protector)], " ")] : []),
+            ...(d.protector ? [join([p("защитил:", "protected by:"), parties(d.protector)], " ")] : []),
           ]),
         );
       }
@@ -325,15 +343,23 @@ export function expectPhrase(e: Expect): Phrase {
         ...(e.passport.node ? [join([p("узел", "node"), lit(e.passport.node)], " ")] : []),
         join([p("нарушил:", "violator:"), party(e.passport.violator)], " "),
         ...(e.passport.protector ? [join([p("защитил:", "protected by:"), party(e.passport.protector)], " ")] : []),
+        ...(e.passport.firedBy
+          ? [
+              join([p("отказ — «сработало», защитил:", 'refused — "triggered", protected by:'), party(e.passport.firedBy)], " "),
+              p("операция прошла — «нарушено», защитника нет", 'the operation went through — "violated", no protector'),
+            ]
+          : []),
         ...(e.passport.okConds ? [join([lit(e.passport.okConds.join(", ")), p("— без паспорта", "— no passport")], " ")] : []),
       ]);
     case "toward":
-      return join([p("«Идёт к нарушению»:", "«Heading to a violation»:"), lit(e.cond), WAIT_LABEL[e.wait]], " ");
+      return join([p("«Идёт к нарушению»:", '"Heading to a violation":'), lit(e.cond), WAIT_LABEL[e.wait]], " ");
     case "prevented":
       return p(
         `«Напомнить клиенту» по ${e.cond}, затем оплачено; паспорта нет; «упреждено реакцией»`,
-        `«Remind the client» on ${e.cond}, then paid; no passport; «prevented by a reaction»`,
+        `"Remind the client" on ${e.cond}, then paid; no passport; "prevented by a reaction"`,
       );
+    case "no_case":
+      return join([AGREE_LABEL.no_case, NOT_REPRODUCIBLE_LABEL.INVARIANT_1], ": ");
   }
 }
 
@@ -375,11 +401,19 @@ interface Judged {
 const passportsOf = (vs: readonly Verdict[]) => vs.filter(hasPassport);
 /** Причина вердикта — запись журнала стенда, а не записи шины. */
 const standCause = (v: Verdict) => v.cause !== undefined && (v.cause.kind === "mark" || v.cause.kind === "fault" || (v.cause.kind === "rule" && v.cause.rule === "late_lost"));
+/** Вид вердикта в факте — ожидание Н-08 различается по нему (повторное ревью К1а № 3). */
+const VERDICT_KIND_LABEL: Readonly<Record<Verdict["kind"], Phrase>> = {
+  violation: p("«нарушено»", '"violated"'),
+  protection: p("«сработало»", '"triggered"'),
+  client_decision: p("решение клиента", "client's decision"),
+};
 const findingPhrase = (v: Verdict): Phrase =>
   join([
     lit([v.obj ?? "—", v.cond ?? v.guarantee ?? ""].filter(Boolean).join(": ")),
+    VERDICT_KIND_LABEL[v.kind],
     ...(v.node ? [lit(v.node)] : []),
     join([p("нарушил:", "violator:"), party(v.violator === "client_decision" || v.violator === undefined ? "undetermined" : v.violator)], " "),
+    ...(v.protector ? [join([p("защитил:", "protected by:"), party(v.protector)], " ")] : []),
   ]);
 
 function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly PultTx[], vs: readonly Verdict[]): Judged {
@@ -394,7 +428,7 @@ function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly Pul
     const d = e.decision;
     // Условие и гарантия — равноправные признаки (Р-1538: П-06 — защитник из вердикта R17, а не из гарантии).
     const sign = (v: Verdict) => (d.cond === undefined && d.guarantee === undefined) || (d.cond !== undefined && v.cond === d.cond) || (d.guarantee !== undefined && v.guarantee === d.guarantee);
-    const hit = vs.find((v) => v.kind === d.kind && sign(v) && (d.protector === undefined || v.protector === d.protector));
+    const hit = vs.find((v) => v.kind === d.kind && sign(v) && protectorOk(d.protector, v.protector));
     const seen = vs.filter((v) => v.kind === "client_decision" || v.kind === "protection");
     for (const v of seen)
       facts.push(
@@ -419,12 +453,12 @@ function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly Pul
   return { agree: good ? "yes" : "no", fact: join(facts, "; ") };
 }
 
-function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly Verdict[], fired: readonly StandLogEntry[], model: TxModel): Judged {
+function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly Verdict[], fired: readonly StandLogEntry[], model: TxModel, driver?: FaultOutcome): Judged {
   const pass = passportsOf(vs);
   const factPass = pass.length ? join([join([p("паспортов:", "passports:"), lit(String(pass.length))], " "), ...pass.slice(0, 5).map(findingPhrase)], "; ") : p("паспортов нет", "no passports");
   if (e.passport === null) {
     if (e.fired) {
-      // Сбой обязан сработать, и итог по его операции должен прийти (В7, Н-12; ревью № 2).
+      // Сбой обязан сработать, и итог по его операции должен прийти (Н-12, столбец M v1.1; ревью № 2).
       const recs = fired.filter((x) => e.fired!.includes(x.what));
       if (!recs.length) return { agree: "unchecked", fact: join([p("сбой не сработал", "the fault did not fire"), factPass], "; ") };
       const refs = recs.map((x) => x.ids.op_ref).filter((x): x is string => x !== undefined);
@@ -436,16 +470,24 @@ function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly 
     return { agree: pass.length === 0 ? "yes" : "no", fact: factPass };
   }
   const w = e.passport;
+  // `firedBy` — по фактическому исходу прогона драйвера (Р-1546): отказ (`refused`) — только вердикт защиты с защитником
+  // `firedBy`; операция прошла (`marked`) — только вердикт нарушения без защитника; другой исход — своей ветки нет.
+  // «Любой из двух» не проходит.
+  const ownBranch = (v: Verdict) =>
+    w.firedBy === undefined ||
+    (driver === "refused" ? v.kind === "protection" && v.protector === w.firedBy : driver === "marked" && v.kind === "violation" && v.protector === undefined);
+  const sameFinding = (v: Verdict) => v.cond !== undefined && w.conds.includes(v.cond) && v.violator === w.violator;
   const caught = pass.filter(
+    (v) => sameFinding(v) && (w.node === undefined || v.node === w.node) && protectorOk(w.protector, v.protector) && ownBranch(v),
+  );
+  // Паспорт того же условия с другим нарушителем, паспорт условия, которое должно остаться «ok», и при `firedBy` — паспорт
+  // того же условия и нарушителя из чужой ветки (отказ, а пульт показывает «нарушено», и наоборот; повторное ревью К1а № 1)
+  // — «нет» (Р-1534 В3, ревью № 7; Р-1546).
+  const other = pass.filter(
     (v) =>
       v.cond !== undefined &&
-      w.conds.includes(v.cond) &&
-      v.violator === w.violator &&
-      (w.node === undefined || v.node === w.node) &&
-      (w.protector === undefined || v.protector === w.protector),
+      ((w.conds.includes(v.cond) && v.violator !== w.violator) || (w.okConds ?? []).includes(v.cond) || (w.firedBy !== undefined && sameFinding(v) && !ownBranch(v))),
   );
-  // Паспорт того же условия с другим нарушителем и паспорт условия, которое должно остаться «ok», — «нет» (Р-1534 В3, ревью № 7).
-  const other = pass.filter((v) => v.cond !== undefined && ((w.conds.includes(v.cond) && v.violator !== w.violator) || (w.okConds ?? []).includes(v.cond)));
   const objs = new Set(caught.map((v) => v.obj ?? "—"));
   const head = caught.length ? join([p("поймано:", "caught:"), lit(String(objs.size))], " ") : p("ожидаемого паспорта нет", "no expected passport");
   return { agree: caught.length && !other.length ? "yes" : "no", fact: join([head, factPass], "; ") };
@@ -496,10 +538,10 @@ function judgePrevented(e: Extract<Expect, { kind: "prevented" }>, txs: readonly
   const preempted = reminded.filter((r) => r.preempted === e.cond);
   const pass = passportsOf(vs);
   const facts: Phrase[] = [
-    reminded.length ? join([p("напомнено:", "reminded:"), lit(reminded.map((r) => r.obj).join(", "))], " ") : p("«Напомнить клиенту» до оплаты не нажато", "«Remind the client» not pressed before payment"),
+    reminded.length ? join([p("напомнено:", "reminded:"), lit(reminded.map((r) => r.obj).join(", "))], " ") : p("«Напомнить клиенту» до оплаты не нажато", '"Remind the client" not pressed before payment'),
     paid.length ? join([p("оплачено:", "paid:"), lit(paid.map((t) => t.id).join(", "))], " ") : p("оплаты нет", "not paid"),
     pass.length ? join([p("паспорт:", "passport:"), ...pass.map(findingPhrase)], " ") : p("паспортов нет", "no passports"),
-    preempted.length ? p("«упреждено реакцией»", "«prevented by a reaction»") : p("отметки «упреждено реакцией» нет", "no «prevented by a reaction» mark"),
+    preempted.length ? p("«упреждено реакцией»", '"prevented by a reaction"') : p("отметки «упреждено реакцией» нет", 'no "prevented by a reaction" mark'),
   ];
   return { agree: preempted.length > 0 && paid.length > 0 && pass.length === 0 ? "yes" : "no", fact: join(facts, "; ") };
 }
@@ -528,24 +570,25 @@ export function testTable(input: TestTableInput): TestTable {
   const armedIn = (w: Window) => armedSpans.some((s) => s.from < w.to && s.to > w.from);
 
   const rows = TEST_SPECS.map((spec): TestRow => {
-    const mvp = input.mvp?.[spec.test];
-    const expect = mvp ?? spec.stand?.expect ?? spec.v10;
-    const source: ExpectSource = mvp ? { kind: "v1.1" } : spec.stand ? { kind: "deviation", ref: spec.stand.ref } : { kind: "v1.0" };
-    const expected = expectPhrase(expect);
+    const expect = spec.mvp ?? spec.v10;
+    /** Метка прогона теста — для акта ACC-1 (К2): `run.<имя>`, `run.fault Н-xx`, `stand_fault.armed Н-xx`. */
+    let runLabel: string | undefined;
+    /** Исход прогона драйвера «ПР» — по нему `firedBy` выбирает ветку (Р-1546); в строке — для акта (К2). */
+    let driver: FaultOutcome | undefined;
     const row = (j: Judged, auto: boolean, objs: readonly string[]): TestRow => ({
       test: spec.test,
       kind: spec.kind,
-      expected,
-      source,
+      expected: expectPhrase(expect),
       fact: j.fact,
       agree: j.agree,
       auto,
       objs,
-      ...(spec.pending && j.agree === "no" && { pending: spec.pending }),
+      ...(runLabel !== undefined && { run: runLabel }),
+      ...(driver !== undefined && { driver }),
     });
 
-    // Н-10 — не воспроизводится по инварианту 1 (`stand-tests.ts`).
-    if (standKind.get(spec.test) === "not_reproducible") return row({ agree: "no_case", fact: NOT_REPRODUCIBLE_LABEL.INVARIANT_1 }, false, []);
+    // Н-10 — «нет случая» по столбцу M: не воспроизводится по инварианту 1 (`stand-tests.ts`; тест сверяет оба перечня).
+    if (expect.kind === "no_case") return row({ agree: "no_case", fact: NOT_REPRODUCIBLE_LABEL.INVARIANT_1 }, false, []);
 
     // Окно теста.
     let w: Window | undefined;
@@ -557,13 +600,16 @@ export function testTable(input: TestTableInput): TestTable {
       if (fr && (!armed || fr.startSeq > armed.seq)) {
         w = windows.get(fr)!;
         const f = faultOf(fr)!;
-        note = join([lit(`run.fault ${spec.test}:`), f.outcome ? FAULT_OUTCOME_LABEL[f.outcome] : p("идёт", "running"), ...(f.code ? [lit(f.code)] : [])], " ");
+        driver = f.outcome;
+        runLabel = `run.fault ${spec.test}`;
+        note = join([lit(`${runLabel}:`), f.outcome ? FAULT_OUTCOME_LABEL[f.outcome] : p("идёт", "running"), ...(f.code ? [lit(f.code)] : [])], " ");
         if (f.outcome === "unplayed" || f.outcome === "failed" || f.outcome === undefined) return row({ agree: "unchecked", fact: note }, w.auto, []);
       } else if (armed) {
         const off = armedSpans.find((s) => s.from === armed.seq)!.to;
         const run = lastRun((r) => r.startSeq <= armed.seq);
         w = win(armed.seq, off, sorted.some((x) => x.seq > armed.seq && x.seq < off && x.stream === "scenario" && x.ref === "client.auto_on") || (run?.clientAuto ?? false));
-        note = lit(`stand_fault.armed ${spec.test}`);
+        runLabel = `stand_fault.armed ${spec.test}`;
+        note = lit(runLabel);
       }
     } else {
       // П-xx и У-xx — «поломки все выключены» (задание, колонка D): прогон, в окне которого взведён сбой «П», не считается.
@@ -573,9 +619,12 @@ export function testTable(input: TestTableInput): TestTable {
       const r = clean[clean.length - 1];
       if (r) {
         w = windows.get(r)!;
-        note = lit(`run.${name}${all.length > 1 ? ` ×${all.length}` : ""}`);
-      } else if (all.length)
-        return row({ agree: "unchecked", fact: join([lit(`run.${name} ×${all.length}`), p("все прогоны — со взведённым сбоем стенда", "every run had a stand fault armed")], " — ") }, false, []);
+        runLabel = `run.${name}${all.length > 1 ? ` ×${all.length}` : ""}`;
+        note = lit(runLabel);
+      } else if (all.length) {
+        runLabel = `run.${name} ×${all.length}`;
+        return row({ agree: "unchecked", fact: join([lit(runLabel), p("все прогоны — со взведённым сбоем стенда", "every run had a stand fault armed")], " — ") }, false, []);
+      }
     }
     if (!w) return row(NO_RUN, false, []);
     const W = w;
@@ -601,7 +650,9 @@ export function testTable(input: TestTableInput): TestTable {
       );
       mine = [...mine, ...extra];
     }
-    const ids = [...new Set([...own, ...mine.flatMap((v) => (v.obj !== undefined ? [v.obj] : []))])];
+    // Запросы подтверждения транзакций окна — тоже объекты прогона: реакция «Напомнить клиенту» идёт по `confirmation_id`
+    // (У-04; ревью К2 № 2).
+    const ids = [...new Set([...own, ...txs.flatMap((t) => t.confirmationIds), ...mine.flatMap((v) => (v.obj !== undefined ? [v.obj] : []))])];
 
     // У-01…У-04 при «Авто» — не засчитано (П5 доп. 1 п. 5; Р-1534, В4).
     if ((spec.kind === "toward" || spec.kind === "prevented") && W.auto) return row({ agree: "not_counted", fact: note! }, true, ids);
@@ -612,7 +663,7 @@ export function testTable(input: TestTableInput): TestTable {
         j = judgeCorrect(expect, txs, mine);
         break;
       case "incorrect":
-        j = judgeIncorrect(expect, mine, fired, model);
+        j = judgeIncorrect(expect, mine, fired, model, driver);
         break;
       case "toward":
         j = judgeToward(expect, items, W, new Set(ids), now, waitMs);
@@ -631,40 +682,4 @@ export function testTable(input: TestTableInput): TestTable {
   return { rows, totals: { tests: rows.length, yes, no, noCase, unchecked: rows.length - yes - no - noCase } };
 }
 
-// ——— выгрузка для акта ACC-1 ———
-
-const MD_HEAD: Readonly<Record<"ru" | "en", readonly string[]>> = {
-  ru: ["№", "Вид", "Ожидание", "Источник ожидания", "MVP — факт", "MVP — сходится", "Эмулятор клиента", "Адрес"],
-  en: ["#", "Kind", "Expected", "Expectation source", "MVP — fact", "MVP — agrees", "Client emulator", "Address"],
-};
-const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "client emulator: auto");
-
-/** Таблица в Markdown для акта ACC-1: каждая ячейка — через `markdownCell` (данные шины — текстом, инвариант 4). */
-export function testTableMarkdown(t: TestTable, lang: "ru" | "en"): string {
-  const line = (cells: readonly string[]) => `| ${cells.map(markdownCell).join(" | ")} |`;
-  const head = MD_HEAD[lang];
-  const out = [line(head), `|${head.map(() => "---").join("|")}|`];
-  for (const r of t.rows)
-    out.push(
-      line([
-        r.test,
-        TEST_KIND_LABEL[r.kind][lang],
-        r.expected[lang],
-        sourceLabel(r.source)[lang],
-        r.fact[lang],
-        AGREE_LABEL[r.agree][lang],
-        r.auto ? AUTO_LABEL[lang] : "",
-        r.pending ? PENDING_LABEL[r.pending][lang] : "",
-      ]),
-    );
-  const s = t.totals;
-  out.push(
-    "",
-    lang === "ru"
-      ? `Итого: тестов ${s.tests}, сходится ${s.yes}, не сходится ${s.no}, нет случая ${s.noCase}, не проверено ${s.unchecked}.`
-      : `Total: ${s.tests} tests, ${s.yes} agree, ${s.no} do not agree, ${s.noCase} no case, ${s.unchecked} not checked.`,
-    "",
-    markdownCell(TABLE_NOTE[lang]),
-  );
-  return out.join("\n");
-}
+// Выгрузка для акта ACC-1 — `src/pult/acc1.ts` (П-6.2, окно Б; PR #16, К2).
