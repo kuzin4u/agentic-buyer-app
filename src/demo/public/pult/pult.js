@@ -1105,6 +1105,74 @@
     }
   }, 1000);
 
+  // ---- «Поломки» и эмулятор клиента (видимая часть П-11.2 / П-11.4; Р-1482, Р-1514) ----
+  // Блок есть в разметке только в режиме сбоев (`dash-pult.ts`); без него — ни обработчика, ни запросов. Ответ сервера — как
+  // есть: «отказано» с кодом (SHOP_REQUIRED, HELD_BY_DRIVER …), не «сделано». Витрина Н-03…Н-05 — продавец транзакции в
+  // фокусе (кнопка с `data-fault-shop`); фокуса нет — сервер берёт продавца карточки идущего сюжета (контракт П-11.2б).
+  const faultsBox = cfg.faults === true ? document.getElementById("pult-faults") : null;
+  const autoBox = faultsBox ? document.getElementById("client-auto") : null;
+  /** POST без тела; ответ не JSON (403, 404 простым текстом) — `{ httpStatus }`, нет ответа — null (ревью № 6). */
+  function post(url, done) {
+    const f = window.fetch;
+    if (typeof f !== "function") return done(null);
+    f(url, { method: "POST" })
+      .then((r) => r.json().catch(() => ({ httpStatus: typeof r.status === "number" ? r.status : 0 })))
+      .then((body) => done(body))
+      .catch(() => done(null));
+  }
+  /** Витрина транзакции в фокусе: фокуса нет — "" (выбирает сервер); карточки нет или продавцов не один — null (ревью № 3). */
+  function focusMerchant() {
+    if (!focus || focus.level !== "tx") return "";
+    const c = board ? board.cards.find((x) => x.id === focus.tx) : undefined;
+    const ms = c && Array.isArray(c.merchantIds) ? c.merchantIds.filter((x) => typeof x === "string") : [];
+    return ms.length === 1 ? ms[0] : null;
+  }
+  // Режим «Авто» (П5 п. 3): с сервера при загрузке и в `hello` каждого подключения к ленте (источник — эмулятор; после
+  // перезапуска стенда — новый эмулятор, ревью № 11), затем по шагам режима на доске и ответу переключателя; доска без шага
+  // режима (шаг ушёл из окна записей) известный режим не сбрасывает (ревью № 4).
+  let autoKnown = typeof cfg.clientAuto === "boolean" ? cfg.clientAuto : undefined;
+  function showAuto(on) {
+    if (typeof on === "boolean") autoKnown = on;
+    if (autoBox) autoBox.textContent = label(autoKnown === true ? "auto.on" : autoKnown === false ? "auto.off" : "auto.unknown");
+  }
+  const lastPress = {};
+  if (faultsBox) {
+    showAuto(undefined);
+    faultsBox.addEventListener("click", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("button") : null;
+      if (!b) return;
+      if (b.dataset.auto === "on" || b.dataset.auto === "off") {
+        post("/client/auto/" + b.dataset.auto, (body) => showAuto(body && typeof body.auto === "boolean" ? body.auto : undefined));
+        return;
+      }
+      const test = b.dataset.fault;
+      const op = b.dataset.faultOp;
+      if (!test || (op !== "arm" && op !== "disarm")) return;
+      const out = faultsBox.querySelector("[data-fault-result='" + test + "']");
+      const m = op === "arm" && b.dataset.faultShop === "1" ? focusMerchant() : "";
+      if (m === null) {
+        if (out) out.textContent = label("faults.shop_ambiguous");
+        return;
+      }
+      // Ответ показывается только на последнее нажатие по тесту (ревью № 2).
+      const n = (lastPress[test] || 0) + 1;
+      lastPress[test] = n;
+      const q = m ? "?" + new URLSearchParams({ merchant_id: m }).toString() : "";
+      if (out) out.textContent = label("act.sending");
+      post("/stand-fault/" + encodeURIComponent(test) + "/" + op + q, (body) => {
+        if (!out || lastPress[test] !== n) return;
+        if (body && body.ok === true && body.test === test) {
+          // Витрина — из ответа сервера (он мог выбрать продавца сам), а не из запроса (ревью № 3).
+          const o = body.options && typeof body.options === "object" ? body.options : {};
+          const where = [o.shop_id, o.merchant_id].filter((x) => typeof x === "string").join(" · ");
+          out.textContent = label(op === "arm" ? "faults.armed" : "faults.disarmed") + (where ? " · " + where : "");
+        } else if (body && typeof body.code === "string") out.textContent = label("faults.refused") + " · " + body.code;
+        else if (body && typeof body.httpStatus === "number" && body.httpStatus > 0) out.textContent = label("faults.refused") + " · HTTP " + body.httpStatus;
+        else out.textContent = label("act.failed");
+      });
+    });
+  }
+
   load();
   render();
   renderFocus();
@@ -1119,6 +1187,8 @@
       return;
     }
     if (e.type === "hello" || e.type === "status") setStatus(e.status);
+    // Подключение (и переподключение EventSource после перезапуска стенда) — режим «Авто» заново у источника (ревью № 11).
+    if (e.type === "hello" && faultsBox && typeof e.clientAuto === "boolean") showAuto(e.clientAuto);
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
       board = e.board;
       boardAt = Date.now();
@@ -1126,6 +1196,7 @@
       renderProc();
       renderCtl();
       renderInt();
+      showAuto(board.clientAuto);
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если

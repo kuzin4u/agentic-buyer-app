@@ -169,10 +169,15 @@ describe("пульт: каркас (П-1.1)", { timeout: 60_000 }, () => {
         // Словарь монитора уходит в JSON страницы целиком — проверяется разметка строки, а не текст словаря.
         expect(html, path).not.toContain(`class="faults-mode"`);
         expect(html, path).not.toContain(`<strong>${PULT["mode.faults"][lang]}</strong>`);
+        // Видимая часть П-11.2 / П-11.4: без DEMO_FAULTS=1 блока «Поломки» и строки «Авто» нет.
+        expect(html, path).not.toContain(`id="pult-faults"`);
+        expect(html, path).not.toContain(`data-fault=`);
       }
     }
-    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };
+    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean; clientAuto?: boolean };
     expect(hello.faults).toBe(false);
+    // Без режима сбоев эмулятора нет — режима «Авто» в `hello` нет (ревью кирпича 2 № 11).
+    expect(hello.clientAuto).toBeUndefined();
   });
 
   it("П-1.3, ревью П-8.0 № 3: страницы витрин для человека и запросы браузера — не на шину; протокол /v1 — на шине", async () => {
@@ -309,10 +314,16 @@ describe("пульт: режим сбоев DEMO_FAULTS=1 (П-1.3)", { timeout: 
         const line = /<p class="faults-mode"[^>]*>.*?<\/p>/s.exec(html)![0];
         expect(line, `${path} ${lang}`).toContain(`${demo.stand.stand.params.order_hold_sec} ${lang === "ru" ? "с" : "s"}`);
         expect(line, `${path} ${lang}`).not.toContain("{sec}");
+        // Видимая часть П-11.2 / П-11.4: блок «Поломки» и строка «Авто» — только на пульте и только в режиме сбоев.
+        expect(html.includes(`id="pult-faults"`), `${path} ${lang}`).toBe(path === "/pult");
+        // Начальный режим «Авто» — из эмулятора (ревью № 4, П5 п. 3): по умолчанию «Вручную».
+        if (path === "/pult") expect(html, lang).toContain(`"clientAuto":false`);
       }
     }
-    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean };
+    const hello = (await firstSse(`${demo.monitor.url}/pult/events`)) as { faults: boolean; clientAuto?: boolean };
     expect(hello.faults).toBe(true);
+    // Режим эмулятора — у источника при каждом подключении (ревью кирпича 2 № 11, П5 п. 3): по умолчанию «Вручную».
+    expect(hello.clientAuto).toBe(false);
   });
 
   it("ревью П-8.1 № 10 (Р-1526 В2): режим сбоев включает кнопки реакции — `actions` на странице, маршрут есть (не 404), строки «режим показа» нет", async () => {

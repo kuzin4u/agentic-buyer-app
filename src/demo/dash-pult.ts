@@ -14,7 +14,25 @@ import { helpForPage } from "../pult/help.js";
 import { PANES, PULT, type Pane } from "../pult/phrases.js";
 import type { Rule89 } from "../pult/rules89.js";
 import { escapeHtml, jsonForScript } from "./html.js";
+import { OPTIONS_BY_TEST, STAND_FAULT_TESTS } from "./stand-faults.js";
 import { switcherHtml } from "./switcher.js";
+
+/** Блок «Поломки» и строка эмулятора клиента (видимая часть П-11.2 / П-11.4; Р-1482, Р-1514) — только в режиме сбоев:
+ *  без `DEMO_FAULTS=1` блока в разметке нет вовсе (маршрутов `/stand-fault/`, `/client/auto/` тогда тоже нет — 404). Тесты
+ *  «П» — перечень стенда `STAND_FAULT_TESTS`; вызов маршрутов и состояние «Авто» — `pult.js`. */
+function faultsHtml(s: (k: keyof typeof PULT) => string): string {
+  // Витрина транзакции в фокусе — только тестам, которые принимают продавца (`OPTIONS_BY_TEST`; иное стенд отклонит BAD_OPTION).
+  const shop = (t: (typeof STAND_FAULT_TESTS)[number]) => (OPTIONS_BY_TEST[t].includes("merchant_id") ? ` data-fault-shop="1"` : "");
+  const rows = STAND_FAULT_TESTS.map(
+    (t) =>
+      `<li><span class="ft">${escapeHtml(t)}</span> <button type="button" data-fault="${escapeHtml(t)}" data-fault-op="arm"${shop(t)}>${s("faults.arm")}</button> <button type="button" data-fault="${escapeHtml(t)}" data-fault-op="disarm">${s("faults.disarm")}</button> <span class="muted fault-result" data-fault-result="${escapeHtml(t)}" role="status"></span></li>`,
+  ).join("");
+  return `<section class="faults" id="pult-faults" aria-labelledby="h-faults">
+  <h2 id="h-faults">${s("faults.title")}</h2> <span class="hint">${s("faults.note")}</span>
+  <p class="auto-line">${s("auto.title")}: <strong id="client-auto" role="status">${s("auto.unknown")}</strong> <button type="button" data-auto="on">${s("auto.set_on")}</button> <button type="button" data-auto="off">${s("auto.set_off")}</button></p>
+  <ul class="fault-list">${rows}</ul>
+</section>`;
+}
 
 function paneHtml(pane: Pane, lang: WireLang): string {
   // Ключи панели — шаблонные типы `pane.${Pane}`: новая панель без подписей не соберётся (повторное ревью П-1.1 № 4).
@@ -45,7 +63,7 @@ function paneHtml(pane: Pane, lang: WireLang): string {
 
 /** `faults` — режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» под шапкой. `rules` — справочник 89
  *  правил для «Условий» (П-4.2); подмена — только для теста экранирования. */
-export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[]; actions?: boolean; actionsMode?: boolean; holdSec?: number } = {}): string {
+export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[]; actions?: boolean; actionsMode?: boolean; holdSec?: number; clientAuto?: boolean } = {}): string {
   const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
   const other: WireLang = lang === "ru" ? "en" : "ru";
   const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
@@ -81,12 +99,13 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
 <main>
   <p class="subtitle">${s("subtitle")}</p>
   <nav class="focusbar" id="focusbar" tabindex="-1" aria-label="${s("focus.label")}"><span class="fl-l">${s("focus.label")}:</span> <span id="crumbs"></span> <button type="button" id="focus-up" hidden>${s("focus.up")}</button> <span class="hint">${s("focus.hint")}</span></nav>
+  ${o.faults ? faultsHtml(s) : ""}
   <div class="tabbar" id="tabbar" role="group" aria-label="${s("layout.tabs")}" hidden>${tabs}</div>
   <div class="grid" id="grid">
   ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}
   </div>
 </main>
-<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES, actions: o.actions === true })}</script>
+<script id="i18n" type="application/json">${jsonForScript({ lang, labels, panes: PANES, actions: o.actions === true, faults: o.faults === true, ...(o.faults === true && o.clientAuto !== undefined && { clientAuto: o.clientAuto }) })}</script>
 <script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
 <script src="/pult/focus.js"></script>
 <script src="/pult/pult.js"></script>

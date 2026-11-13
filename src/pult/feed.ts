@@ -3,6 +3,7 @@
 // колонками — «скачком, по событию» (модель 1.23 v1.20): время перехода — время записи, которая его вызвала (`enteredAt`
 // карточки; переходы внутри одной паузы пересчёта схлопываются в один). Перезапуск
 // источника (`reset`) сбрасывает всё. Лента только читает.
+import { CLIENT_AUTO_OFF, CLIENT_AUTO_ON } from "../dashboards/control.js";
 import type { FeedEvent, InterpretFeed } from "../dashboards/feed.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import type { SourceStatus } from "../dashboards/source.js";
@@ -47,6 +48,22 @@ export interface PultBoardState {
   /** Журнал реакций (П-8.1): нажатия кнопок и ответ стенда как есть; новые — в конце, последние `REACTIONS_KEPT`. Связь с
    *  записью протокола стенда и «упреждено реакцией» — П-8.2 (`reactions.ts`). */
   readonly reactions?: readonly LinkedReaction[];
+  /** Режим эмулятора клиента (видимая часть П-11.4): по последнему шагу `client.auto_on` / `client.auto_off` в окне записей;
+   *  шага нет — поля нет («нет данных»: эмулятора нет или шаг ушёл из окна — «вручную» не выдумывается). */
+  readonly clientAuto?: boolean;
+}
+
+/** Режим эмулятора клиента по последнему шагу режима в записях; шага нет — undefined. Пометку источника (П5 п. 3,
+ *  `source: "client-emulator"`) не сверяем: шаги сюжета пишет только код приложения, а `client.auto_*` — только эмулятор
+ *  (`CLIENT_STEPS`, ревью № 5); сеть шаги сюжета на шину не пишет. */
+export function clientAutoOf(items: readonly Interpretation[]): boolean | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const x = items[i]!;
+    if (x.stream !== "scenario") continue;
+    if (x.ref === CLIENT_AUTO_ON) return true;
+    if (x.ref === CLIENT_AUTO_OFF) return false;
+  }
+  return undefined;
 }
 /** Сколько реакций помнить в ленте (журнал и протокол — П-6, П-8.2). */
 export const REACTIONS_KEPT = 50;
@@ -183,7 +200,18 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
-    state = { now, cards, jumps: [...jumps], graph, control, ...(conditions && { conditions }), ...(causes && { causes }), ...(reactions.length > 0 && { reactions: linked() }) };
+    const clientAuto = clientAutoOf(items);
+    state = {
+      now,
+      cards,
+      jumps: [...jumps],
+      graph,
+      control,
+      ...(conditions && { conditions }),
+      ...(causes && { causes }),
+      ...(reactions.length > 0 && { reactions: linked() }),
+      ...(clientAuto !== undefined && { clientAuto }),
+    };
     emit({ type: "board", board: state });
   };
 

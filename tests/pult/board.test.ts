@@ -6,7 +6,9 @@ import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
 import { evaluate, HIDDEN_RECORD } from "../../src/pult/engine.js";
 import { createControlFeed } from "../../src/dashboards/control-feed.js";
-import { createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
+import { clientAutoOf, createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
+import { CLIENT_AUTO_OFF, CLIENT_AUTO_ON } from "../../src/dashboards/control.js";
+import { CLIENT_STEPS } from "../../src/demo/client-emulator.js";
 import { graphView } from "../../src/pult/graph.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 
@@ -485,5 +487,31 @@ describe("лента пульта (П-2.1)", () => {
     await tick();
     expect(q.board().cards.map((x) => x.id)).toEqual(["C1", "C2", "C3"]);
     q.close();
+  });
+});
+
+// Видимая часть П-11.4: строка «эмулятор клиента: авто» — по шагам режима на шине; перечень шагов — из кода эмулятора (Р-1511).
+describe("режим эмулятора клиента на пульте (П-11.4, Р-1511, Р-1512)", () => {
+  it("перечень шагов режима «Контроля» и пульта совпадает с кодом эмулятора (`CLIENT_STEPS`)", () => {
+    expect(CLIENT_STEPS.filter((s) => s.startsWith("client.auto_")).sort()).toEqual([CLIENT_AUTO_OFF, CLIENT_AUTO_ON].sort());
+  });
+
+  it("режим — по последнему шагу режима; шага нет — «нет данных» (поля нет); в доске ленты — то же", async () => {
+    expect(clientAutoOf([])).toBeUndefined();
+    expect(clientAutoOf([step("client.signed", { mandate_id: "C1" })])).toBeUndefined();
+    expect(clientAutoOf([step(CLIENT_AUTO_ON, {}), step("client.signed", { mandate_id: "C1" })])).toBe(true);
+    expect(clientAutoOf([step(CLIENT_AUTO_ON, {}), step(CLIENT_AUTO_OFF, {})])).toBe(false);
+    // Только шаг сюжета: запись другого потока с тем же именем режим не меняет.
+    expect(clientAutoOf([step(CLIENT_AUTO_ON, {}), rec("console", CLIENT_AUTO_OFF, {})])).toBe(true);
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-13T12:00:00Z"), debounceMs: 0 });
+    expect(p.board().clientAuto).toBeUndefined();
+    f.push(step(CLIENT_AUTO_ON, {}));
+    await tick();
+    expect(p.board().clientAuto).toBe(true);
+    f.push(step(CLIENT_AUTO_OFF, {}));
+    await tick();
+    expect(p.board().clientAuto).toBe(false);
+    p.close();
   });
 });

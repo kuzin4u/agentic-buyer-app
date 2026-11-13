@@ -88,7 +88,7 @@ export interface MonitorServerOptions {
   };
   /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
    *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
-  clientEmulator?: { setAuto(on: boolean): boolean };
+  clientEmulator?: { setAuto(on: boolean): boolean; readonly auto?: boolean };
   /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев: маршрут
    *  `POST /stand-fault/<Н-xx>/arm|disarm`. Нет — маршрута нет (404). */
   standFaults?: {
@@ -489,7 +489,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           return;
         }
         case "/pult":
-          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true, actions: o.pultActions !== undefined, actionsMode: o.actionsMode === true, ...(o.holdSec !== undefined && { holdSec: o.holdSec }) }));
+          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true, actions: o.pultActions !== undefined, actionsMode: o.actionsMode === true, ...(o.holdSec !== undefined && { holdSec: o.holdSec }), ...(o.clientEmulator?.auto !== undefined && { clientAuto: o.clientEmulator.auto }) }));
         case "/pult/pult.js":
           return send(res, 200, "text/javascript; charset=utf-8", pultJs);
         case "/pult/focus.js":
@@ -532,7 +532,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          sseWrite(res, { type: "hello", status: f.status(), faults: o.faults === true });
+          // Режим эмулятора клиента — у источника при каждом подключении (ревью кирпича 2 № 11, П5 п. 3): после перезапуска
+          // стенда при открытом пульте новый эмулятор во «Вручную» без шага режима, и страница узнаёт это при переподключении.
+          sseWrite(res, { type: "hello", status: f.status(), faults: o.faults === true, ...(o.clientEmulator?.auto !== undefined && { clientAuto: o.clientEmulator.auto }) });
           sseWrite(res, { type: "board", board: p.board() });
           const off = p.subscribe((e: PultFeedEvent) => void sseWrite(res, e));
           sse.add(res);
