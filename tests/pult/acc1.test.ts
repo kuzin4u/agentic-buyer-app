@@ -1,0 +1,177 @@
+// К2 (П-6.2, окно Б; PR #16): акт ACC-1 — строки по таблице тестирования и переданным записям, выгрузка Markdown и CSV.
+// Акт ничего не вычисляет (инвариант 2); ячейки — текстом (инвариант 4); ревью П-4.3 № 3 — автоссылки GFM и «~~».
+import { describe, expect, it } from "vitest";
+import type { Interpretation } from "../../src/dashboards/interpret.js";
+import { acc1Csv, acc1CsvCell, acc1Markdown, acc1MdCell, acc1Rows, acc1Unlinked, KNOWN_NOTES, type Acc1Record } from "../../src/pult/acc1.js";
+import { TABLE_NOTE, TEST_CODES, testTable, type TestRow, type TestTable } from "../../src/pult/testtable.js";
+import type { PultTx } from "../../src/pult/tx.js";
+
+const lit = (s: string) => ({ ru: s, en: s });
+const base = testTable({ items: [], model: { mandates: [], txs: [], unattached: [] }, verdicts: [], now: "2026-11-13T12:00:00.000Z" });
+/** Таблица с подменёнными строками — акт берёт их как есть. */
+const withRows = (patch: Partial<Record<string, Partial<TestRow>>>): TestTable => ({
+  ...base,
+  rows: base.rows.map((r) => ({ ...r, ...patch[r.test] })),
+});
+const row = (rs: ReturnType<typeof acc1Rows>, test: string) => rs.find((r) => r.test === test)!;
+/** Разбор CSV RFC 4180 (кавычки, удвоенная кавычка, CRLF) — только для проверки. */
+function parseCsv(s: string): string[][] {
+  const out: string[][] = [];
+  let rec: string[] = [];
+  let cell = "";
+  let q = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (q) {
+      if (c === '"' && s[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") {
+      rec.push(cell);
+      cell = "";
+    } else if (c === "\r" && s[i + 1] === "\n") {
+      rec.push(cell);
+      out.push(rec);
+      rec = [];
+      cell = "";
+      i++;
+    } else cell += c;
+  }
+  return out;
+}
+
+describe("К2: строки акта ACC-1", () => {
+  it("25 строк по порядку задания; колонки — из таблицы как есть: «сходится», факт, ожидание, «Авто», метка прогона", () => {
+    const t = withRows({ "П-01": { agree: "yes", auto: true, run: "run.purchase", fact: lit("TX-1 оплачено") }, "Н-07": { agree: "no" } });
+    const rs = acc1Rows(t);
+    expect(rs.map((r) => r.test)).toEqual([...TEST_CODES]);
+    expect(row(rs, "П-01")).toMatchObject({ agree: "yes", auto: true, run: "run.purchase", fact: lit("TX-1 оплачено") });
+    expect(row(rs, "Н-07").agree).toBe("no");
+    expect(row(rs, "П-03")).toMatchObject({ agree: "unchecked", run: "" });
+  });
+  it("инвариант 2: акт не пересчитывает «сходится» — «да» без единого вердикта остаётся «да», «нет» при любом факте остаётся «нет»", () => {
+    const rs = acc1Rows(withRows({ "Н-01": { agree: "yes", fact: lit("ожидаемого паспорта нет") }, "П-01": { agree: "no", fact: lit("паспортов нет") } }));
+    expect(row(rs, "Н-01").agree).toBe("yes");
+    expect(row(rs, "П-01").agree).toBe("no");
+  });
+  it("записи — к тесту по коду (тогда только к нему) или по объекту прогона; статус — код движка как есть (ревью К2 № 3)", () => {
+    const t = withRows({ "П-01": { objs: ["T1"] }, "П-02": { objs: ["T1"] } });
+    const recs: Acc1Record[] = [
+      { id: "П-001", obj: "T1", status: "closed" },
+      { id: "П-002", test: "У-04", obj: "T1", status: "prevented" },
+    ];
+    const rs = acc1Rows(t, recs);
+    expect(row(rs, "П-01").note.ru).toBe("записи: П-001: closed");
+    expect(row(rs, "П-02").note.ru).toBe("записи: П-001: closed");
+    expect(row(rs, "У-04").note.en).toBe("records: П-002: prevented");
+  });
+  it("запись по запросу подтверждения (У-04, «Напомнить клиенту» по `cnf_…`) попадает в строку настоящей таблицы (ревью К2 № 2)", () => {
+    const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
+    const item = (seq: number, s: number, ref: string) => ({ seq, at: at(s), stream: "scenario", ref, level: "key", stage: "cart", actor: "agent", emulated: false, kind: "norm", phrase: lit(ref) }) as Interpretation;
+    const items = [item(1, 0, "run.upk"), item(2, 1, "cart.created")];
+    const tx = { id: "T1", seqs: [2], ops: [], confirmationIds: ["cnf_1"], orderIds: [], opRefs: [], merchantIds: [], shopsByOrder: {}, stage: "confirm", worst: "norm", firstAt: "", lastAt: "" } as unknown as PultTx;
+    const t = testTable({ items, model: { mandates: [], txs: [tx], unattached: [] }, verdicts: [], now: at(60) });
+    const rs = acc1Rows(t, [{ id: "П-007", obj: "cnf_1", status: "reacted" }]);
+    expect(row(rs, "У-04").note.ru).toBe("записи: П-007: reacted");
+  });
+  it("записи без строки теста не теряются — отдельной строкой в Markdown и CSV (ревью К2 № 3)", () => {
+    const recs: Acc1Record[] = [{ id: "П-009", obj: "SYS", status: "open" }];
+    expect(acc1Unlinked(base, recs)).toEqual(recs);
+    expect(acc1Rows(base, recs).map((r) => r.note.ru).join("")).toBe("");
+    expect(acc1Markdown(base, "ru", recs)).toContain("Записи без строки теста<span>:</span> записи<span>:</span> П-009<span>:</span> open");
+    const csv = parseCsv(acc1Csv(base, "en", recs));
+    expect(csv).toHaveLength(27);
+    expect(csv[26]![5]).toBe("Records not linked to a test row: records: П-009: open");
+  });
+  it("Н-08 «нет» при отказе Платформы — замечание с причиной № 10 (Р-1546); «нет» при прошедшей операции, «да», без прогона — без него (ревью К2 № 12)", () => {
+    const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-08": o })), "Н-08").note;
+    expect(note({ agree: "no", driver: "refused" }).ru).toContain("«Расхождения» № 10");
+    expect(note({ agree: "no", driver: "refused" }).en).toContain("discrepancy No. 10");
+    expect(note({ agree: "no", driver: "marked" }).ru).toBe("");
+    expect(note({ agree: "yes", driver: "refused" }).ru).toBe("");
+    expect(row(acc1Rows(base), "Н-08").note.ru).toBe("");
+    for (const k of Object.keys(KNOWN_NOTES)) expect(TEST_CODES as readonly string[]).toContain(k);
+  });
+  it("пометки в выгрузке: «Авто» (П5 п. 3) и «нарушитель (ПР) — драйвер приложения» (П7 п. 4) — в Markdown и CSV (ревью К2 № 5)", () => {
+    const t = withRows({ "П-01": { auto: true }, "Н-07": { driver: "marked", run: "run.fault Н-07" } });
+    for (const lang of ["ru", "en"] as const) {
+      const csv = parseCsv(acc1Csv(t, lang));
+      const p01 = csv.find((r) => r[0] === "П-01")!;
+      const n07 = csv.find((r) => r[0] === "Н-07")!;
+      expect(p01[6]).toBe(lang === "ru" ? "эмулятор клиента: авто" : "client emulator: auto");
+      expect(n07[6]).toBe(lang === "ru" ? "нарушитель (ПР) — драйвер приложения" : "violator (ПР) — app driver");
+      expect(csv.find((r) => r[0] === "П-02")![6]).toBe("");
+      const md = acc1Markdown(t, lang).split("\n");
+      expect(md.find((l) => l.startsWith("| П-01 "))).toContain(lang === "ru" ? "эмулятор клиента<span>:</span> авто" : "client emulator<span>:</span> auto");
+      expect(md.find((l) => l.startsWith("| Н-07 "))).toContain(lang === "ru" ? "нарушитель (ПР)" : "violator (ПР)");
+    }
+  });
+});
+
+describe("К2: ячейка Markdown — текстом (инвариант 4; ревью П-4.3 № 3)", () => {
+  it("разметка, HTML, автоссылки, упоминания, эмодзи, формулы и зачёркивание не срабатывают (ревью К2 № 1)", () => {
+    const s = acc1MdCell("a|b\n<b>x</b> `c` [l](u) *e* _i_ ~~s~~ http://e.x www.e.x m@e.x mailto:m@e.x @octocat :smile: $x^2$");
+    expect(s).not.toMatch(/(^|[^\\])\|/);
+    expect(s).not.toContain("\n");
+    expect(s).not.toContain("<b>");
+    expect(s).toContain("http<span>:</span>//e.x");
+    expect(s).toContain("m<span>@</span>e.x");
+    expect(s).not.toMatch(/www\./i);
+    // вне разрывающего `<span>` нет ни одного `: @ $`
+    expect(s.replace(/<span>[:@$]<\/span>/g, "")).not.toMatch(/[:@$]/);
+    expect(s).not.toMatch(/(^|[^\\])[~`*_[\]]/);
+  });
+  it("обратная косая в данных не снимает экранирование: «\\~» → «\\\\\\~» (ревью К2 № 8)", () => {
+    expect(acc1MdCell("\\~")).toBe("\\\\\\~");
+    expect(acc1MdCell("\\@")).toBe("\\\\<span>@</span>");
+  });
+  it("акт: заголовок, 25 строк по 8 колонок, итоги и примечание — ru и en; данные с «|» и переводом строки таблицу не ломают", () => {
+    const t = withRows({ "П-01": { fact: lit("T|1\n<b> http://e ~~x~~") } });
+    for (const lang of ["ru", "en"] as const) {
+      const md = acc1Markdown(t, lang).split("\n");
+      expect(md[0]).toMatch(lang === "ru" ? /^# Акт ACC-1/ : /^# ACC-1 record/);
+      const rows = md.filter((l) => /^\| [ПНУ]-\d\d /.test(l));
+      expect(rows).toHaveLength(25);
+      for (const l of rows) expect(l.replace(/\\\|/g, "").split("|").length - 2, l).toBe(8);
+      expect(md.join("\n")).not.toContain("<b>");
+      expect(md.join("\n")).not.toContain("://");
+      expect(md.some((l) => l.startsWith(lang === "ru" ? "Итого<span>:</span> тестов 25" : "Total<span>:</span> 25 tests"))).toBe(true);
+      // заголовок и примечание — тоже через ячейку (ревью К2 № 9)
+      expect(md[0]).toBe(`# ${acc1MdCell(md[0]!.slice(2).replace(/<span>([:@$])<\/span>/g, "$1"))}`);
+      expect(md[md.length - 1]).toBe(acc1MdCell(TABLE_NOTE[lang]));
+    }
+  });
+  it("en-акт — без «ёлочек» и без «pult» (ревью К2 № 6, 7; правило совместимости 3)", () => {
+    const en = acc1Markdown(withRows({ "Н-08": { agree: "no", driver: "refused" } }), "en");
+    expect(en).not.toMatch(/[«»]/);
+    expect(en).not.toMatch(/pult/i);
+    expect(en).toMatch(/console/i);
+  });
+});
+
+describe("К2: CSV (RFC 4180)", () => {
+  it("заголовок и 25 строк по 8 полей, CRLF; кавычка — удвоением, перевод строки — пробелом, запятая — внутри поля", () => {
+    const t = withRows({ "П-01": { fact: lit('a "q", b\nc'), run: "run.purchase" } });
+    for (const lang of ["ru", "en"] as const) {
+      const csv = acc1Csv(t, lang);
+      expect(csv.endsWith("\r\n")).toBe(true);
+      const recs = parseCsv(csv);
+      expect(recs).toHaveLength(26);
+      for (const r of recs) expect(r).toHaveLength(8);
+      expect(recs[0]![0]).toBe(lang === "ru" ? "№ теста" : "Test No.");
+      expect(recs[1]).toMatchObject({ 0: "П-01", 3: 'a "q", b c', 7: "run.purchase" });
+    }
+  });
+  it("начало ячейки «= + - @» и табуляция — с апострофом: таблица не примет текст за формулу", () => {
+    for (const s of ["=1+1", "+cmd", "-2", "@SUM(A1)", "\tx", " =1+1"]) expect(acc1CsvCell(s)).toBe(`"'${s}"`);
+    // перевод строки в начале — пробел, и апостроф всё равно ставится (ревью К2 № 10)
+    expect(acc1CsvCell("\n=1")).toBe(`"' =1"`);
+    expect(acc1CsvCell("\r=1")).toBe(`"' =1"`);
+    expect(acc1CsvCell("a=1")).toBe('"a=1"');
+    const recs = parseCsv(acc1Csv(withRows({ "П-01": { fact: lit("=HYPERLINK(\"x\")") } }), "ru"));
+    expect(recs[1]![3]).toBe('\'=HYPERLINK("x")');
+  });
+});

@@ -12,6 +12,7 @@ import { NOT_REPRODUCIBLE_LABEL, STAND_TEST_TABLE } from "../../src/dashboards/s
 import { FAULT_TESTS } from "../../src/demo/fault-tests.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { MORE_SCENARIOS, RUN_STEP } from "../../src/demo/scenarios.js";
+import { acc1Markdown, acc1Rows } from "../../src/pult/acc1.js";
 import { evaluate } from "../../src/pult/engine.js";
 import { STAND_LOG_WHAT, STAND_TESTS, type StandLogEntry } from "../../src/pult/standlog.js";
 import {
@@ -20,7 +21,6 @@ import {
   TEST_SCENARIO,
   TEST_SPECS,
   testTable,
-  testTableMarkdown,
   type ExpectProtector,
   type TableReaction,
   type TestCode,
@@ -290,18 +290,26 @@ describe("П-11.5а: У-01…У-04", () => {
   });
 });
 
-describe("П-11.5а: выгрузка Markdown для акта ACC-1", () => {
-  it("25 строк, каждая ячейка — через markdownCell: «|» и перевод строки в данных не ломают таблицу; итоги и примечание", () => {
-    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome")];
-    const tt = table({ items, model: modelOf([tx("T|1\n<b>", [2, 3], paid(3))]) });
-    for (const lang of ["ru", "en"] as const) {
-      const md = testTableMarkdown(tt, lang).split("\n");
-      const rows = md.filter((l) => /^\| [ПНУ]-\d\d /.test(l));
-      expect(rows).toHaveLength(25);
-      for (const l of rows) expect(l.replace(/\\\|/g, "").split("|").length - 2, l).toBe(6);
-      expect(md.join("\n")).not.toContain("<b>");
-      expect(md.some((l) => l.startsWith(lang === "ru" ? "Итого: тестов 25" : "Total: 25 tests"))).toBe(true);
-    }
+// Выгрузка для акта ACC-1 — `tests/pult/acc1.test.ts` (К2).
+describe("К2: метка прогона и факт с видом вердикта", () => {
+  it("метка прогона — у строки; прогона нет — метки нет; факт Н-xx показывает «сработало» / «нарушено» и защитника (повторное ревью К1а № 3)", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome"), rec(4, 3, "run.purchase"), rec(5, 4, "cart.created")];
+    const t = table({ items, model: modelOf([tx("T1", [2, 3], paid(3)), tx("T2", [5], paid(5, 4))]) });
+    expect(row(t, "П-01").run).toBe("run.purchase ×2");
+    expect(row(t, "П-03").run).toBeUndefined();
+    const n08 = [rec(1, 0, "run.fault", { test: "Н-08" }), rec(2, 1, "cart.created"), rec(3, 2, "fault.refused", { test: "Н-08", testCode: "MANDATE_SCOPE" })];
+    const v: Verdict = { kind: "violation", obj: "T1", cond: "R17", violator: "agent", seqs: [2] };
+    const r = row(table({ items: n08, model: modelOf([tx("T1", [2])]), verdicts: [v] }), "Н-08");
+    expect(r).toMatchObject({ agree: "no", run: "run.fault Н-08" });
+    expect(r.fact.ru).toContain("«нарушено»");
+    expect(r.fact.en).toContain('"violated"');
+    const f = row(table({ items: n08, model: modelOf([tx("T1", [2])]), verdicts: [{ ...v, kind: "protection", protector: "undetermined" }] }), "Н-08");
+    expect(f.fact.ru).toContain("«сработало»");
+    expect(f.fact.ru).toContain("защитил: не определён");
+  });
+  it("en-подписи — без «ёлочек» (ревью К1а № 5, правило совместимости 3)", () => {
+    const t = table({ items: [] });
+    for (const r of t.rows) expect(r.expected.en, r.test).not.toMatch(/[«»]/);
   });
 });
 
@@ -356,8 +364,10 @@ describe("П-11.5а: живой стенд — П-01, П-05, П-08 и Н-01, Н-
     expect(row(t, "Н-10").agree).toBe("no_case");
     expect(t.totals).toMatchObject({ tests: 25, yes: 6, no: 0, noCase: 1, unchecked: 18 });
     // инвариант 1: в таблице — только идентификаторы и коды, без фраз шины
-    const md = testTableMarkdown(t, "ru");
-    for (const x of feed.list().filter((x) => x.stream === "scenario")) expect(md).not.toContain(x.phrase.ru);
+    // по тексту строк акта до экранирования — иначе экранированный «:» спрятал бы фразу шины от проверки
+    const text = acc1Rows(t).flatMap((r) => [r.expected.ru, r.fact.ru, r.note.ru, r.run]).join("\n");
+    for (const x of feed.list().filter((x) => x.stream === "scenario")) expect(text).not.toContain(x.phrase.ru);
+    expect(acc1Markdown(t, "ru").split("\n").filter((l) => /^\| [ПНУ]-\d\d /.test(l))).toHaveLength(25);
     demo.clientEmulator!.setAuto(false);
   });
 });
