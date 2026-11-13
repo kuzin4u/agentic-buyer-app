@@ -9,6 +9,7 @@
 // П-3.2в: R20, R23, R25, R27, R31, R32, R47 — по журналу сбоев стенда (`standlog.ts`, В9), пометки «ПР» (`MARKED`) —
 // к R17, R18, R26, R37, R46, R47 (В8; решение владельца — PR #9 #pullrequestreview-5861020062); срок R31 — от «сейчас»,
 // переданного аргументом.
+import { FAULT_OUTCOMES } from "../dashboards/control.js";
 import { STOP_STEPS, type Interpretation } from "../dashboards/interpret.js";
 import type { Phrase } from "./phrases.js";
 import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Party, type Rule89 } from "./rules89.js";
@@ -44,6 +45,9 @@ export type Note = (typeof NOTES)[number];
  *  читалось бы за весь узел (ревью П-8.2 № 4). Остаются у условия объекта в движке; на экране — в журнале реакций
  *  (`act.preempted`) и в «Журнале» (статус «упреждено реакцией»); вид условий по объекту — после MVP. */
 export const OBJECT_ONLY_NOTES: ReadonlySet<Note> = new Set<Note>(["preempted_by_reaction"]);
+/** Шаги итога прогона драйвера «ПР» (П7; перечень — «Контроль», `FAULT_OUTCOMES`): по ним решается судьба пометки без
+ *  объекта (№ 10). */
+const FAULT_OUTCOME_STEPS: ReadonlySet<string> = new Set(FAULT_OUTCOMES.map((o) => `fault.${o}`));
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
     "«оплачено» после отзыва, но запрос агента — до отзыва: гонка С-28, фрод или дефект; вердикт — владелец",
@@ -454,7 +458,23 @@ function txConds(
     // По всем записям транзакции и её намерения: журнал агента может сослаться на поручение-намерение (ревью П-5.1 № 2).
     const s = stoppedBy(all.filter((x) => x.who?.code !== undefined && NOT_ACTIVE.has(x.who.code)), STOP_CODES_NOT_ACTIVE);
     const by = s === "platform" ? "platform_decline" : s === "agent" ? "agent_stop" : "undetermined";
-    const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : rejectedEv ? "rejected" : "inactive";
+    // Пометка «ПР» в транзакции — приложение заявляет о нарушении: «решение клиента» (отзыв, отказ от корзины) не выносится,
+    // R09 — «не определён», как до привязки корзины драйвера (гонка С-28, «Расхождения» № 7; ответ чата
+    // #issuecomment-6857335967, п. 2; Н-06). На Р-1541 не распространяется — там пометки нет.
+    // Только точно привязанная пометка: неточная (`weak`, конфликт звеньев) не прячет «решение клиента» чужой транзакции
+    // (ревью № 10 № 6). Известный признак отзыва при пометке уходит в «не определён» — сознательно, как велено (п. 2).
+    const marked = (log ?? []).some((e) => e.what === "MARKED" && !(weak?.has(e.seq) ?? false));
+    const why = marked
+      ? codes.has("MANDATE_EXPIRED")
+        ? "expired"
+        : "inactive"
+      : codes.has("MANDATE_REVOKED") || revokedEv
+        ? "revoked"
+        : codes.has("MANDATE_EXPIRED")
+          ? "expired"
+          : rejectedEv
+            ? "rejected"
+            : "inactive";
     return `${why}_${by}` as RuleCause;
   };
   // Р-1541 — аналог R37 для отказа клиента от корзины. Оба момента — из журнала агента, в его собственном порядке (ревью
@@ -491,7 +511,8 @@ function txConds(
     // решения человеку, лимит частоты, конфликт идемпотентности, 5xx защитой не считаются (№ 1). Операции с параметром в пути
     // (`{id}` у агента, `{mandate_id}` на шине) так не сопоставить — из изменяющих по поручению это только `relinquish`, он
     // исключён выше (№ 8). Ответ должен быть в транзакции: у `POST /pao/v1/credentials` и `POST /pao/v1/confirmations`
-    // поручения в пути нет — до привязки (расхождение № 10) защитник в живом прогоне не виден.
+    // поручения в пути нет: № 10 привязал по ключу идемпотентности только запросы драйвера «ПР»; у настоящего агента ответ
+    // попадёт в транзакцию после привязки по его записи `pao.call` (STATUS «Открыто», после MVP) — до неё защитник не виден.
     const ours = (x: Interpretation) => x.stream === "monitor" && (x.source === "agent_platform" || x.source === "agent_platform_open");
     // Необходимое условие — журнал самого агента: агент записал, что Платформа отказала этому обращению (`pao.call` с кодом
     // «не действует»). Защитник — по записи монитора (Р-1522), журнал агента — сверка: при сдвиге пары (попытка без ответа,
@@ -536,7 +557,9 @@ function txConds(
   else {
     const byAgent = all.filter((x) => notByClient(x, cart));
     const signedEv = all.find((x) => isEvent(x, "mandate.signed") && mid(x) === cart);
-    const signedStep = all.find((x) => x.stream === "scenario" && x.ref === "cart.signed" && mid(x) === cart);
+    // Шаг «корзина подписана» — сюжета (`cart.signed`) и драйвера «ПР» (`fault.note.cart_signed`): корзина драйвера —
+    // транзакция (№ 10), и время согласия у неё — по тому же правилу (ответ чата #issuecomment-6857335967, п. 1).
+    const signedStep = all.find((x) => x.stream === "scenario" && (x.ref === "cart.signed" || x.ref === "fault.note.cart_signed") && mid(x) === cart);
     const consentSeq = signedEv ? Math.min(signedEv.seq, signedStep?.seq ?? signedEv.seq) : undefined;
     const refused = all.some((x) => isEvent(x, "mandate.rejected") && mid(x) === cart);
     out.R18 =
@@ -777,9 +800,32 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // Записи с неточной привязкой — по объекту: номер записи журнала стенда.
   const weakOf = new Map<string, Set<number>>();
   const systemLog: StandLogEntry[] = [];
-  for (const e of o.standLog ?? []) {
-    const { ids, weak } = objsOfEntry(e, model);
-    if (ids.length === 0) systemLog.push(e);
+  const outcomes = items.filter((x) => x.stream === "scenario" && FAULT_OUTCOME_STEPS.has(x.ref) && x.test !== undefined);
+  /** Итог прогона драйвера для пометки: шаг итога того же теста не раньше пометки; часы — стенда. */
+  const outcomeOf = (e: StandLogEntry) => outcomes.find((x) => x.test === e.test && Date.parse(x.at) >= Date.parse(e.at));
+  // Р-1551 (#issuecomment-6858980768): пометка «ПР» — заявление о нарушении, которое драйвер ещё разыгрывает; пока у её прогона
+  // нет итога, она не учитывается ни у объекта, ни в «системе». Иначе в окне «пометка есть — ответа Платформы ещё нет» у
+  // транзакции R17 «нарушено», и протокол заводит открытую запись рядом с «сработало» (живой тест протокола по префиксам
+  // ленты). Вердикт по пометке выносится к итогу прогона — на секунды позже.
+  const entries = (o.standLog ?? []).filter((e) => e.what !== "MARKED" || e.test === undefined || outcomeOf(e) !== undefined);
+  const linked = entries.map((e) => objsOfEntry(e, model));
+  // Пометка «ПР» без объекта решается по итогу прогона драйвера (ответ чата #issuecomment-6857335967, п. 3 — вариант (а)
+  // узко; ревью № 10 № 1, 2): первая пометка драйвера ставится по продавцу до поручения и корзины, вторая — по корзине, а между
+  // ними драйвер ждёт подписи клиента. Пока у прогона нет шага итога (`fault.marked` / `refused` / `unplayed` / `failed` /
+  // `recorded` того же теста не раньше пометки) — пометка в «систему» не идёт (иначе протокол заводит открытое «нарушение»
+  // без объекта, которое уже не закрыть). Итог есть: в том же прогоне (до итога) есть пометка того же теста с объектом —
+  // пометка гасится (тот же факт уже у транзакции); нет — в «систему», как раньше. Часы — стенда (журнал стенда и шаги шины).
+  const systemMark = (i: number): boolean => {
+    const e = entries[i]!;
+    if (e.what !== "MARKED" || e.test === undefined) return true;
+    const out = outcomeOf(e);
+    if (!out) return false;
+    const end = Date.parse(out.at);
+    return !entries.some((x, k) => k > i && x.what === "MARKED" && x.test === e.test && Date.parse(x.at) <= end && linked[k]!.ids.length > 0);
+  };
+  for (const [i, e] of entries.entries()) {
+    const { ids, weak } = linked[i]!;
+    if (ids.length === 0 && systemMark(i)) systemLog.push(e);
     for (const id of ids) {
       logOf.set(id, [...(logOf.get(id) ?? []), e]);
       if (weak) weakOf.set(id, (weakOf.get(id) ?? new Set()).add(e.seq));

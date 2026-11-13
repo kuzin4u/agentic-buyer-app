@@ -410,9 +410,89 @@ const entry = (what: StandLogEntry["what"], ids: StandLogEntry["ids"], o: { test
 /** Сбой «П» в точной форме записи стенда v0.48.0 (`StandFaultForm`): лишний или недостающий идентификатор — ошибка tsc. */
 const fault = <W extends keyof StandFaultForm>(what: W, ids: StandFaultIds<W>, test: StandTest, atMs?: number): StandLogEntry =>
   entry(what, ids, { test, ...(atMs !== undefined && { atMs }) });
-const withLog = (items: Interpretation[], standLog: StandLogEntry[], o: { now?: number } = {}) =>
-  evaluate(buildTxModel(items), items, { standLog, ...(o.now !== undefined && { now: new Date(o.now).toISOString() }) });
+/** Р-1551: прогон драйвера «ПР» разыгран — к каждой пометке без итога её прогона дописывается шаг итога того же теста
+ *  (`fault.marked`, на 1 мс позже пометки). Без итога пометка не учитывается — это проверяет отдельный тест № 10. */
+function played(items: Interpretation[], log: readonly StandLogEntry[]): Interpretation[] {
+  const out = [...items];
+  for (const e of log) {
+    if (e.what !== "MARKED" || e.test === undefined) continue;
+    const t = Date.parse(e.at);
+    if (out.some((x) => x.stream === "scenario" && x.ref.startsWith("fault.") && x.test === e.test && Date.parse(x.at) >= t)) continue;
+    out.push({ ...rec("scenario", "fault.marked", {}, { stage: "service" }), test: e.test, at: new Date(t + 1).toISOString() });
+  }
+  return out;
+}
+const withLog = (items0: Interpretation[], standLog: StandLogEntry[], o: { now?: number } = {}) => {
+  const items = played(items0, standLog);
+  return evaluate(buildTxModel(items), items, { standLog, ...(o.now !== undefined && { now: new Date(o.now).toISOString() }) });
+};
 const txOf = (v: ReturnType<typeof withLog>) => v.objs.find((x) => x.kind === "tx")!.conds;
+
+describe("№ 10 (Р-1548): корзина драйвера «ПР» — транзакция; три правки по перепрогону (#issuecomment-6857335967)", () => {
+  const at = (ms: number) => new Date(T0 + ms).toISOString();
+  const outcome = (ref: string, test: StandTest, ms: number): Interpretation => ({ ...step(ref, {}, { stage: "service" }), test, at: at(ms) });
+  const judgeLog = (items: Interpretation[], log: StandLogEntry[]) => {
+    const model = buildTxModel(items);
+    const ev = evaluate(model, items, { standLog: log });
+    return { ev, vs: verdicts(ev, model, items) };
+  };
+
+  it("п. 1: шаг драйвера `fault.note.cart_signed` — шаг согласия наравне с `cart.signed`: события ещё нет — R18 «ждёт», не «нарушено»", () => {
+    const items = purchase("D1", {
+      skip: ["signed"],
+      at: { order: () => [step("fault.note.cart_signed", { mandate_id: "CD1" }, { stage: "cart" })] },
+    });
+    expect(buildTxModel(items).txs.map((t) => t.cartMandateId)).toEqual(["CD1"]);
+    expect(tx(items).R18).toMatchObject({ status: "wait", note: "event_pending" });
+  });
+
+  it("п. 2: пометка «ПР» в транзакции — отзыв не выносится «решением клиента»: R09 «не определён»; без пометки — «решение клиента»; неточная пометка не прячет решение", () => {
+    const shape = (n: string) =>
+      purchase(n, {
+        skip: ["order", "start", "pay", "done"],
+        at: { end: () => [event("mandate.revoked", { mandate_id: `C${n}` }), call("POST /pao/v1/credentials", { mandate_id: `C${n}` }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" })] },
+      });
+    const plain = judgeLog(shape("D6a"), []);
+    expect(plain.vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "client_decision", cause: { kind: "rule", rule: "revoked_platform_decline" } });
+    const m6 = [entry("MARKED", { mandate_id: "CD6b" }, { test: "Н-06" })];
+    const marked = judgeLog(played(shape("D6b"), m6), m6);
+    expect(marked.vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "protection", violator: "undetermined", cause: { kind: "rule", rule: "inactive_platform_decline" } });
+  });
+
+  it("п. 3: пометка без объекта — по итогу прогона: до итога — не в «системе»; в прогоне есть пометка с корзиной — гасится; нет — в «систему»; оборванный прогон перед полным — свой", () => {
+    const items = purchase("D8", { skip: ["order", "start", "pay", "done"] });
+    const first = (ms: number) => entry("MARKED", { merchant_id: "MER-1", shop_id: "SHOP-1" }, { test: "Н-08", atMs: T0 + ms });
+    const second = (ms: number) => entry("MARKED", { mandate_id: "CD8", merchant_id: "MER-1", shop_id: "SHOP-1" }, { test: "Н-08", atMs: T0 + ms });
+    const sys = (r: ReturnType<typeof judgeLog>) => r.vs.filter((v) => v.obj === undefined && v.cond === "R17").map((v) => v.kind);
+    // Идёт ожидание клиента между пометками: итога нет — в «систему» не идёт (иначе открытая запись протокола без объекта).
+    expect(sys(judgeLog(items, [first(0)]))).toEqual([]);
+    // Итог, в прогоне — пометка с корзиной: системной нет, у транзакции — своя.
+    const full = judgeLog([...items, outcome("fault.refused", "Н-08", 3_000)], [first(0), second(2_000)]);
+    expect(sys(full)).toEqual([]);
+    expect(full.vs.filter((v) => v.obj === "CD8" && v.cond === "R17").map((v) => v.kind)).toEqual(["violation"]);
+    // Итог без пометки с корзиной (прогон оборван после первой пометки) — в «систему», как раньше.
+    expect(sys(judgeLog([...items, outcome("fault.unplayed", "Н-08", 1_000)], [first(0)]))).toEqual(["violation"]);
+    // Прогон 1 оборван после первой пометки, прогон 2 полный: пометка прогона 1 остаётся в «системе» (граница — итог прогона 1).
+    // Сводный вердикт того же условия у транзакции уже есть — отдельной записью не выносится (`verdicts`); проверка — по журналу
+    // сводного статуса (в нём и журналы объектов): пометка прогона 1 есть, первая пометка прогона 2 — нет (погашена).
+    const run1 = first(0);
+    const run2 = first(5_000);
+    const two = judgeLog([...items, outcome("fault.unplayed", "Н-08", 1_000), outcome("fault.refused", "Н-08", 9_000)], [run1, run2, second(7_000)]);
+    expect(two.ev.system.R17.log).toContain(run1.seq);
+    expect(two.ev.system.R17.log).not.toContain(run2.seq);
+  });
+
+  it("Р-1551: пометка «ПР» у транзакции до итога прогона не учитывается (R17 не «нарушено», пока ответа Платформы нет); к итогу — учитывается", () => {
+    const items = purchase("D9", { skip: ["order", "start", "pay", "done"] });
+    const mark = [entry("MARKED", { mandate_id: "CD9" }, { test: "Н-08", atMs: T0 })];
+    const r17 = (its: Interpretation[]) => judgeLog(its, mark).ev.objs.find((o) => o.id === "CD9")!.conds.R17.status;
+    expect(r17(items)).not.toBe("bad");
+    expect(r17([...items, outcome("fault.marked", "Н-08", 2_000)])).toBe("bad");
+    // Итог другого теста или раньше пометки — не итог этого прогона.
+    expect(r17([...items, outcome("fault.marked", "Н-07", 2_000)])).not.toBe("bad");
+    expect(r17([...items, outcome("fault.marked", "Н-08", -1_000)])).not.toBe("bad");
+  });
+});
 
 describe("«упреждено реакцией» у R21 (П-8.2, У-04, Р-1531)", () => {
   // Запрос подтверждения и одобрение Платформы; время напоминания — относительно события одобрения (часы стенда).
@@ -947,9 +1027,10 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
 
   for (const row of rows)
     it(row.test, () => {
-      const items = row.items();
+      const log = row.log?.() ?? [];
+      const items = played(row.items(), log);
       const model = buildTxModel(items);
-      const view = evaluate(model, items, { standLog: row.log?.() ?? [], ...(row.now !== undefined && { now: new Date(row.now).toISOString() }) });
+      const view = evaluate(model, items, { standLog: log, ...(row.now !== undefined && { now: new Date(row.now).toISOString() }) });
       const vs = verdicts(view, model, items);
       for (const w of row.want) {
         const found = vs.find((v) => (w.cond === undefined || v.cond === w.cond) && (w.guarantee === undefined || v.guarantee === w.guarantee) && v.kind === w.kind);
@@ -1246,7 +1327,8 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
 // паспорта (решение по П-3.3, 3; ревью П-3.3 № 7 — проверка по правилу, не по виду вердикта), «Идёт к нарушению» с порогом
 // 15 с (У-01…У-03), «операция без шага агента — возможно, чужая операция» (условие Р-1478) — предположение, не паспорт.
 describe("«Контроль» пульта (П-4.1)", () => {
-  const vsOf = (items: Interpretation[], log: StandLogEntry[] = []) => {
+  const vsOf = (items0: Interpretation[], log: StandLogEntry[] = []) => {
+    const items = played(items0, log);
     const model = buildTxModel(items);
     return { model, vs: verdicts(evaluate(model, items, { standLog: log }), model, items) };
   };
@@ -1451,7 +1533,8 @@ describe("«Контроль» пульта (П-4.1)", () => {
 
 // П-5.1: «Причины» на записях в форме шины — разбор вердиктов, защиты по источнику, цепочка событий (Р-1519).
 describe("«Причины» пульта на записях в форме шины (П-5.1)", () => {
-  const causesOf = (items: Interpretation[], standLog?: StandLogEntry[]) => {
+  const causesOf = (items0: Interpretation[], standLog?: StandLogEntry[]) => {
+    const items = standLog ? played(items0, standLog) : items0;
     const model = buildTxModel(items);
     const ev = evaluate(model, items, standLog ? { standLog } : {});
     return causesView(model, items, verdicts(ev, model, items), waits(model, items));
