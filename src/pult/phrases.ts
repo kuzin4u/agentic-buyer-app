@@ -245,6 +245,25 @@ export const PULT = {
   // {sec} — срок из `stand.params.order_hold_sec` (ревью П-1.3 № 5, П-8.1), не литерал.
   "mode.faults_note": p("прогон тестов пульта: сбои стенда по кнопкам, срок подтверждения {sec} с", "console test run: stand faults by buttons, confirmation deadline {sec} s"),
   "status.pult_closed": p("пульт отключён от сервера стенда — обновите страницу", "the console is disconnected from the stand server — reload the page"),
+  // «Журнал» (П-6.1а): журнал действий и протокол негативных значений П-NNN (модель 1.23, раздел 1.10; В1 (а), В2 (а)).
+  "log.actions": p("Журнал действий", "Action log"),
+  "log.actions.none": p("Нажатий кнопок и решений клиента пока нет", "No button presses or client decisions yet"),
+  "log.decision": p("решение клиента", "client's decision"),
+  "log.protocol": p("Протокол", "Protocol"),
+  "log.protocol.none": p("Негативных значений нет", "No negative values"),
+  "log.filter": p("Статус", "Status"),
+  "log.filter.all": p("все", "all"),
+  "log.react": p("до реакции", "to reaction"),
+  "log.avg": p("среднее до реакции", "average to reaction"),
+  "proto.type.warn": p("предупреждение", "warning"),
+  "proto.type.bad": p("нарушение", "violation"),
+  "proto.type.fired": p("сработала гарантия", "guarantee fired"),
+  "proto.st.open": p("открыто", "open"),
+  "proto.st.reacted": p("отреагировано", "reacted"),
+  "proto.st.prevented": p("упреждено реакцией", "pre-empted by a reaction"),
+  "proto.st.cleared": p("снято само", "cleared by itself"),
+  "proto.st.closed": p("закрыто", "closed"),
+  "proto.st.stopped": p("остановлено гарантией", "stopped by a guarantee"),
   // Видимая часть П-11.2 / П-11.4 (Р-1482, Р-1514): блок «Поломки» и строка эмулятора клиента — только в режиме сбоев.
   "faults.title": p("Поломки стенда", "Stand faults"),
   "faults.note": p(
