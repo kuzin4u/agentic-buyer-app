@@ -224,6 +224,8 @@ export const PULT = {
   "act.review.undetermined": p("нарушитель не определён — разбор владельцем", "violator undetermined — the owner reviews"),
   "act.notify": p("Повторить уведомление", "Repeat the notification"),
   "act.notify.none": p("на стенде нет", "not on the stand"),
+  // Р-1542: при конфликте звеньев действия по транзакции — до выбора покупки.
+  "act.conflict": p("конфликт звеньев — выберите покупку", "link conflict — choose the purchase"),
   "act.sending": p("отправлено стенду…", "sent to the stand…"),
   "act.done": p("сделано", "done"),
   "act.refused": p("отказано", "refused"),

@@ -769,6 +769,47 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     expect(res).not.toContain(ru("act.done"));
   });
 
+  it("Р-1542: конфликт звеньев (несколько корзин, одно намерение) — «Остановить» и «Отозвать» неактивны с пояснением, запросов нет; «Напомнить» по номеру запроса и «Передать на разбор» — доступны", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ actions: true, lang });
+      const calls = withFetch(env);
+      const conflict = { ...msg, board: { ...msg.board, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", linkConflict: true }] } };
+      env.sources[0]!.send(conflict);
+      const box = $(env, "b-ctl");
+      expect(btn(env, "stop"), lang).toEqual([]);
+      expect(btn(env, "revoke"), lang).toEqual([]);
+      const off = box.querySelectorAll(".act-off").map((x) => x.textContent);
+      expect(off.filter((t) => t.includes(PULT["act.conflict"][lang])), lang).toHaveLength(2);
+      expect(off.some((t) => t.startsWith(PULT["act.revoke"][lang]) && t.includes(PULT["act.conflict"][lang])), lang).toBe(true);
+      expect(off.some((t) => t.startsWith(PULT["act.stop"][lang]) && t.includes(PULT["act.conflict"][lang])), lang).toBe(true);
+      // Нажатие неактивной кнопки — без запроса.
+      for (const b of box.querySelectorAll(".act-off").flatMap((x) => x.querySelectorAll("button"))) b.click();
+      expect(calls, lang).toEqual([]);
+      // «Напомнить» — по однозначному номеру запроса (Q1), «Передать на разбор» — у паспорта.
+      expect(btn(env, "remind").map((b) => b.dataset.params), lang).toEqual(["confirmation=Q1"]);
+      expect(btn(env, "review").length, lang).toBeGreaterThan(0);
+    }
+  });
+
+  it("Р-1542, ревью № 1, 2: «Отозвать» нажато до конфликта — ответ стенда остаётся под строкой, начатый первый шаг снимается", async () => {
+    const env = start({ actions: true });
+    withFetch(env);
+    env.sources[0]!.send(msg);
+    btn(env, "revoke")[0]!.click();
+    btn(env, "revoke").find((b) => b.dataset.second === "1")!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    // Первый шаг снова — и тут транзакция стала конфликтной.
+    btn(env, "revoke")[0]!.click();
+    const conflict = { ...msg, board: { ...msg.board, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", linkConflict: true }] } };
+    env.sources[0]!.send(conflict);
+    const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
+    expect(res).toContain(`${ru("act.refused")} · 409 · MANDATE_NOT_ACTIVE`);
+    expect($(env, "b-ctl").textContent).not.toContain(ru("act.revoke.ask"));
+    // Конфликт снят — вопрос «Да, отозвать» не всплывает сам.
+    env.sources[0]!.send(msg);
+    expect($(env, "b-ctl").textContent).not.toContain(ru("act.revoke.ask"));
+  });
+
   it("условие 2 Р-1527 (В1 (а)): «Напомнить» у R08 уходит на «remind_note» (без стенда), у R21 — на стенд; «Повторить уведомление» неактивна; разбор при «не определён» — неактивен", () => {
     const env = start({ actions: true });
     const calls = withFetch(env);

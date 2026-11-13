@@ -854,6 +854,24 @@
     const bar = el("div", undefined, "act-bar");
     // «Остановить покупку» — только при известном поручении корзины (ревью П-8.1 № 2): у `op:…`, `confirmation:…`,
     // `order:…` корзины нет — стенд заведомо отказал бы.
+    // Р-1542 (решение владельца 13.11, вариант (а)): при конфликте звеньев «Остановить покупку» и «Отозвать поручение» —
+    // неактивны с пояснением, до выбора покупки; действие по неоднозначному звену не уходит (при нескольких корзинах и одном
+    // намерении «Отозвать» раньше показывалась). «Напомнить клиенту» — у строки ожидания при однозначном `confirmation_id`,
+    // «Передать на разбор» — у паспорта, от конфликта не зависит.
+    if (card && card.linkConflict === true) {
+      const conflictIntent = typeof card.intentId === "string" ? card.intentId : "";
+      // Начатый до конфликта первый шаг «Отозвать» снимается: иначе вопрос «Да, отозвать» всплыл бы у соседней транзакции с
+      // тем же намерением (ревью Р-1542 № 2).
+      if (conflictIntent && actState.pending === "revoke:" + conflictIntent) actState.pending = "";
+      bar.appendChild(disabledButton(label("act.stop"), label("act.conflict")));
+      bar.appendChild(disabledButton(label("act.revoke"), label("act.conflict")));
+      bar.appendChild(disabledButton(label("act.notify"), label("act.notify.none")));
+      row.appendChild(bar);
+      // Ответы на нажатия до конфликта не пропадают (ревью Р-1542 № 1).
+      append(row, resultOf("stop:" + id));
+      if (conflictIntent) append(row, resultOf("revoke:" + conflictIntent));
+      return;
+    }
     const cart = card && card.kind === "tx" && typeof card.cartMandateId === "string" ? card.cartMandateId : "";
     if (cart) bar.appendChild(actButton("stop:" + id, label("act.stop"), "stop", { cart: cart }));
     const intent = card && typeof card.intentId === "string" ? card.intentId : "";
