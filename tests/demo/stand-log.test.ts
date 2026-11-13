@@ -66,6 +66,29 @@ describe("П-11.2а: на шину — только идентификаторы
   });
 });
 
+describe("№ 10 (Р-1548): запрос реквизита драйвера «ПР» — в транзакции корзины по ключу идемпотентности", () => {
+  it("шаг с `credential_key` — ключ в ленту не идёт; запись `POST /pao/v1/credentials` с этим ключом получает `mandate_id`; другой ключ и без шага — без поручения", () => {
+    const calls: Record<string, unknown>[] = [];
+    const bus = new MonitorBus({
+      calls: () => calls as never,
+      merchantCalls: () => [],
+      journal: () => [],
+      listenFeed: () => () => undefined,
+      isAgentKid: () => true,
+      confirmation: async () => undefined,
+      now: () => new Date(AT),
+    });
+    bus.scenario({ step: "fault.note.cart_created", params: { mandate_id: "mnd_cart1", credential_key: "n08-x-credential" } });
+    const step = bus.history().flatMap((i) => (i.stream === "scenario" ? [i.line] : []))[0]!;
+    expect(step.params).toEqual({ mandate_id: "mnd_cart1" });
+    const call = (key?: string) => ({ method: "POST", path: "/pao/v1/credentials", status: 409, code: "MANDATE_SCOPE", source: "network", kid: "k1", ...(key && { idempotency_key: key }) });
+    calls.push(call("n08-x-credential"), call("other-credential"), call());
+    bus.poll();
+    const ids = bus.history().flatMap((i) => (i.stream === "monitor" ? [i.event.ids] : []));
+    expect(ids).toEqual([{ mandate_id: "mnd_cart1" }, {}, {}]);
+  });
+});
+
 /** Подменённый источник: записи участников и журнал стенда — раздельно, как у `localStandSource`. */
 function fakeSource() {
   const items = new Set<(i: WireItem) => void>();

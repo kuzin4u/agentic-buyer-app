@@ -115,7 +115,12 @@ export type BusItem =
 const seqOf = (i: BusItem): number => (i.stream === "monitor" ? i.event.seq : i.line.seq);
 
 /** Обращение без тела: форма журнала стенда, общая для ПАО и витрин. kid — только как признак подписи, в ленту не идёт. */
-export type CallRecord = Pick<StandCall, "method" | "path" | "status" | "code" | "source" | "kid">;
+export type CallRecord = Pick<StandCall, "method" | "path" | "status" | "code" | "source" | "kid" | "idempotency_key">;
+/** Параметр шага драйвера нарушителя «ПР» (П7) с ключом идемпотентности его будущего запроса реквизита. */
+export const CREDENTIAL_KEY = "credential_key";
+const CREDENTIAL_CALL = "POST /pao/v1/credentials";
+/** Сколько ключей привязки помнить (прогон драйвера — один-два ключа). */
+const CREDENTIAL_KEYS_KEPT = 1000;
 
 /** Код отказа — только машинный код (`MANDATE_REVOKED`). Иное (текст продавца) не выводится (инварианты 1, 4). */
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -310,6 +315,8 @@ export class MonitorBus {
   #openByAgent: { key: string; polls: number }[] = [];
   /** Неподписанные обращения к открытым адресам, ждущие записи журнала агента. */
   #openPending: OpenPending[] = [];
+  /** Ключ идемпотентности запроса реквизита драйвера «ПР» → поручение корзины (расхождение № 10). */
+  readonly #credentialKeys = new Map<string, string>();
   #timer: NodeJS.Timeout | undefined;
   #offFeed: (() => void) | undefined;
 
@@ -363,8 +370,12 @@ export class MonitorBus {
     const calls = this.#src.calls();
     for (; this.#calls < calls.length; this.#calls++) {
       const c = calls[this.#calls]!;
-      const k = classifyCall(c, "pao");
-      if (!k) continue;
+      const k0 = classifyCall(c, "pao");
+      if (!k0) continue;
+      // Запрос реквизита: поручения в пути нет, тело стенд не отдаёт — `mandate_id` по ключу идемпотентности из шага драйвера
+      // «ПР» (расхождение № 10, Р-1548): ответ Платформы попадает в транзакцию корзины. Ключа нет — как раньше, без поручения.
+      const bound = k0.what === CREDENTIAL_CALL && c.idempotency_key !== undefined ? this.#credentialKeys.get(c.idempotency_key) : undefined;
+      const k = bound !== undefined ? { ...k0, ids: { ...k0.ids, mandate_id: bound } } : k0;
       if (c.source !== "network") this.#monitor({ ...k, source: "stand" });
       else if (this.#byAgent(c)) this.#monitor({ ...k, source: "agent_platform" });
       else if (c.path.startsWith(OPEN_PREFIX) && c.kid === undefined) {
@@ -411,6 +422,15 @@ export class MonitorBus {
     this.#read(false);
     const params: Record<string, string | number | MoneyView | TimeView> = {};
     for (const [k, v] of Object.entries(s.params)) {
+      // Ключ идемпотентности будущего запроса реквизита драйвера «ПР» — только для привязки (расхождение № 10), в ленту не идёт.
+      if (k === CREDENTIAL_KEY) {
+        // Только шаги подготовки драйвера; карта — с пределом (ревью № 10 № 7).
+        if (s.step.startsWith("fault.note.") && typeof v === "string" && typeof s.params.mandate_id === "string") {
+          this.#credentialKeys.set(v, s.params.mandate_id);
+          if (this.#credentialKeys.size > CREDENTIAL_KEYS_KEPT) this.#credentialKeys.delete(this.#credentialKeys.keys().next().value!);
+        }
+        continue;
+      }
       if (TIME_PARAMS.has(k) && typeof v === "string") {
         // Момент — текст на обоих языках и машинное значение (П-11.1д-а); не по форме — шаг без него.
         try {

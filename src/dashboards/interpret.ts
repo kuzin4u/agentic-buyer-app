@@ -387,6 +387,8 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   failed: "outcome",
   aborted: "service",
 };
+/** Префикс шагов подготовки драйвера нарушителя «ПР» (П7). */
+const FAULT_NOTE = "fault.note.";
 const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "intent.signed": "client",
   "cart.agreed": "client",
@@ -481,7 +483,14 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
-    stage: (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
+    stage:
+      (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ??
+      // Шаги подготовки драйвера «ПР» `fault.note.<объект>_…` — стадия по первому слову, если оно есть в `STEP_STAGE` (корзина,
+      // поручение, заказ, отзыв: `revoke_ask` — «отзыв»); корзина драйвера — транзакция (расхождение № 10, Р-1548); прочие шаги
+      // драйвера — служебные. На вердикты стадия не влияет.
+      (head === "fault" && l.step.startsWith(FAULT_NOTE) ? own(STEP_STAGE, l.step.slice(FAULT_NOTE.length).split("_")[0]!) : undefined) ??
+      own(STEP_STAGE, head) ??
+      "service",
     actor,
     emulated: byEmulator || byStand || env.emulated.includes(actor),
     kind,

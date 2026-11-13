@@ -141,8 +141,12 @@ class Links {
   }
 }
 
-/** Поручение корзины: шаги корзины и заказа сюжета несут его `mandate_id`. */
-const isCartStep = (r: Interpretation) => r.stream === "scenario" && (r.ref.startsWith("cart.") || r.ref === "order.placed");
+/** Поручение корзины: шаги корзины и заказа сюжета несут его `mandate_id`; у драйвера нарушителя «ПР» — его шаги подготовки
+ *  о корзине (`fault.note.cart_created`, `fault.note.cart_signed` …): корзина драйвера — транзакция, к ней привязываются
+ *  пометка «ПР» и ответ Платформы на запрос реквизита (расхождение № 10, Р-1548). */
+const isCartStep = (r: Interpretation) =>
+  r.stream === "scenario" && (r.ref.startsWith("cart.") || r.ref === "order.placed" || r.ref.startsWith("fault.note.cart_") || r.ref === "fault.note.order_placed");
+// Намерение драйвера в объекты не берётся (лишний объект «поручение без покупки» дал бы новые вердикты; состав № 10 — корзина).
 const isIntentStep = (r: Interpretation) => r.stream === "scenario" && r.ref.startsWith("intent.");
 
 export function buildTxModel(items: readonly Interpretation[]): TxModel {

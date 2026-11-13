@@ -139,7 +139,7 @@ async function intentAndCart(c: FaultContext, key: string): Promise<{ intentId: 
   c.step("fault.note.intent_signed", { mandate_id: intentId });
   const cart = await c.call("POST /pao/v1/mandates", { body: mandateBody("CART", intentId, String(intent.valid_to ?? validTo)), idempotencyKey: `${key}-cart` });
   const cartId = String(cart.id);
-  c.step("fault.note.cart_created", { mandate_id: cartId });
+  c.step("fault.note.cart_created", { mandate_id: cartId, credential_key: `${key}-credential` }); // ключ запроса реквизита — для привязки ответа к корзине (№ 10, Р-1548)
   // Вторая пометка — по корзине, до нарушения (решение владельца, чат 11.11, вариант (а)): «ПР» несёт идентификатор корзины,
   // а не только продавца (у честного сюжета 1 тот же продавец; ревью П-11.3б № 6). Пульт пока корзину нарушителя в модель не
   // берёт (её шаги — `fault.note.*`) и относит пометку к системе — привязка «ПР» к транзакции нарушителя — в «Открыто»
@@ -880,6 +880,7 @@ function safeParams(p: ScenarioStep["params"]): ScenarioStep["params"] {
     if (k === "code" && typeof v === "string" && CODE_FORM.test(v)) out.code = v;
     else if (k === "status" && typeof v === "number" && Number.isInteger(v) && v >= 100 && v <= 599) out.status = v;
     else if ((ID_FIELDS as readonly string[]).includes(k) && typeof v === "string" && ID_FORM.test(v)) out[k] = v;
+    else if (k === "credential_key" && typeof v === "string" && ID_FORM.test(v)) out[k] = v; // № 10: шина возьмёт и в ленту не пустит
   }
   return out;
 }
