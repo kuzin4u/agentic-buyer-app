@@ -356,3 +356,16 @@ describe("срок поручения validTo (П-5.1а)", () => {
     expect(line("intent.created", { mandate_id: "mnd_1", valid_to: ISO })).toBeUndefined();
   });
 });
+
+describe("метод обращения pao.call (Р-1541)", () => {
+  const line = (kind: string, method: string) => parseWireItem({ stream: "console", line: { seq: ++seq, at, kind, method } });
+  it("метод — только у записи журнала агента pao.call и только по форме", () => {
+    const ok = line("pao.call", "POST /pao/v1/credentials");
+    expect(ok).toBeDefined();
+    expect(interpret(ok!, ENV).method).toBe("POST /pao/v1/credentials");
+    // Не по форме — без метода (если разбор линии вообще пропустит запись).
+    const odd = line("pao.call", "POST /pao/v1/credentials?x=<b>");
+    if (odd) expect(interpret(odd, ENV).method).toBeUndefined();
+    expect(interpret(line("agent.refused", "POST /pao/v1/credentials")!, ENV).method).toBeUndefined();
+  });
+});

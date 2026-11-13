@@ -1013,6 +1013,55 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     expect(r09(judge(startedOnly))).toMatchObject({ violator: "undetermined", cause: { kind: "rule", rule: "inactive_agent_stop" } });
   });
 
+  it("Р-1541: обращение агента к Платформе после записи журнала «узнал об отказе от корзины» — R09 «нарушено», агент, паспорт; до записи «узнал» или без неё — решение клиента", () => {
+    const judge = (items: Interpretation[]) => {
+      const model = buildTxModel(items);
+      return verdicts(evaluate(model, items, { standLog: [] }), model, items);
+    };
+    const shape = (n: string, end: (c: string) => Interpretation[]) => purchase(n, { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => end(`C${n}`) } });
+    const rej = (c: string) => event("mandate.rejected", { mandate_id: c });
+    const learned = (c: string) => journal("agent.refused", { mandate_id: c }, "MANDATE_NOT_ACTIVE");
+    // Обращение агента к Платформе — как на живой шине (ревью Р-1541 № 1): за проход сначала запись журнала агента `pao.call`
+    // (с кодом отказа и поручением), затем запись обращения стенда.
+    const paoCall = (c: string, method: string, code?: string): Interpretation => ({
+      ...rec("console", "pao.call", { mandate_id: c }, code ? { code, kind: "conflict" } : {}),
+      method,
+    });
+    const cred = (c: string, code?: string) => [
+      paoCall(c, "POST /pao/v1/credentials", code),
+      call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", code ? { code, kind: "conflict" } : {}),
+    ];
+    const r09 = (vs: Verdict[]) => vs.filter((v) => v.cond === "R09");
+    // Обращение после события, но до записи «узнал»; Платформа отказала — решение клиента, защитила Платформа (П-03).
+    // Запись `pao.call` с кодом MANDATE_NOT_ACTIVE — не «узнал» (блокер ревью Р-1541 № 1).
+    const before = judge(shape("RJ1", (c) => [rej(c), ...cred(c, "MANDATE_NOT_ACTIVE"), learned(c)]));
+    expect(r09(before).map((v) => [v.kind, v.protector, v.cause?.kind === "rule" && v.cause.rule])).toEqual([["client_decision", "platform", "rejected_platform_decline"]]);
+    expect(passports(before)).toEqual([]);
+    // Обращение после записи «узнал» — нарушение агента, паспорт; доказательства — событие, запись «узнал», `pao.call`.
+    const items = shape("RJ2", (c) => [rej(c), learned(c), ...cred(c, "MANDATE_NOT_ACTIVE")]);
+    const after = judge(items);
+    expect(r09(after)).toMatchObject([{ kind: "violation", violator: "agent", node: "У5", cause: { kind: "rule", rule: "agent_after_reject" } }]);
+    expect(r09(after)[0]!.seqs).toEqual([seqOf(items, "mandate.rejected"), seqOf(items, "agent.refused"), seqOf(items, "pao.call")]);
+    expect(passports(after).length).toBeGreaterThan(0);
+    // Ревью № 4: при нарушении остаётся и запись «решение клиента» без условия — отказ клиента был (две записи о разном).
+    expect(after.filter((v) => v.kind === "client_decision").map((v) => v.cond)).toEqual([undefined]);
+    // Порядок — по журналу агента, не по шине (ревью № 2): запись обращения стенда после «узнал», а `pao.call` — до.
+    const order = judge(shape("RJ6", (c) => [rej(c), paoCall(c, "POST /pao/v1/credentials", "MANDATE_NOT_ACTIVE"), learned(c), call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" })]));
+    expect(r09(order).map((v) => v.kind)).toEqual(["client_decision"]);
+    // Чтение (GET) и отказ от корзины (relinquish, Р63) после записи «узнал» — не нарушение (ревью № 5).
+    for (const m of ["GET /pao/v1/mandates/{id}", "POST /pao/v1/mandates/{id}/relinquish"]) {
+      const vs = judge(shape("RJ3", (c) => [rej(c), learned(c), paoCall(c, m)]));
+      expect(r09(vs).map((v) => v.kind), m).toEqual(["client_decision"]);
+      expect(passports(vs), m).toEqual([]);
+    }
+    // Записи «узнал» нет — нарушение недоказуемо: отказ Платформы на обращение после события — решение клиента.
+    const unknown = judge(shape("RJ4", (c) => [rej(c), ...cred(c, "MANDATE_NOT_ACTIVE")]));
+    expect(r09(unknown).map((v) => [v.kind, v.cause?.kind === "rule" && v.cause.rule])).toEqual([["client_decision", "rejected_platform_decline"]]);
+    // Без события отказа — правило не применяется (обычный «не определён» по MANDATE_NOT_ACTIVE).
+    const noRej = judge(shape("RJ5", (c) => [learned(c), ...cred(c, "MANDATE_NOT_ACTIVE")]));
+    expect(r09(noRej).some((v) => v.cause?.kind === "rule" && v.cause.rule === "agent_after_reject")).toBe(false);
+  });
+
   it("R26 (Р-1537; ревью П-3.2б № 10): заказ есть, оплаты нет, покупка остановлена — «не применяется», а не «ждёт»; без остановки — «ждёт»", () => {
     const stopped = (n: string, end: () => Interpretation[]) => tx(purchase(n, { skip: ["start", "pay", "done"], at: { end } })).R26.status;
     expect(tx(purchase("S0", { skip: ["start", "pay", "done"] })).R26.status).toBe("wait");
