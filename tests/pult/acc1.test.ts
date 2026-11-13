@@ -19,6 +19,7 @@ import {
   KNOWN_NOTES,
   UTF8_BOM,
   type Acc1Record,
+  type KnownNote,
 } from "../../src/pult/acc1.js";
 import { PULT_ACTIONS } from "../../src/pult/actions.js";
 import { PULT } from "../../src/pult/phrases.js";
@@ -103,10 +104,15 @@ describe("К2: строки акта ACC-1", () => {
     expect(n.ru).toContain(`${PULT["log.react"].ru} 12 ${PULT["card.sec"].ru}`);
     // нулевая реакция — тоже пишется (0 — не «нет»)
     expect(row(acc1Rows(t, [{ id: "П-003", obj: "T1", status: "reacted", at: AT, reactSec: 0 }]), "П-01").note.ru).toContain("до реакции 0 с");
-    // замечание Н-08 и записи: граница видна — «; » только между замечанием и записями
-    const h = row(acc1Rows(withRows({ "Н-08": { agree: "no", driver: "refused", objs: ["T1"] } }), recs), "Н-08").note.ru;
-    expect(h.split("; ")).toHaveLength(2);
-    expect(h.split("; ")[1]).toMatch(/^записи: П-001 .* · П-002 /);
+  });
+  it("граница замечания и записей видна: «; » — ровно один, между известной причиной и записями (ревью К6 № 2, К8 № 1)", () => {
+    const stub: Partial<Record<string, KnownNote>> = { "П-01": { applies: () => true, note: lit("причина") } };
+    const recs: Acc1Record[] = [
+      { id: "П-001", obj: "T1", status: "closed", at: AT },
+      { id: "П-002", obj: "T1", status: "open", at: AT },
+    ];
+    const n = row(acc1Rows(withRows({ "П-01": { objs: ["T1"] } }), recs, stub), "П-01").note.ru;
+    expect(n.split("; ")).toEqual(["причина", `записи: П-001 (${AT}) — закрыто · П-002 (${AT}) — открыто`]);
   });
   it("запись системы (`obj: \"\"`) в строку теста не попадает — уходит в «Записи без строки теста» (ревью № 7)", () => {
     const t = withRows({ "П-01": { objs: ["T1"] } });
@@ -149,13 +155,14 @@ describe("К2: строки акта ACC-1", () => {
     expect(csv).toHaveLength(27);
     expect(csv[26]![5]).toBe(`Records not linked to a test row: records: П-009 (${AT}) — open`);
   });
-  it("Н-08 «нет» при отказе Платформы — замечание с причиной № 10 (Р-1546); «нет» при прошедшей операции, «да», без прогона — без него (ревью К2 № 12)", () => {
+  it("Н-08: временное замечание № 10 снято (кирпич № 10 окна А) — ни при каком исходе замечания нет; известных причин нет", () => {
     const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-08": o })), "Н-08").note;
-    expect(note({ agree: "no", driver: "refused" }).ru).toContain("«Расхождения» № 10");
-    expect(note({ agree: "no", driver: "refused" }).en).toContain("discrepancy No. 10");
+    expect(note({ agree: "no", driver: "refused" }).ru).toBe("");
+    expect(note({ agree: "no", driver: "refused" }).en).toBe("");
     expect(note({ agree: "no", driver: "marked" }).ru).toBe("");
     expect(note({ agree: "yes", driver: "refused" }).ru).toBe("");
     expect(row(acc1Rows(base), "Н-08").note.ru).toBe("");
+    // на случай новой известной причины: ключ — код теста задания
     for (const k of Object.keys(KNOWN_NOTES)) expect(TEST_CODES as readonly string[]).toContain(k);
   });
   it("пометки в выгрузке: «Авто» (П5 п. 3) и «нарушитель (ПР) — драйвер приложения» (П7 п. 4) — в Markdown и CSV (ревью К2 № 5)", () => {
