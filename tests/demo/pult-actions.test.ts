@@ -279,7 +279,12 @@ describe("У-04 на живом стенде в режиме сбоев: «На�
     const sms = await until(after(n, "upk.sms"));
     // Номер запроса подтверждения — с доски пульта («Идёт к нарушению» R21), как у оператора.
     const b0 = await boardUntil(demo, (b) => b.control.waits.some((x) => x.cond === "R21"));
-    const q = b0.control.waits.find((x) => x.cond === "R21")!.confirmationId!;
+    const w21 = b0.control.waits.find((x) => x.cond === "R21")!;
+    const q = w21.confirmationId!;
+    // Кнопка у строки «Идёт к нарушению» — только после порога (экран показывает созревшие ожидания), и запись протокола
+    // П-6.1а заводится тогда же: оператор жмёт после порога (модель 1.23: реакция раньше записи не считается).
+    const dueIn = Date.parse(w21.since) + b0.control.waitMs - Date.now();
+    if (dueIn > 0) await new Promise((r) => setTimeout(r, dueIn + 250));
     // Оператор: «Напомнить клиенту».
     const r = (await (await post(`/pult/act/remind?confirmation=${q}`)).json()) as Reaction;
     expect(r).toMatchObject({ outcome: "done", result: { ok: true, extended: true } });
@@ -304,5 +309,12 @@ describe("У-04 на живом стенде в режиме сбоев: «На�
     expect(b.control.passports.filter((p) => p.obj === cart || p.obj === String(w.params.mandate_id))).toEqual([]);
     expect(b.control.passports.flatMap((p) => p.findings.map((f) => f.cond))).not.toContain("R21");
     expect(b.cards.filter((c) => c.kind === "tx").map((c) => [c.id, c.cartMandateId, c.outcome])).toContainEqual([cart, cart, "paid"]);
+    // П-6.1а: в «Журнале» — запись протокола R21 по этой покупке «упреждено реакцией» (пометка движка, В2 (а)), время до
+    // реакции есть; нарушений по ней в протоколе нет.
+    const pb = await boardUntil(demo, (x) => (x.protocol?.entries ?? []).some((e) => e.cond === "R21" && e.obj === cart && e.status === "prevented"), 30_000);
+    const pe = pb.protocol!.entries.find((e) => e.cond === "R21" && e.obj === cart)!;
+    expect(pe).toMatchObject({ type: "warn", status: "prevented", reaction: "remind" });
+    expect(pe.reactSec).toBeGreaterThanOrEqual(0);
+    expect(pb.protocol!.entries.filter((e) => e.obj === cart && e.type === "bad")).toEqual([]);
   });
 });

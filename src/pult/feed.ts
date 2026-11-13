@@ -14,6 +14,7 @@ import { conditionsView, type ConditionsView } from "./conditions.js";
 import { controlView, WAIT_MS, type ControlState } from "./control.js";
 import { evaluate, type EngineView } from "./engine.js";
 import { graphView, type GraphView } from "./graph.js";
+import { emptyProtocol, protocolStep, protocolView, type ProtocolInput, type ProtocolState, type ProtocolView } from "./protocol.js";
 import { linkReactions, type LinkedReaction } from "./reactions.js";
 import type { StandLogEntry } from "./standlog.js";
 import { buildTxModel } from "./tx.js";
@@ -48,6 +49,8 @@ export interface PultBoardState {
   /** Журнал реакций (П-8.1): нажатия кнопок и ответ стенда как есть; новые — в конце, последние `REACTIONS_KEPT`. Связь с
    *  записью протокола стенда и «упреждено реакцией» — П-8.2 (`reactions.ts`). */
   readonly reactions?: readonly LinkedReaction[];
+  /** «Журнал» (П-6.1а): протокол П-NNN и решения клиента строками журнала. Нет — движок ещё не отработал. */
+  readonly protocol?: ProtocolView;
   /** Режим эмулятора клиента (видимая часть П-11.4): по последнему шагу `client.auto_on` / `client.auto_off` в окне записей;
    *  шага нет — поля нет («нет данных»: эмулятора нет или шаг ушёл из окна — «вручную» не выдумывается). */
   readonly clientAuto?: boolean;
@@ -125,6 +128,22 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   // Последний результат движка: по нему реакция узнаёт «упреждено» и между пересчётами (нажатие пересчёта не вызывает).
   let lastEv: EngineView | undefined;
   const linked = () => linkReactions(reactions, standLog(), lastEv);
+  // Протокол П-NNN (П-6.1а) — история появления и снятия, а не снимок: состояние живёт здесь, как переходы доски. Шаг — на
+  // пересчёте и на нажатии кнопки (реакция связывается сразу, без новой записи шины); вход последнего пересчёта — для нажатия.
+  let proto: ProtocolState = emptyProtocol();
+  let protoIn: Omit<ProtocolInput, "reactions"> | undefined;
+  // Сбой шага протокола не трогает доску, «Контроль» и маршрут кнопки: остаётся прежний протокол (ревью П-6.1а № 10).
+  const protoStep = (prevView: ProtocolView | undefined, fresh = false): ProtocolView | undefined => {
+    if (!protoIn) return prevView;
+    try {
+      // При нажатии — «сейчас» ленты, а не прошлого пересчёта: созревшее с тех пор предупреждение заводится до связи с реакцией.
+      // Реакции — со связью журнала стенда (`preempted`): «упреждено» — по ней (ревью № 6).
+      proto = protocolStep(proto, { ...protoIn, ...(fresh && { now: o.now().toISOString() }), reactions: linked() });
+      return protocolView(proto, protoIn.verdicts, protoIn.items);
+    } catch {
+      return prevView;
+    }
+  };
   const emptyControl: ControlState = { passports: [], waits: [], waitMs: o.waitMs ?? WAIT_MS, active: [], counts: { txs: 0, wrong: 0 } };
   let state: PultBoardState = { now: o.now().toISOString(), cards: [], jumps: [], graph: { rows: [] }, control: emptyControl };
   let timer: NodeJS.Timeout | undefined;
@@ -184,6 +203,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     let control: ControlState;
     let conditions = state.conditions;
     let causes = state.causes;
+    let protocol = state.protocol;
     try {
       const log = standLog();
       const ev = (o.evaluate ?? evaluate)(model, items, { now, ...(log !== undefined && { standLog: log }) });
@@ -192,6 +212,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       control = controlView(model, items, vs, active, o.waitMs);
       conditions = conditionsView(ev);
       causes = causesView(model, items, vs, control.waits);
+      // Записи — ссылкой на окно ленты (без копии на каждый пересчёт): протокол берёт из них только время доказательств по seq.
+      protoIn = { verdicts: vs, waits: control.waits, waitMs: control.waitMs, now, model, items, ev };
     } catch {
       try {
         const fresh = controlView(model, items, [], active, o.waitMs);
@@ -200,6 +222,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         control = state.control;
       }
     }
+    protocol = protoStep(protocol);
     const clientAuto = clientAutoOf(items);
     state = {
       now,
@@ -210,6 +233,7 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       ...(conditions && { conditions }),
       ...(causes && { causes }),
       ...(reactions.length > 0 && { reactions: linked() }),
+      ...(protocol && { protocol }),
       ...(clientAuto !== undefined && { clientAuto }),
     };
     emit({ type: "board", board: state });
@@ -232,6 +256,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       items.length = 0;
       reactions = [];
       lastEv = undefined;
+      proto = emptyProtocol();
+      protoIn = undefined;
       column.clear();
       jumps = [];
       schedule();
@@ -244,7 +270,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
     board: () => state,
     react(r) {
       reactions = [...reactions, r].slice(-REACTIONS_KEPT);
-      state = { ...state, reactions: linked() };
+      const protocol = protoStep(state.protocol, true);
+      state = { ...state, reactions: linked(), ...(protocol && { protocol }) };
       emit({ type: "board", board: state });
     },
     subscribe(l) {

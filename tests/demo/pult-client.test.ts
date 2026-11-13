@@ -945,3 +945,48 @@ describe("«Поломки» и «Авто» на пульте (видимая �
     expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
   });
 });
+
+// П-6.1а: панель «Журнал» — журнал действий (нажатия и решения клиента строками, В1 (а)) и протокол П-NNN с фильтром.
+describe("панель «Журнал» (П-6.1а)", () => {
+  const T = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
+  const protocol = {
+    entries: [
+      { no: "П-001", type: "warn", cond: "R21", obj: "C1", at: T(15), status: "prevented", reactedAt: T(20), reaction: "remind", reactSec: 5, endedAt: T(40) },
+      { no: "П-002", type: "fired", cond: "R17", obj: "I2", at: T(30), status: "stopped", protector: "agent" },
+      { no: "П-003", type: "bad", cond: "R46", obj: "C3", at: T(35), status: "open", violator: "agent" },
+    ],
+    decisions: [{ obj: "C4", cond: "R09", at: T(10) }],
+    counts: { open: 1, reacted: 0, prevented: 1, cleared: 0, closed: 0, stopped: 1 },
+    avgReactSec: 5,
+  };
+  const reactions = [{ at: T(20), action: "remind", obj: "Q1", cond: "R21", outcome: "done", result: { ok: true, status: 200 }, link: { state: "linked", seq: 7, what: "CLIENT_REMINDED", at: T(20) } }];
+
+  it("без движка — так и сказано; с протоколом — строки, счётчики, среднее до реакции, решение клиента в журнале действий; фильтр по статусу", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      env.sources[0]!.send(boardMsg([]));
+      expect($(env, "b-log").textContent, lang).toContain(PULT["int.no_engine"][lang]);
+      env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], protocol, reactions } });
+      const box = $(env, "b-log");
+      const rows = box.querySelectorAll(".proto-row");
+      // Новые — сверху.
+      expect(rows.map((r) => r.dataset.status)).toEqual(["open", "stopped", "prevented"]);
+      expect(rows[2]!.textContent).toContain(`П-001`);
+      expect(rows[2]!.textContent).toContain(PULT["proto.st.prevented"][lang]);
+      expect(rows[2]!.textContent).toContain(`${PULT["log.react"][lang]} 5 ${PULT["card.sec"][lang]}`);
+      expect(rows[1]!.textContent).toContain(`${PULT["ctl.protector"][lang]}: ${PULT["subj.agent"][lang]}`);
+      expect(box.textContent).toContain(`${PULT["log.avg"][lang]}: 5`);
+      // Журнал действий: решение клиента (раньше по времени) — строкой, затем нажатие.
+      const log = box.querySelectorAll(".log-row").map((r) => r.textContent);
+      expect(log).toHaveLength(2);
+      expect(log[0]).toContain(PULT["log.decision"][lang]);
+      expect(log[1]).toContain(PULT["act.kind.remind"][lang]);
+      // Решение клиента в протоколе не появляется (В1 (а)).
+      expect(rows.some((r) => r.textContent.includes("C4"))).toBe(false);
+      box.querySelectorAll("button[data-proto-filter]").find((b) => b.dataset.protoFilter === "stopped")!.click();
+      expect(box.querySelectorAll(".proto-row").map((r) => r.dataset.status)).toEqual(["stopped"]);
+      box.querySelectorAll("button[data-proto-filter]").find((b) => b.dataset.protoFilter === "")!.click();
+      expect(box.querySelectorAll(".proto-row")).toHaveLength(3);
+    }
+  });
+});

@@ -1105,6 +1105,65 @@
     }
   }, 1000);
 
+  // ---- «Журнал» (П-6.1а): журнал действий и протокол П-NNN (модель 1.23, раздел 1.10) ----
+  // Журнал действий — нажатия кнопок (журнал реакций, П-8.1) и решения клиента строками (В1 (а)); протокол — записи движка
+  // протокола (`src/pult/protocol.ts`) с фильтром по статусу. Статусы и «упреждено» считает сервер — экран только показывает.
+  const logBox = document.getElementById("b-log");
+  const PROTO_ST = ["open", "reacted", "prevented", "cleared", "closed", "stopped"];
+  let logFilter = "";
+  function renderLog() {
+    if (!logBox || !board) return;
+    const wrap = document.createDocumentFragment();
+    const p = board.protocol;
+    wrap.appendChild(el("h3", label("log.actions"), "ctl-h"));
+    const rows = [];
+    for (const x of Array.isArray(board.reactions) ? board.reactions : [])
+      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) });
+    for (const d of p && Array.isArray(p.decisions) ? p.decisions : [])
+      rows.push({ at: d.at, text: (d.at ? clock(d.at) + " · " : "") + label("log.decision") + " · " + (d.obj || label("ctl.system")) + (d.cond ? " · " + d.cond : "") });
+    rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    if (rows.length === 0) wrap.appendChild(el("p", label("log.actions.none"), "muted"));
+    for (const r of rows) wrap.appendChild(el("div", r.text, "log-row"));
+    wrap.appendChild(el("h3", label("log.protocol"), "ctl-h"));
+    if (!p) {
+      wrap.appendChild(el("p", label("int.no_engine"), "muted"));
+    } else {
+      const sum = PROTO_ST.map((s) => label("proto.st." + s) + ": " + (p.counts && typeof p.counts[s] === "number" ? p.counts[s] : 0));
+      if (typeof p.avgReactSec === "number") sum.push(label("log.avg") + ": " + p.avgReactSec + " " + label("card.sec"));
+      wrap.appendChild(el("p", sum.join(" · "), "ctl-status"));
+      const bar = el("span", label("log.filter") + ": ", "proto-filter");
+      for (const s of [""].concat(PROTO_ST)) {
+        const b = el("button", s ? label("proto.st." + s) : label("log.filter.all"));
+        b.type = "button";
+        b.dataset.protoFilter = s;
+        b.setAttribute("aria-pressed", logFilter === s ? "true" : "false");
+        bar.appendChild(b);
+      }
+      wrap.appendChild(bar);
+      const list = (Array.isArray(p.entries) ? p.entries : []).filter((e) => !logFilter || e.status === logFilter);
+      if (list.length === 0) wrap.appendChild(el("p", label("log.protocol.none"), "muted"));
+      for (const e of list.slice().reverse()) {
+        const parts = [e.no, clock(e.at), label("proto.type." + e.type), e.cond || (e.guaranteeText ? txt(e.guaranteeText) : ""), e.obj || label("ctl.system"), label("proto.st." + e.status)];
+        if (typeof e.reactSec === "number") parts.push(label("log.react") + " " + e.reactSec + " " + label("card.sec"));
+        if (e.violator) parts.push(label("ctl.violator") + ": " + subj(e.violator));
+        if (e.protector) parts.push(label("ctl.protector") + ": " + subj(e.protector));
+        const row = el("div", parts.filter((x) => x).join(" · "), "proto-row");
+        row.dataset.status = e.status;
+        wrap.appendChild(row);
+      }
+    }
+    while (logBox.firstChild) logBox.removeChild(logBox.firstChild);
+    logBox.appendChild(wrap);
+  }
+  if (logBox) {
+    logBox.addEventListener("click", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
+      if (!b) return;
+      logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";
+      renderLog();
+    });
+  }
+
   // ---- «Поломки» и эмулятор клиента (видимая часть П-11.2 / П-11.4; Р-1482, Р-1514) ----
   // Блок есть в разметке только в режиме сбоев (`dash-pult.ts`); без него — ни обработчика, ни запросов. Ответ сервера — как
   // есть: «отказано» с кодом (SHOP_REQUIRED, HELD_BY_DRIVER …), не «сделано». Витрина Н-03…Н-05 — продавец транзакции в
@@ -1196,6 +1255,7 @@
       renderProc();
       renderCtl();
       renderInt();
+      renderLog();
       showAuto(board.clientAuto);
     }
   };
