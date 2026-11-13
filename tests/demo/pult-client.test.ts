@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
 import { STAND_FAULT_TESTS } from "../../src/demo/stand-faults.js";
+import { REACTION_RECORDS } from "../../src/pult/reactions.js";
 import { loadBrand } from "../../src/demo/server.js";
 import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
 import { conditionsView } from "../../src/pult/conditions.js";
@@ -987,6 +988,19 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(box.querySelectorAll(".proto-row").map((r) => r.dataset.status)).toEqual(["stopped"]);
       box.querySelectorAll("button[data-proto-filter]").find((b) => b.dataset.protoFilter === "")!.click();
       expect(box.querySelectorAll(".proto-row")).toHaveLength(3);
+    }
+  });
+
+  it("ревью П-8.2 № 5: код записи стенда в строке журнала — словами ru/en; перечень словаря — из источника (`REACTION_RECORDS`, Р-1511)", () => {
+    for (const w of REACTION_RECORDS) for (const lang of ["ru", "en"] as const) expect(PULT[`act.what.${w}` as keyof typeof PULT]?.[lang], `${w} ${lang}`).toBeTruthy();
+    const dict = Object.keys(PULT).filter((k) => k.startsWith("act.what.")).map((k) => k.slice("act.what.".length));
+    expect(new Set(dict)).toEqual(new Set(REACTION_RECORDS));
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], reactions } });
+      const row = $(env, "b-log").querySelectorAll(".log-row")[0]!.textContent;
+      expect(row, lang).toContain(`(${PULT["act.what.CLIENT_REMINDED"][lang]})`);
+      expect(row, lang).not.toContain("CLIENT_REMINDED");
     }
   });
 });

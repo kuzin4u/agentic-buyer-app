@@ -12,7 +12,7 @@ import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
 import { conditionsView } from "../../src/pult/conditions.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
-import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
+import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, SCOPE_NO_CART_TITLE, SCOPE_NO_CART_TODO, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
 import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
 
 let seq = 0;
@@ -429,6 +429,9 @@ describe("«упреждено реакцией» у R21 (П-8.2, У-04, Р-1531
     const view = withLog(items, [e]);
     expect(txOf(view).R21).toMatchObject({ status: "ok", note: "preempted_by_reaction", log: [e.seq] });
     expect(verdicts(view, buildTxModel(items), items).filter((v) => v.cond === "R21")).toEqual([]);
+    // Ревью П-8.2 № 4: пометка одной покупки — у объекта; в сводный R21 и в плитки узлов «Условий» не поднимается.
+    expect(view.system.R21.note).toBeUndefined();
+    expect(conditionsView(view).nodes.flatMap((nd) => nd.notes)).not.toContain("preempted_by_reaction");
     // Повтор напоминания (без продления) — тоже напоминание.
     const again = remind("QU1", okAt - 1_000, "REMIND_REPEATED");
     expect(txOf(withLog(items, [again])).R21).toMatchObject({ status: "ok", note: "preempted_by_reaction", log: [again.seq] });
@@ -1040,11 +1043,82 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     // Обращение после записи «узнал» — нарушение агента, паспорт; доказательства — событие, запись «узнал», `pao.call`.
     const items = shape("RJ2", (c) => [rej(c), learned(c), ...cred(c, "MANDATE_NOT_ACTIVE")]);
     const after = judge(items);
-    expect(r09(after)).toMatchObject([{ kind: "violation", violator: "agent", node: "У5", cause: { kind: "rule", rule: "agent_after_reject" } }]);
-    expect(r09(after)[0]!.seqs).toEqual([seqOf(items, "mandate.rejected"), seqOf(items, "agent.refused"), seqOf(items, "pao.call")]);
+    // Платформа отказала на это обращение — защитила Платформа (Р-1541 № 3, по источнику: ответ на ту же операцию).
+    expect(r09(after)).toMatchObject([{ kind: "violation", violator: "agent", protector: "platform", node: "У5", cause: { kind: "rule", rule: "agent_after_reject_platform" } }]);
+    expect(r09(after)[0]!.seqs).toEqual([seqOf(items, "mandate.rejected"), seqOf(items, "agent.refused"), seqOf(items, "pao.call"), seqOf(items, "POST /pao/v1/credentials")]);
     expect(passports(after).length).toBeGreaterThan(0);
     // Ревью № 4: при нарушении остаётся и запись «решение клиента» без условия — отказ клиента был (две записи о разном).
     expect(after.filter((v) => v.kind === "client_decision").map((v) => v.cond)).toEqual([undefined]);
+    // Условие владельца (#issuecomment-6851668369): транзакция неправильная один раз — один паспорт, счётчик «неправильных» 1.
+    const am = buildTxModel(items);
+    expect(passports(after).map((p) => p.obj)).toEqual(["CRJ2"]);
+    expect(controlView(am, items, after, []).counts).toEqual({ txs: 1, wrong: 1 });
+    // Обращение прошло (ответа с отказом нет) — защитника нет.
+    const passed = judge(shape("RJ7", (c) => [rej(c), learned(c), paoCall(c, "POST /pao/v1/credentials"), call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform")]));
+    expect(r09(passed)).toMatchObject([{ kind: "violation", violator: "agent", cause: { kind: "rule", rule: "agent_after_reject" } }]);
+    expect(r09(passed)[0]!.protector).toBeUndefined();
+    // Ревью П-6.1б № 2: пара «обращение — ответ» по порядку, а не «любой ответ позже». A — отказ до «узнал», B — прошло после;
+    // ответы шина положила после обоих `pao.call`: отказ A не делает Платформу защитником B.
+    const pairA = judge(
+      shape("RJ8", (c) => [
+        rej(c),
+        paoCall(c, "POST /pao/v1/credentials", "MANDATE_NOT_ACTIVE"),
+        learned(c),
+        paoCall(c, "POST /pao/v1/credentials"),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" }),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform"),
+      ]),
+    );
+    expect(r09(pairA)).toMatchObject([{ kind: "violation", cause: { kind: "rule", rule: "agent_after_reject" } }]);
+    expect(r09(pairA)[0]!.protector).toBeUndefined();
+    // Ответ раньше записи агента (опрос между ответом и записью `pao.call`) — пара та же: защитник не теряется.
+    const early = judge(shape("RJ9", (c) => [rej(c), learned(c), call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" }), paoCall(c, "POST /pao/v1/credentials", "MANDATE_NOT_ACTIVE")]));
+    expect(r09(early)[0]).toMatchObject({ protector: "platform", cause: { kind: "rule", rule: "agent_after_reject_platform" } });
+    // № 1: код ответа не «поручение не действует» (передача решения человеку) — не защита.
+    const human = judge(shape("RJ10", (c) => [rej(c), learned(c), paoCall(c, "POST /pao/v1/credentials", "CONFIRMATION_REQUIRED"), call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "CONFIRMATION_REQUIRED", kind: "conflict" })]));
+    expect(r09(human)[0]!.protector).toBeUndefined();
+    // № 12: два обращения после «узнал» — реквизит выдан, подтверждение отказано: защиты нет (одно прошло — вред возможен).
+    const mixed = judge(
+      shape("RJ11", (c) => [
+        rej(c),
+        learned(c),
+        paoCall(c, "POST /pao/v1/credentials"),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform"),
+        paoCall(c, "POST /pao/v1/confirmations", "MANDATE_NOT_ACTIVE"),
+        call("POST /pao/v1/confirmations", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" }),
+      ]),
+    );
+    expect(r09(mixed)[0]).toMatchObject({ cause: { kind: "rule", rule: "agent_after_reject" } });
+    expect(r09(mixed)[0]!.protector).toBeUndefined();
+    // № 13: попытка без ответа (`pao.call` есть, записи монитора нет) сдвигает пару; прошедшее B не получает отказ C.
+    const shifted = judge(
+      shape("RJ12", (c) => [
+        rej(c),
+        learned(c),
+        paoCall(c, "POST /pao/v1/credentials", "NO_RESPONSE"),
+        paoCall(c, "POST /pao/v1/credentials"),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform"),
+        paoCall(c, "POST /pao/v1/credentials", "MANDATE_NOT_ACTIVE"),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" }),
+      ]),
+    );
+    expect(r09(shifted)[0]!.protector).toBeUndefined();
+    // Запись монитора без `pao.call` (обращение драйвера своим клиентом) сдвигает пару: прошедшему B досталась бы чужая
+    // «не действует» — журнал агента (B без кода) сверку не проходит, защитника нет.
+    const foreign = judge(
+      shape("RJ13", (c) => [
+        rej(c),
+        learned(c),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" }),
+        paoCall(c, "POST /pao/v1/credentials"),
+        call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform"),
+      ]),
+    );
+    expect(r09(foreign)[0]!.protector).toBeUndefined();
+    // № 3: «Причины» нарушения со своим защитником — попытка остановлена, гарантия — она сама, не «система не остановила».
+    const card = causesView(am, items, after, []).find((c) => c.id === "CRJ2")!.items.find((i) => i.cond === "R09")!;
+    expect(card).toMatchObject({ violator: "agent", protector: "platform", consequences: STOPPED_CONSEQUENCES });
+    expect(card.guarantees).not.toContainEqual(PULT["int.guarantees.none"]);
     // Порядок — по журналу агента, не по шине (ревью № 2): запись обращения стенда после «узнал», а `pao.call` — до.
     const order = judge(shape("RJ6", (c) => [rej(c), paoCall(c, "POST /pao/v1/credentials", "MANDATE_NOT_ACTIVE"), learned(c), call("POST /pao/v1/credentials", { mandate_id: c }, "agent_platform", { code: "MANDATE_NOT_ACTIVE", kind: "conflict" })]));
     expect(r09(order).map((v) => v.kind)).toEqual(["client_decision"]);
@@ -1110,6 +1184,22 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     expect(a.conds.R09.status).toBe("na");
     expect(a.vs.map((v) => [v.obj, v.cond, v.kind, v.violator, v.protector])).toEqual([["IA6", "R17", "protection", undefined, "agent"]]);
     expect(passports(a.vs)).toEqual([]);
+    // Ревью П-5.1а № 7: «Причины» П-06 — без корзины: свой заголовок и «что делать», не формулировка R17 о сумме корзины.
+    const c06 = causesView(buildTxModel(p06), p06, a.vs, []).find((c) => c.id === "IA6")!.items[0]!;
+    expect(c06.title).toEqual(SCOPE_NO_CART_TITLE);
+    expect(c06.todo).toEqual(SCOPE_NO_CART_TODO);
+    expect(c06.title.ru).not.toMatch(/корзин[ыа] совпадает|итогом корзины/);
+    // Ревью П-6.1б № 4: и в «Гарантиях» — без текста о корзине.
+    expect(c06.guarantees.map((g) => g.ru).join(" ")).not.toMatch(/итогом корзины/);
+    expect(c06.guarantees[0]!.ru.startsWith(SCOPE_NO_CART_TITLE.ru)).toBe(true);
+    // Ревью П-6.1б № 14: остановил не агент (только шаг сюжета) — заголовок тот же, «что делать» не про отказ агента.
+    const und: Verdict = { ...a.vs[0]!, protector: "undetermined", cause: { kind: "rule", rule: "mandate_scope_undetermined" } };
+    const cu = causesView(buildTxModel(p06), p06, [und], []).find((c) => c.id === "IA6")!.items[0]!;
+    expect(cu.title).toEqual(SCOPE_NO_CART_TITLE);
+    expect(cu.todo).not.toEqual(SCOPE_NO_CART_TODO);
+    // У покупки (транзакции) защита R17 — прежняя формулировка условия.
+    const txScope = causesView(buildTxModel(p06), p06, [{ ...a.vs[0]!, obj: "CX" }], []);
+    expect(txScope[0]!.items[0]!.title).not.toEqual(SCOPE_NO_CART_TITLE);
     // П-09: в момент срока и позже — R09 «сработало» (срок), R17 не «вне пределов» (поломка С3 «не смотреть признак»).
     for (const term of ["same", "earlier"] as const) {
       const b = one(coreRefusal(`IA9${term}`, term, { kind: "expiry" }), `IA9${term}`);

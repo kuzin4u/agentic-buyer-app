@@ -803,7 +803,11 @@
   /** Запись протокола стенда, связанная с реакцией (П-8.2): номер журнала стенда и что записано; журнала нет — так и сказано. */
   function linkText(link) {
     if (!link || typeof link !== "object") return "";
-    if (link.state === "linked") return " · " + label("act.link.record") + " " + link.seq + " (" + link.what + ")";
+    // Код записи стенда — словами из словаря (ревью П-8.2 № 5); незнакомый код — сам код, без имени ключа словаря.
+    if (link.state === "linked") {
+      const k = "act.what." + link.what;
+      return " · " + label("act.link.record") + " " + link.seq + " (" + (Object.prototype.hasOwnProperty.call(L, k) ? L[k] : link.what) + ")";
+    }
     if (link.state === "unavailable" || link.state === "not_found") return " · " + label("act.link." + link.state);
     return "";
   }

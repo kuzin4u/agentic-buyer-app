@@ -245,6 +245,13 @@ export const PULT = {
   // {sec} — срок из `stand.params.order_hold_sec` (ревью П-1.3 № 5, П-8.1), не литерал.
   "mode.faults_note": p("прогон тестов пульта: сбои стенда по кнопкам, срок подтверждения {sec} с", "console test run: stand faults by buttons, confirmation deadline {sec} s"),
   "status.pult_closed": p("пульт отключён от сервера стенда — обновите страницу", "the console is disconnected from the stand server — reload the page"),
+  // Код записи стенда в строке журнала реакций — словами (ревью П-8.2 № 5); перечень — `REACTION_RECORDS` (`reactions.ts`).
+  "act.what.CLIENT_REMINDED": p("клиенту напомнено", "client reminded"),
+  "act.what.REMIND_REPEATED": p("повторное напоминание", "reminder repeated"),
+  "act.what.PURCHASE_STOPPED": p("покупка остановлена", "purchase stopped"),
+  "act.what.MANDATE_REVOKED": p("поручение отозвано", "mandate revoked"),
+  "act.what.SENT_TO_REVIEW": p("передано на разбор", "sent for review"),
+  "act.what.ACTION_REFUSED": p("действие отклонено стендом", "action refused by the stand"),
   // «Журнал» (П-6.1а): журнал действий и протокол негативных значений П-NNN (модель 1.23, раздел 1.10; В1 (а), В2 (а)).
   "log.actions": p("Журнал действий", "Action log"),
   "log.actions.none": p("Нажатий кнопок и решений клиента пока нет", "No button presses or client decisions yet"),

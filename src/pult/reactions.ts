@@ -27,6 +27,11 @@ const RECORD_OF: Readonly<Record<Exclude<Reaction["action"], "remind_note">, rea
   revoke: ["MANDATE_REVOKED"],
   review: ["SENT_TO_REVIEW"],
 };
+/** Запись стенда об отказе шлюза действию — одна константа для связывания и для перечня (ревью П-6.1б № 9). */
+const REFUSED_RECORD: StandLogWhat = "ACTION_REFUSED";
+/** Все коды записей стенда, которые может показать строка журнала реакций (`link.what`) — закрытый перечень из источника:
+ *  у каждого — слова ru/en в словаре пульта `act.what.*` (ревью П-8.2 № 5, правило совместимости 3; тест сверки — Р-1511). */
+export const REACTION_RECORDS: readonly StandLogWhat[] = [...new Set([...Object.values(RECORD_OF).flat(), REFUSED_RECORD])];
 
 /** Запись стенда относится к объекту реакции: у «Напомнить» — по номеру запроса подтверждения, у отзыва и остановки — по
  *  поручению, у разбора — по любому переданному номеру. */
@@ -46,7 +51,7 @@ export function linkReactions(reactions: readonly Reaction[], log: readonly Stan
   return reactions.map((r): LinkedReaction => {
     if (r.action === "remind_note") return { ...r, link: { state: "no_stand" } };
     if (log === undefined) return { ...r, link: { state: "unavailable" } };
-    const kinds: readonly StandLogWhat[] = r.outcome === "refused" ? ["ACTION_REFUSED"] : RECORD_OF[r.action];
+    const kinds: readonly StandLogWhat[] = r.outcome === "refused" ? [REFUSED_RECORD] : RECORD_OF[r.action];
     const at = Date.parse(r.at);
     const e = log.filter((x) => !taken.has(x.seq) && kinds.includes(x.what) && sameObj(r, x) && Date.parse(x.at) <= at).at(-1);
     if (!e) return { ...r, link: { state: "not_found" } };
