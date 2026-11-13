@@ -57,6 +57,19 @@ export const NO_GUARD_NEEDED = p("защиты не требовалось — �
 /** Условие сработавшей защиты → вид защиты для «что делать»: у защиты не «остановить», а разобрать (повторное № 8). */
 const COND_GUARANTEE: Partial<Record<CheckableCondition, Guarantee>> = { R17: "mandate_scope", R09: "revoke", R37: "revoke" };
 
+/** П-06 на стенде (ревью П-5.1а № 7): защита «вне области» (`mandate_scope_*`) у поручения без покупки — корзины нет.
+ *  Формулировка R17 («сумма совпадает с итогом корзины») к ней не подходит: заголовок — у любой такой защиты, причина —
+ *  нейтрально; «что делать» об отказе агента — только когда остановил агент (`mandate_scope_agent`). */
+// Нейтрально «вне области»: ядро даёт `MANDATE_OUT_OF_SCOPE` на любой статус поручения, кроме ACTIVE (ревью П-6.1б № 6).
+export const SCOPE_NO_CART_TITLE = p(
+  "Вне области поручения — агент отказался до корзины",
+  "Outside the mandate's scope — the agent refused before a cart",
+);
+export const SCOPE_NO_CART_TODO = p(
+  "ничего — агент сам не пошёл к продавцу вне поручения; показать клиенту, что покупка не начата",
+  "nothing — the agent itself did not go to a seller outside the mandate; show the client that no purchase was started",
+);
+
 /** Сколько последних записей транзакции в цепочке (Р-1519). */
 export const CHAIN_LIMIT = 40;
 /** Сколько записей-доказательств в «что случилось». */
@@ -115,13 +128,19 @@ const chainRecord = (x: Interpretation): ChainRecord => ({ seq: x.seq, at: x.at,
 const subjectPhrase = (s: Stopper | Subject): Phrase => PULT[`subj.${s}` as keyof typeof PULT];
 const sameTitle = (v: Verdict): Phrase =>
   v.cond !== undefined ? CONDITIONS.find((c) => c.id === v.cond)!.rule : v.guarantee !== undefined ? GUARANTEE_INFO[v.guarantee].name : PULT["subj.client_decision"];
-const guardPhrase = (v: Verdict): Phrase => {
-  const t = sameTitle(v);
+const guardPhrase = (v: Verdict, title?: Phrase): Phrase => {
+  const t = title ?? sameTitle(v);
   const by = subjectPhrase(v.protector ?? "undetermined");
   return { ru: `${t.ru} — ${PULT["int.protector"].ru}: ${by.ru}`, en: `${t.en} — ${PULT["int.protector"].en}: ${by.en}` };
 };
 
-function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretation[], bySeq: ReadonlyMap<number, Interpretation>): CauseItem {
+function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretation[], bySeq: ReadonlyMap<number, Interpretation>, noCart = false): CauseItem {
+  // П-06: защита агента «вне пределов» у поручения без покупки — свой заголовок и «что делать» (ревью П-5.1а № 7).
+  // Заголовок — у любой защиты «вне области» без покупки (кто остановил — в поле «кто защитил»; ревью П-6.1б № 5); «что
+  // делать» про отказ агента — только когда остановил агент.
+  const scopeNoCart = noCart && v.kind === "protection" && v.cond === "R17" && v.cause?.kind === "rule" && v.cause.rule.startsWith("mandate_scope_");
+  const agentNoCart = scopeNoCart && v.cause?.kind === "rule" && v.cause.rule === "mandate_scope_agent";
+  const title = scopeNoCart ? SCOPE_NO_CART_TITLE : sameTitle(v);
   const evidence = v.seqs.map((s) => bySeq.get(s)).filter((x): x is Interpretation => x !== undefined);
   // Нет доказательств шины (пометка «ПР», сбой стенда) — последние записи объекта с ошибкой, конфликтом или фродом, иначе
   // последняя запись: «что случилось» не пустое.
@@ -129,12 +148,15 @@ function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretat
   const happened = (evidence.length > 0 ? evidence : fallback.length > 0 ? fallback : objRecs).slice(-HAPPENED_LIMIT).map(chainRecord);
   const conds: readonly ConditionId[] = v.cond !== undefined ? [v.cond] : v.guarantee !== undefined ? GUARANTEE_CONDS[v.guarantee] : DECISION_CONDS;
   const rules = RULES89.filter((r) => (r.conds as readonly ConditionId[]).some((c) => conds.includes(c)));
-  const guards = own.filter((x) => x.kind !== "violation" && x.protector !== undefined);
+  // Защиты транзакции; у нарушения со своим защитником (Р-1541 № 3: нарушил агент, защитила Платформа) — и оно само:
+  // попытка остановлена, карточка не противоречит себе (ревью П-6.1б № 3).
+  const guards = own.filter((x) => (x.kind !== "violation" || x === v) && x.protector !== undefined);
   // «Что делать»: у нарушения — из справочника условий; у защиты — по виду защиты (покупка уже остановлена); у решения
   // клиента без защиты — своё.
   const asGuarantee = v.guarantee ?? (v.cond !== undefined ? COND_GUARANTEE[v.cond] : undefined);
-  const todo =
-    v.kind === "violation" && v.cond !== undefined
+  const todo = agentNoCart
+    ? SCOPE_NO_CART_TODO
+    : v.kind === "violation" && v.cond !== undefined
       ? CONDITIONS.find((c) => c.id === v.cond)!.todo
       : asGuarantee !== undefined
         ? GUARANTEE_TODO[asGuarantee]
@@ -145,7 +167,7 @@ function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretat
     kind: v.kind,
     ...(v.cond !== undefined && { cond: v.cond }),
     ...(v.guarantee !== undefined && { guarantee: v.guarantee }),
-    title: sameTitle(v),
+    title,
     ...(v.node !== undefined && { node: v.node }),
     ...(v.note !== undefined && { note: v.note }),
     happened,
@@ -160,10 +182,10 @@ function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretat
     guarantees:
       v.kind === "violation"
         ? guards.length > 0
-          ? guards.map(guardPhrase)
+          ? guards.map((g) => guardPhrase(g, g === v ? title : undefined))
           : [PULT["int.guarantees.none"]]
         : v.protector !== undefined
-          ? [guardPhrase(v)]
+          ? [guardPhrase(v, title)]
           : [NO_GUARD_NEEDED],
   };
 }
@@ -185,7 +207,7 @@ export function causesView(model: TxModel, items: readonly Interpretation[], vs:
     return {
       id,
       ...(t?.outcome && { outcome: t.outcome.kind }),
-      items: own.map((v) => item(v, own, recs, bySeq)),
+      items: own.map((v) => item(v, own, recs, bySeq, m !== undefined)),
       waits: waits.filter((w) => w.obj === id),
       chain: [...shown.values()].sort((a, b) => a.seq - b.seq).map(chainRecord),
       chainTotal: recs.length,

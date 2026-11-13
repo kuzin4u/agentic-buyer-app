@@ -74,6 +74,8 @@ const BY_RULE: Readonly<Record<RuleCause, Row>> = {
   agent_after_revoke: { violator: "agent" }, // Н-06
   // Р-1541: обращение агента к Платформе после записи «узнал об отказе клиента от корзины» — нарушил агент, паспорт.
   agent_after_reject: { violator: "agent" },
+  // Р-1541 № 3: Платформа отказала на это обращение — защитник по источнику (Р-1519, Р-1522).
+  agent_after_reject_platform: { violator: "agent", protector: "platform" },
   double_debit: { violator: "agent" }, // Н-01
   double_pay: { violator: "agent" }, // Н-01
   idempotency: { protector: "platform" }, // повтор отклонён

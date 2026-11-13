@@ -6,7 +6,7 @@
 // Состояние — сводно по системе (решение по плану П-4.2, вариант (б), Р-1495); состояние для транзакции в фокусе — после
 // MVP (п. 10 списка «после MVP»), разбор по транзакции — П-5.1 «Причины».
 import type { WireLang } from "../dashboards/wire.js";
-import { NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondStatus, type EngineView, type Note } from "./engine.js";
+import { NOTE_LABEL, OBJECT_ONLY_NOTES, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondStatus, type EngineView, type Note } from "./engine.js";
 import {
   CHECKABLE_CONDITIONS,
   CONTROL_LABEL,
@@ -88,7 +88,8 @@ export function conditionsView(view: EngineView, rules: readonly Rule89[] = RULE
       if (sys.status !== status) continue;
       if (sys.note) notes.add(sys.note);
       const at = view.objs.filter((o) => o.conds[c].status === status);
-      for (const o of at) if (o.conds[c].note) notes.add(o.conds[c].note!);
+      // Пометки одной покупки («упреждено реакцией») плитку узла не помечают (ревью П-8.2 № 4).
+      for (const o of at) if (o.conds[c].note && !OBJECT_ONLY_NOTES.has(o.conds[c].note!)) notes.add(o.conds[c].note!);
       if (BAD_LIKE.has(status) && at.length === 0) system = true;
     }
     return { id, status, objs, system, notes: [...notes] };

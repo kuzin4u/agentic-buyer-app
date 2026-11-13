@@ -40,6 +40,10 @@ export const worstStatus = (list: readonly CondStatus[], empty: CondStatus = "na
 /** Пометка к статусу: почему он такой. */
 export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction", "scope_or_expiry", "late_unlinked"] as const;
 export type Note = (typeof NOTES)[number];
+/** Пометки одной покупки: в сводный статус условия и в плитку узла не поднимаются — иначе «упреждено реакцией» одной покупки
+ *  читалось бы за весь узел (ревью П-8.2 № 4). Остаются у условия объекта в движке; на экране — в журнале реакций
+ *  (`act.preempted`) и в «Журнале» (статус «упреждено реакцией»); вид условий по объекту — после MVP. */
+export const OBJECT_ONLY_NOTES: ReadonlySet<Note> = new Set<Note>(["preempted_by_reaction"]);
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
     "«оплачено» после отзыва, но запрос агента — до отзыва: гонка С-28, фрод или дефект; вердикт — владелец",
@@ -117,6 +121,7 @@ export const RULE_CAUSES = [
   "wrong_shop", // R26: оплата заказа у другой витрины
   "agent_after_revoke", // R37: агент начал оплату, узнав об отзыве
   "agent_after_reject", // R09: агент обратился к Платформе, узнав об отказе клиента от корзины (Р-1541)
+  "agent_after_reject_platform", // R09: то же, Платформа отказала на это обращение — защитила Платформа (Р-1541 № 3)
   "double_debit", // R46: два «оплачено» по связанным операциям
   "double_pay", // R46: две успешные оплаты одного заказа
   "idempotency", // R23, R25: повтор отклонён (IDEMPOTENCY_CONFLICT)
@@ -478,7 +483,29 @@ function txConds(
         !x.method.startsWith("GET ") &&
         x.method !== RELINQUISH_CALL,
     );
-    return bad.length > 0 ? rc("bad", "agent_after_reject", [rej.seq, learned.seq, ...bad.map((x) => x.seq)]) : undefined;
+    if (bad.length === 0) return undefined;
+    // Кто защитил — по источнику (Р-1541 № 3, Р-1519, Р-1522): ответ Платформы «поручение не действует» на это самое обращение.
+    // Пара «обращение — ответ» — по порядку внутри операции (n-я запись `pao.call` метода ↔ n-я запись монитора нашего агента с
+    // этой операцией), без условия на seq: шина за проход ставит журнал агента выше обращений к Платформе, а опрос между ответом
+    // и записью агента меняет порядок (ревью П-6.1б № 2). Код — только «поручение не действует» (`NOT_ACTIVE`): передача
+    // решения человеку, лимит частоты, конфликт идемпотентности, 5xx защитой не считаются (№ 1). Операции с параметром в пути
+    // (`{id}` у агента, `{mandate_id}` на шине) так не сопоставить — из изменяющих по поручению это только `relinquish`, он
+    // исключён выше (№ 8). Ответ должен быть в транзакции: у `POST /pao/v1/credentials` и `POST /pao/v1/confirmations`
+    // поручения в пути нет — до привязки (расхождение № 10) защитник в живом прогоне не виден.
+    const ours = (x: Interpretation) => x.stream === "monitor" && (x.source === "agent_platform" || x.source === "agent_platform_open");
+    // Необходимое условие — журнал самого агента: агент записал, что Платформа отказала этому обращению (`pao.call` с кодом
+    // «не действует»). Защитник — по записи монитора (Р-1522), журнал агента — сверка: при сдвиге пары (попытка без ответа,
+    // обращение драйвера без `pao.call`) прошедшее обращение защитника не получит (ревью П-6.1б № 13).
+    const answers = bad.flatMap((b) => {
+      if (!agentJournal(b, NOT_ACTIVE)) return [];
+      const calls = recs.filter((x) => x.stream === "console" && x.ref === "pao.call" && x.method === b.method).sort((a, z) => a.seq - z.seq);
+      const replies = recs.filter((x) => ours(x) && x.ref === b.method).sort((a, z) => a.seq - z.seq);
+      const reply = replies[calls.findIndex((x) => x.seq === b.seq)];
+      return reply !== undefined && platformAnswer(reply, NOT_ACTIVE) ? [reply] : [];
+    });
+    // Защитила Платформа — только если отказ получили все запрещённые обращения: одно прошедшее — вред возможен (№ 12).
+    const stopped = answers.length === bad.length;
+    return rc("bad", stopped ? "agent_after_reject_platform" : "agent_after_reject", [rej.seq, learned.seq, ...bad.map((x) => x.seq), ...answers.map((x) => x.seq)]);
   };
   out.R09 = t.afterRevoke
     ? rc("bad", "paid_after_revoke", t.outcome ? [t.outcome.seq] : [])
@@ -779,7 +806,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     const status = worstStatus(res.map((x) => x.status), c === "R17" || stand ? "none" : "na");
     const same = res.filter((x) => x.status === status);
     const fallback: Note | undefined = status !== "none" ? undefined : c === "R17" ? "amounts_after_mvp" : stand ? "stand_log" : undefined;
-    const note = same.find((x) => x.note !== undefined)?.note ?? fallback;
+    const note = same.find((x) => x.note !== undefined && !OBJECT_ONLY_NOTES.has(x.note))?.note ?? fallback;
     const log = same.flatMap((x) => x.log ?? []);
     system[c] = r(status, same.flatMap((x) => x.seqs), note, log);
   }
