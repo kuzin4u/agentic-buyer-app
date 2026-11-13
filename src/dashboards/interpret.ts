@@ -77,6 +77,9 @@ export interface Interpretation {
    *  по нему пульт различает «вне пределов» и «срок» у отказа `MANDATE_OUT_OF_SCOPE` (П-5.1а, Р-1524, Р-1525, Р-1536).
    *  Другие шаги (`expiry.wait` — рассказ сюжета) признаком не служат. */
   readonly validTo?: string;
+  /** Метод обращения агента к Платформе — только у записи журнала агента `pao.call` (поле `method`, по форме): по нему пульт
+   *  отличает изменяющее обращение от чтения в порядке журнала агента (Р-1541). */
+  readonly method?: string;
 }
 
 /** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаги `cart.created`, `cart.card`
@@ -553,8 +556,12 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
     phrase,
     ...(who && { who }),
     ...(situation !== undefined && { situation }),
+    ...(l.kind === "pao.call" && typeof l.method === "string" && PAO_METHOD_RE.test(l.method) && { method: l.method }),
   };
 }
+
+/** Метод обращения к ПАО в записи `pao.call` журнала агента — по форме (`POST /pao/v1/credentials`); иное не берётся. */
+const PAO_METHOD_RE = /^(GET|POST|PUT|PATCH|DELETE) \/pao\/v1\/[A-Za-z0-9_/{}.-]{1,120}$/;
 
 /** Запись линии → интерпретация. Не бросает на записи, прошедшей `parseWireItem`: незнакомая — нейтральная фраза с её именем. */
 export function interpret(item: WireItem, env: InterpretEnv): Interpretation {

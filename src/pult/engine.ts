@@ -116,6 +116,7 @@ export const RULE_CAUSES = [
   "confirmation_expired", // R21: срок подтверждения истёк без оплаты
   "wrong_shop", // R26: оплата заказа у другой витрины
   "agent_after_revoke", // R37: агент начал оплату, узнав об отзыве
+  "agent_after_reject", // R09: агент обратился к Платформе, узнав об отказе клиента от корзины (Р-1541)
   "double_debit", // R46: два «оплачено» по связанным операциям
   "double_pay", // R46: две успешные оплаты одного заказа
   "idempotency", // R23, R25: повтор отклонён (IDEMPOTENCY_CONFLICT)
@@ -221,6 +222,8 @@ export interface EngineView {
 
 const PAY_CALL = "POST /v1/shops/{shop_id}/orders/{order_id}/payment";
 const SIGN_CALL = "POST /participants/v1/mandates/{mandate_id}/sign";
+/** Отказ агента от поручения (Р63) — ключ операции ПАО в журнале агента (`PaoOperationKey`, agentic-buyer-ref 4a4ee7c). */
+const RELINQUISH_CALL = "POST /pao/v1/mandates/{id}/relinquish";
 const STAND_LOG: readonly CheckableCondition[] = ["R20", "R23", "R25", "R27", "R31", "R32", "R47"];
 const NOT_ACTIVE: ReadonlySet<string> = new Set(STOP_CODES_NOT_ACTIVE);
 /** Запись нашего агента: журнал агента или обращение его ключом. */
@@ -449,17 +452,46 @@ function txConds(
     const why = codes.has("MANDATE_REVOKED") || revokedEv ? "revoked" : codes.has("MANDATE_EXPIRED") ? "expired" : rejectedEv ? "rejected" : "inactive";
     return `${why}_${by}` as RuleCause;
   };
+  // Р-1541 — аналог R37 для отказа клиента от корзины. Оба момента — из журнала агента, в его собственном порядке (ревью
+  // Р-1541 № 1, 2): шина за проход ставит записи журнала агента выше обращений к Платформе (`bus.ts`, опрос `calls()`), и
+  // порядок «запись агента — запись обращения» на шине не настоящий. «Узнал» — первая запись `agent.refused` с кодом
+  // «поручение не действует» по этой корзине (агент 4a4ee7c пишет её, перечитав корзину после `mandate.rejected`); запись
+  // попытки `pao.call` с тем же кодом — отказ Платформы на обращение, а не «узнал» (иначе ложное «нарушено» у правильного
+  // П-03, `rejected_platform_decline`). Нарушение — запись журнала агента `pao.call` об изменяющем обращении (не `GET`) по
+  // этой корзине после записи «узнал»; отказ от корзины (`relinquish`, Р63) — защитное действие, не нарушение. `pao.call`
+  // пишется после ответа: запрос, ушедший до «узнал» и отвеченный после, засчитался бы нарушением — так бывает только при
+  // параллельных изменяющих запросах по корзине, у конвейера ядра 4a4ee7c их нет (повторное ревью Р-1541 № 1). Момент
+  // события Платформы не учитывается: лента может прийти позже запроса агента. Записи «узнал» нет — нарушение недоказуемо,
+  // «решение клиента», как раньше.
+  const afterReject = (): CondResult | undefined => {
+    const c = t.cartMandateId;
+    const rej = c === undefined ? undefined : all.find((x) => isEvent(x, "mandate.rejected") && mid(x) === c);
+    const learned = rej && all.find((x) => x.ref === "agent.refused" && agentJournal(x, NOT_ACTIVE) && mid(x) === c);
+    if (!rej || !learned) return undefined;
+    const bad = all.filter(
+      (x) =>
+        x.seq > learned.seq &&
+        x.stream === "console" &&
+        x.ref === "pao.call" &&
+        mid(x) === c &&
+        x.method !== undefined &&
+        !x.method.startsWith("GET ") &&
+        x.method !== RELINQUISH_CALL,
+    );
+    return bad.length > 0 ? rc("bad", "agent_after_reject", [rej.seq, learned.seq, ...bad.map((x) => x.seq)]) : undefined;
+  };
   out.R09 = t.afterRevoke
     ? rc("bad", "paid_after_revoke", t.outcome ? [t.outcome.seq] : [])
-    : notActive.length > 0
-      ? rc("fired", stopCause(), notActive)
-      : paid || t.outcome?.kind === "declined"
-        ? r("ok", [t.outcome!.seq])
-        : t.outcome
-          ? r("na")
-          : started
-            ? r("wait")
-            : r("na");
+    : (afterReject() ??
+      (notActive.length > 0
+        ? rc("fired", stopCause(), notActive)
+        : paid || t.outcome?.kind === "declined"
+          ? r("ok", [t.outcome!.seq])
+          : t.outcome
+            ? r("na")
+            : started
+              ? r("wait")
+              : r("na")));
 
   // R17 (В8): до MVP — только «сработало» по MANDATE_SCOPE; сравнение сумм — после MVP.
   // Кто остановил — то же правило «кто защитил», что у защит и R09 (`stoppedBy`; ревью П-5.1 № 1, Р-1519).

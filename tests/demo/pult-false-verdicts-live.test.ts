@@ -37,6 +37,11 @@ describe("ложные вердикты на правильных тестах �
     const { view, vs, items } = await judge(6);
     // Форма, ради которой Р-1538: агент остановился с MANDATE_NOT_ACTIVE (ревью блока № 2 — предпосылка явно).
     expect(items.some((x) => x.stream === "console" && x.who?.code === "MANDATE_NOT_ACTIVE")).toBe(true);
+    // Р-1541 (ревью № 6): запись «узнал об отказе» — `agent.refused` с кодом и поручением отказанной корзины; без неё правило
+    // молча не сработало бы (ложное «соблюдено» у нарушения).
+    const cart = items.find((x) => x.source === "pao_event" && x.ref === "mandate.rejected")?.ids?.mandate_id;
+    expect(cart).toBeDefined();
+    expect(items.some((x) => x.ref === "agent.refused" && x.who?.code === "MANDATE_NOT_ACTIVE" && x.ids?.mandate_id === cart)).toBe(true);
     expect(vs.filter((v) => v.kind === "violation")).toEqual([]);
     expect(passports(vs)).toEqual([]);
     // R09 «решение клиента» по отказу от корзины, одна запись на покупку (Р-1538).
