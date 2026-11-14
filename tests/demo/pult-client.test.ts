@@ -13,7 +13,7 @@ import type { PultBoardState, PultCard } from "../../src/pult/feed.js";
 import { conditionsView } from "../../src/pult/conditions.js";
 import { NOTE_LABEL, STATUS_LABEL, type CondResult, type CondResults, type CondStatus, type EngineView, type Note } from "../../src/pult/engine.js";
 import { PULT } from "../../src/pult/phrases.js";
-import { CHECKABLE_CONDITIONS, RULES89, SECTORS, type CheckableCondition, type Rule89 } from "../../src/pult/rules89.js";
+import { CHECKABLE_CONDITIONS, POINTS, RULES89, SECTORS, type CheckableCondition, type Rule89 } from "../../src/pult/rules89.js";
 import { FakeEvent, pageEnv, type FakeElement, type PageEnv } from "../support/fake-dom.js";
 
 const FOCUS_JS = readFileSync("src/demo/public/pult/focus.js", "utf8");
@@ -507,16 +507,17 @@ describe("«Условия» пульта (П-4.2)", () => {
       const y2 = tiles[1]!;
       expect(y2.classList.contains("st-bad")).toBe(true);
       // Ревью П-4.2 № 2: смешанный узел — видны и транзакция, и запись системы; кнопка — к транзакции.
-      expect(y2.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru}: T2 · ${ru("cv.node.system")}`);
+      expect(y2.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru} · ${ru("cv.node.at")}: T2 · ${ru("cv.node.system")}`);
       expect(y2.querySelector(".tl-go")!.dataset.go).toBe("T2");
       // Ревью П-4.2 № 1 (Р-1505): сработавшая защита — «сработало: система», кнопки нет (нарушения нет).
-      expect(tiles[0]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.fired.ru}: ${ru("cv.node.system")}`);
+      // повторное ревью П-4.2 № 3: «где: система», а не «остановило процесс: система»
+      expect(tiles[0]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.fired.ru} · ${ru("cv.node.at")}: ${ru("cv.node.system")}`);
       expect(tiles[0]!.querySelector(".tl-go")).toBeNull();
       expect(tiles[0]!.textContent).not.toContain(ru("cv.node.no_tx"));
       expect(y2.querySelector(".tl-r")!.textContent).toBe(`${ru("cv.node.rules")} Е05, Ж03, О02 · ${ru("cv.node.conds")} R23, R25, R46`);
       // Уточнение 1: «нарушено» записью системы — «система», кнопка неактивна, щелчок фокус не ставит.
       const y3 = tiles[2]!;
-      expect(y3.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru}: ${ru("cv.node.system")}`);
+      expect(y3.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.ru} · ${ru("cv.node.at")}: ${ru("cv.node.system")}`);
       const noTx = y3.querySelector(".tl-go")!;
       expect([noTx.textContent, noTx.hasAttribute("disabled"), noTx.dataset.go]).toEqual([ru("cv.node.no_tx"), true, undefined]);
       noTx.click();
@@ -546,6 +547,31 @@ describe("«Условия» пульта (П-4.2)", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it("Х4 (ревью П-4.2 № 7, ревью Х4а № 6): точка контроля в карточке правила — с названием и в en", () => {
+    const env = start({ lang: "en" });
+    env.sources[0]!.send(condMsg());
+    const box = $(env, "b-ctl");
+    box.querySelector("[data-ctl-view='all']")!.click();
+    openAll(env);
+    rows89(env).find((r) => r.dataset.rule === "Ж03")!.click();
+    const r = RULES89.find((x) => x.id === "Ж03")!;
+    const dd = box.querySelector(".c89card")!.querySelectorAll("dd").map((d) => d.textContent);
+    expect(dd).toContain(`${r.point} ${POINTS[r.point as keyof typeof POINTS].name.en}`);
+  });
+
+  it("Х4 (повторное ревью П-4.2 № 2): узла и сектора нет в данных движка — «—», экран статус не подставляет", () => {
+    const env = start();
+    const partial = { ...COND, nodes: COND.nodes.filter((n) => n.id !== "У3"), sectors: COND.sectors.filter((s) => s.id !== "cart") };
+    env.sources[0]!.send(condMsg(partial));
+    const box = $(env, "b-ctl");
+    const y3 = box.querySelectorAll(".tile").find((t) => t.dataset.node === "У3")!;
+    expect(y3.querySelector(".tl-s")!.textContent).toBe("—");
+    expect(y3.className).toBe("tile st-none");
+    const cart = box.querySelectorAll(".sect").find((s) => s.dataset.sector === "cart")!;
+    expect(cart.className).toBe("sect st-none");
+    expect(cart.textContent).toContain("—");
   });
 
   it("«Все 89»: счётчик — из движка; поиск по номеру, условию и слову; фильтр по зоне 9 / 33 / 23 / 24; сектор; карточка правила; вид сохраняется", () => {
@@ -608,6 +634,12 @@ describe("«Условия» пульта (П-4.2)", () => {
     expect(dd).toContain(r.ru.who);
     expect(dd).toContain(r.ru.evidence);
     expect(dd).toContain(`${r.v} × ${r.c} = ${r.v * r.c}`);
+    // Х4 (ревью П-4.2 № 7): точка контроля — с названием на языке экрана, не голым кодом
+    expect(dd).toContain(`${r.point} ${POINTS[r.point as keyof typeof POINTS].name.ru}`);
+    // Х4 (ревью П-4.2 № 8): строка состояния — и над «Все 89», первой в теле, с числами «Контроля»
+    const st = box.querySelector(".ctl-body")!.children[0]!;
+    expect(st.className).toBe("ctl-status");
+    expect(st.textContent).toBe(`${ru("ctl.status")}: ${CTL.counts.txs} · ${ru("ctl.status.wrong")}: ${CTL.counts.wrong} · ${ru("ctl.status.waits")}: 0`);
     expect(rows89(env).find((x) => x.dataset.rule === "Ж03")!.getAttribute("aria-expanded")).toBe("true");
     rows89(env).find((x) => x.dataset.rule === "Ж03")!.click();
     expect(box.querySelector(".c89card")).toBeNull();
@@ -647,7 +679,7 @@ describe("«Условия» пульта (П-4.2)", () => {
     env.sources[0]!.send(condMsg());
     const box = $(env, "b-ctl");
     expect(box.querySelector("[data-ctl-view='all']")!.textContent).toBe(PULT["cv.all"].en);
-    expect(box.querySelectorAll(".tile")[1]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.en}: T2 · ${PULT["cv.node.system"].en}`);
+    expect(box.querySelectorAll(".tile")[1]!.querySelector(".tl-s")!.textContent).toBe(`${STATUS_LABEL.bad.en} · ${PULT["cv.node.at"].en}: T2 · ${PULT["cv.node.system"].en}`);
     box.querySelector("[data-ctl-view='all']")!.click();
     openAll(env);
     const row = (id: string) => rows89(env).find((r) => r.dataset.rule === id)!.querySelector(".cru")!.textContent;
@@ -898,6 +930,35 @@ describe("кнопки реакции пульта (П-8.1)", () => {
       expect(btn(env, "remind").map((b) => b.dataset.params)).toEqual(["confirmation=Q2"]);
       expect(calls).toEqual([]);
     });
+  });
+
+  it("Х4 (повторное ревью Х2 № 3): фокус клавиатуры после кнопки реакции — на той же кнопке; первый шаг «Отозвать» — на «Отмена», не на «Да, отозвать» (В4)", () => {
+    const env = start({ actions: true });
+    withFetch(env);
+    env.sources[0]!.send(msg);
+    const revoke = btn(env, "revoke")[0]!;
+    revoke.focus();
+    revoke.click();
+    const active = () => env.document.activeElement as FakeElement;
+    expect(active().dataset.actCancel).toBe("1");
+    expect(active().textContent).toBe(ru("act.cancel"));
+    // «Отмена» — фокус снова на «Отозвать» (первый шаг)
+    active().click();
+    expect(active().dataset.act).toBe("revoke");
+    expect(active().dataset.second).toBeUndefined();
+    // «Остановить» — после перестройки (ответ «отправлено») фокус на ней же
+    const stop = btn(env, "stop")[0]!;
+    stop.focus();
+    stop.click();
+    expect(active().dataset.act).toBe("stop");
+  });
+
+  it("Х4: пометка «подтверждение истекло» на карточке доски — ru и en", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      env.sources[0]!.send(boardMsg([{ ...card("TX", "confirmation"), confirmationExpired: true } as PultCard]));
+      expect(env.document.querySelector("[data-card='TX']")!.textContent, lang).toContain(PULT["card.confirmation_expired"][lang]);
+    }
   });
 
   const pauseOf = (env: PageEnv) => (paused: boolean) => env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused } }));

@@ -115,6 +115,8 @@ export const PULT = {
   "cv.node.conds": p("условия", "conditions"),
   "cv.node.go": p("к нарушению", "to the breach"),
   "cv.node.system": p("система", "system"),
+  // Х4 (повторное ревью П-4.2 № 3): «где» — чтобы «сработало — остановило процесс: система» не читалось как «остановила система».
+  "cv.node.at": p("где", "where"),
   "cv.node.no_tx": p("нарушение без транзакции", "breach without a transaction"),
   "cv.search": p("Поиск: номер правила, условие или слово — Ж03, R21, отзыв", "Search: rule number, condition or word — Ж03, R21, revocation"),
   "cv.zone": p("Зона", "Zone"),
@@ -200,6 +202,8 @@ export const PULT = {
   ),
   "card.after_revoke": p("оплачено после отзыва поручения", "paid after the mandate was revoked"),
   "card.double_debit": p("два списания по одной корзине", "two debits for one cart"),
+  // Х4 (ревью П-2.1 № 12): пометка, не итог — итог транзакции «истёк» не становится (П-04).
+  "card.confirmation_expired": p("подтверждение истекло — по событию Платформы", "confirmation expired — by a Platform event"),
   "card.ops": p("операции", "operations"),
   "op.none": p("итога ещё нет", "no outcome yet"),
   "op.paid": p("оплачено", "paid"),

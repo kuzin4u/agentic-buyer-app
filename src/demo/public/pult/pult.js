@@ -232,6 +232,8 @@
     // Признаки итога (П-3.2а): «оплачено» после отзыва (В5), два списания (R46); операции — при повторе (В6).
     if (c.afterRevoke) b.appendChild(el("div", label("card.after_revoke"), "bc-w"));
     if (c.doubleDebit) b.appendChild(el("div", label("card.double_debit"), "bc-w"));
+    // Истёкший запрос подтверждения — пометкой по событию Платформы, не итогом (Х4, ревью П-2.1 № 12).
+    if (c.confirmationExpired) b.appendChild(el("div", label("card.confirmation_expired"), "bc-x muted"));
     if (Array.isArray(c.ops))
       b.appendChild(el("div", label("card.ops") + ": " + c.ops.map((o) => o.opRef + " — " + label(o.kind ? "op." + o.kind : "op.none")).join(" · "), "bc-ops"));
     if (c.unconfirmed) b.appendChild(el("div", label("card.unconfirmed"), "bc-w"));
@@ -605,7 +607,7 @@
       const tile = el("div", undefined, "tile st-" + (st || "none"));
       tile.dataset.node = n.id;
       tile.appendChild(el("div", n.id + " " + n.name, "tl-h"));
-      tile.appendChild(el("div", (st ? stName(st) : "—") + (hit ? ": " + where.join(" · ") : ""), "tl-s"));
+      tile.appendChild(el("div", (st ? stName(st) : "—") + (hit ? " · " + label("cv.node.at") + ": " + where.join(" · ") : ""), "tl-s"));
       for (const nt of (t && Array.isArray(t.notes) ? t.notes : [])) tile.appendChild(el("div", has(R89.notes, nt) ? R89.notes[nt] : String(nt), "tl-n"));
       tile.appendChild(el("div", label("cv.node.rules") + " " + n.rules.join(", ") + " · " + label("cv.node.conds") + " " + n.conds.join(", "), "tl-r muted"));
       // Кнопка — только у «нарушено»: сработавшая защита — не нарушение, кнопки нет (ревью П-4.2 № 1, Р-1505).
@@ -667,7 +669,8 @@
     add("conds", r.conds.join(", "));
     add("node", node ? node.id + " " + node.name : undefined);
     add("sector", sector ? sector.name : undefined);
-    add("point", r.point);
+    // Точка контроля — с названием на языке экрана, не голым кодом (Х4, ревью П-4.2 № 7).
+    add("point", r.point ? pointName(r.point) : undefined);
     add("coverage", r.coverage);
     add("score", r.v + " × " + r.c + " = " + r.score);
     add("why_vuln", r.text.whyVuln);
@@ -734,9 +737,13 @@
     const active = document.activeElement;
     const keepKey = active && ctlBody.contains(active) && active.dataset ? FOCUS_KEYS.find((k) => active.dataset[k] !== undefined) : undefined;
     const keepVal = keepKey ? active.dataset[keepKey] : undefined;
+    // Кнопка реакции с фокусом клавиатуры (Х4; повторное ревью Х2 № 3): после перестройки — на ту же кнопку, а при
+    // начатом отзыве — на «Отмена», не на «Да, отозвать»: двойной Enter не отзывает мимо двух шагов (В4).
+    const keepAct = active && ctlBody.contains(active) && active.dataset && active.dataset.actKey !== undefined ? active.dataset.actKey : undefined;
     const wrap = document.createDocumentFragment();
     const due = dueWaits();
     ctlDueKey = dueKey(due);
+    ctlStatus(wrap, due);
     if (view === "all") renderAll(wrap, board.conditions);
     else renderPrio(wrap, due);
     // Х2: разметка та же — показанное тело остаётся (узлы, кнопки, фокус), секунды ведёт таймер.
@@ -755,6 +762,14 @@
           break;
         }
       }
+    }
+    if (keepAct !== undefined) {
+      const same = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === keepAct && !b.hasAttribute("disabled"));
+      const target =
+        actState.pending === keepAct
+          ? same.find((b) => b.dataset.actCancel !== undefined)
+          : same.find((b) => b.dataset.second === undefined && b.dataset.actCancel === undefined);
+      if (target) target.focus();
     }
   }
 
@@ -944,6 +959,7 @@
         const no = el("button", label("act.cancel"), "act-btn");
         no.type = "button";
         no.dataset.actCancel = "1";
+        no.dataset.actKey = key; // для возврата фокуса после «Отмены» (Х4)
         bar.appendChild(no);
       } else bar.appendChild(actButton(key, label("act.revoke"), "revoke", { mandate: intent }));
     }
@@ -953,12 +969,17 @@
     if (intent) append(row, resultOf("revoke:" + intent));
   }
 
-  /** «Приоритет»: строка состояния, плитки узлов, сектора, затем блоки П-4.1 — паспорта, «Идёт к нарушению», «В работе». */
-  function renderPrio(wrap, due) {
+  /** Строка состояния «Контроля» — над обоими видами (Х4, ревью П-4.2 № 8): сколько транзакций, с паспортом, ждёт. */
+  function ctlStatus(wrap, due) {
     const c = board.control;
     wrap.appendChild(
       el("p", label("ctl.status") + ": " + c.counts.txs + " · " + label("ctl.status.wrong") + ": " + c.counts.wrong + " · " + label("ctl.status.waits") + ": " + due.length, "ctl-status"),
     );
+  }
+  /** «Приоритет»: плитки узлов, сектора, затем блоки П-4.1 — паспорта, «Идёт к нарушению», «В работе» (строка состояния —
+   *  `ctlStatus`, над обоими видами). */
+  function renderPrio(wrap, due) {
+    const c = board.control;
     if (R89 && board.conditions) {
       renderNodes(wrap, board.conditions);
       renderSectors(wrap, board.conditions, due);

@@ -57,6 +57,9 @@ export interface BoardCard {
   readonly afterRevoke?: true;
   /** Два «оплачено» по одной корзине (R46). */
   readonly doubleDebit?: true;
+  /** Запрос подтверждения покупки истёк — по событию Платформы `confirmation.expired` с номером запроса этой покупки (Х4,
+   *  ревью П-2.1 № 12). Пометка, не итог: итог транзакции и вердикты не меняются (П-04 — «истёк» итогом не становится). */
+  readonly confirmationExpired?: true;
   /** Операции транзакции с итогом каждой — когда их больше одной (повтор после отказа, В6). */
   readonly ops?: readonly { readonly opRef: string; readonly kind?: TxOpKind }[];
   /** Последняя ключевая запись: время и фраза ru/en. */
@@ -156,10 +159,22 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
     const last = segments(kind, x.seqs, bySeq, doneOf(kind, x, bySeq)).at(-1);
     return last && last.col === column ? last.from : undefined;
   };
+  // События подтверждения Платформы по номеру запроса (инвариант 6: по событию, не со слов продавца) — по порядку шины.
+  const confEvents = items
+    .filter((r) => r.source === "pao_event" && r.ref.startsWith("confirmation.") && typeof r.ids?.confirmation_id === "string")
+    .sort((a, b) => a.seq - b.seq);
+  /** Пометка «истекло» — только если последнее событие подтверждения покупки — `confirmation.expired` (повторный запрос
+   *  после истёкшего снимает её; ревью Х4а № 2) и звенья не в конфликте (Р-1444; ревью Х4а № 1). */
+  const lastExpired = (t: PultTx) => {
+    const own = new Set(t.confirmationIds);
+    const last = confEvents.filter((r) => own.has(r.ids!.confirmation_id!)).at(-1);
+    return last !== undefined && last.ref === "confirmation.expired";
+  };
   for (const t of model.txs) {
     const last = lastKey(t.seqs, bySeq);
     const column = txColumn(t);
     const enteredAt = entered("tx", t, column);
+    const expired = t.outcome === undefined && !t.linkConflict && lastExpired(t);
     cards.push({
       id: t.id,
       kind: "tx",
@@ -176,6 +191,7 @@ export function boardView(model: TxModel, items: readonly Interpretation[]): Boa
       ...(t.pendingOps && { pending: true as const }),
       ...(t.afterRevoke && { afterRevoke: true as const }),
       ...(t.doubleDebit && { doubleDebit: true as const }),
+      ...(expired && { confirmationExpired: true as const }),
       ...(t.ops.length > 1 && { ops: t.ops.map((o) => ({ opRef: o.opRef, ...(o.kind !== undefined && { kind: o.kind }) })) }),
       ...(last && { last }),
       order: t.seqs[0]!,

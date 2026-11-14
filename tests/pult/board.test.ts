@@ -53,6 +53,49 @@ describe("доска «Ход по стадиям» (П-2.1)", () => {
     expect(view(bought).cards).toEqual([expect.objectContaining({ id: "C1", kind: "tx", column: "cart", intentId: "I1" })]);
   });
 
+  it("Х4 (ревью П-2.1 № 12): запрос подтверждения истёк по событию Платформы — пометка на карточке, итога нет; шаг сюжета пометки не даёт", () => {
+    const base = [
+      step("cart.created", { mandate_id: "CX1", intent_id: "IX1" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OX1", mandate_id: "CX1", merchant_id: "MER-9" }, { stage: "payment" }),
+      event("confirmation.required", { confirmation_id: "QX1", order_id: "OX1" }, { stage: "confirmation" }),
+    ];
+    expect(view(base).cards[0]!.confirmationExpired).toBeUndefined();
+    const expired = [...base, event("confirmation.expired", { confirmation_id: "QX1", order_id: "OX1" }, { stage: "confirmation" })];
+    const c = view(expired).cards[0]!;
+    expect(c).toMatchObject({ id: "CX1", confirmationExpired: true });
+    expect(c.outcome).toBeUndefined();
+    // не событие Платформы (шаг сюжета) — пометки нет (инвариант 6)
+    const byStep = [...base, step("confirmation.expired", { confirmation_id: "QX1", order_id: "OX1" }, { stage: "confirmation" })];
+    expect(view(byStep).cards[0]!.confirmationExpired).toBeUndefined();
+    // чужой запрос — пометки нет
+    const other = [...base, event("confirmation.expired", { confirmation_id: "Q-чужой" }, { stage: "confirmation" })];
+    expect(view(other).cards[0]!.confirmationExpired).toBeUndefined();
+    // ревью Х4а № 2: после истёкшего — новый запрос: ждёт ответа — пометки нет; отклонён — пометки «истекло» тоже нет
+    const again = [...expired, event("confirmation.required", { confirmation_id: "QX2", order_id: "OX1" }, { stage: "confirmation" })];
+    expect(view(again).cards[0]!.confirmationExpired).toBeUndefined();
+    const rejected = [...again, event("confirmation.rejected", { confirmation_id: "QX2", order_id: "OX1" }, { stage: "confirmation" })];
+    expect(view(rejected).cards[0]!.confirmationExpired).toBeUndefined();
+    // ревью Х4а № 3: оплачено после истёкшего — итог есть, пометки нет
+    const paidAfter = [...expired, event("operation.authorized", { op_ref: "PX1", order_id: "OX1" }, { stage: "outcome" }), step("outcome", { op_ref: "PX1", order_id: "OX1", mandate_id: "CX1" }, { stage: "outcome" })];
+    expect(view(paidAfter).cards[0]!.outcome).toBeDefined();
+    expect(view(paidAfter).cards[0]!.confirmationExpired).toBeUndefined();
+  });
+
+  it("Х4 (ревью Х4а № 1): конфликт звеньев — пометки «истекло» нет, хотя запрос истёк (Р-1444)", () => {
+    // две корзины под одним заказом — конфликт звеньев
+    const items = [
+      step("cart.created", { mandate_id: "CY1", intent_id: "IY" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OY", mandate_id: "CY1", merchant_id: "MER-9" }, { stage: "payment" }),
+      step("cart.created", { mandate_id: "CY2", intent_id: "IY" }, { stage: "cart" }),
+      step("order.placed", { order_id: "OY", mandate_id: "CY2", merchant_id: "MER-9" }, { stage: "payment" }),
+      event("confirmation.required", { confirmation_id: "QY", order_id: "OY" }, { stage: "confirmation" }),
+      event("confirmation.expired", { confirmation_id: "QY", order_id: "OY" }, { stage: "confirmation" }),
+    ];
+    const cards = view(items).cards.filter((c) => c.linkConflict);
+    expect(cards.length).toBeGreaterThan(0);
+    for (const c of cards) expect(c.confirmationExpired, c.id).toBeUndefined();
+  });
+
   it("транзакция идёт по стадиям последней ключевой записи; «Завершены» — только по итогу события Платформы, шаг сюжета — «Итог»", () => {
     const base = [step("cart.created", { mandate_id: "C2", intent_id: "I2" }, { stage: "cart" }), step("order.placed", { order_id: "O2", mandate_id: "C2", merchant_id: "MER-9" }, { stage: "payment" })];
     // Продавец покупки — для разреза «продавец» (П-2.3).
