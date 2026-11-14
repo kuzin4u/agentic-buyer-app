@@ -85,7 +85,8 @@ describe("кнопки реакции пульта — флаг, порт, ма�
   });
 
   it("словари пульта и монитора: строка режима показа одна и та же (ревью П-8.1 № 9)", () => {
-    for (const lang of ["ru", "en"] as const) for (const k of ["mode.actions", "mode.actions_note", "mode.faults", "mode.faults_note"] as const) expect(t(lang, k), `${k} ${lang}`).toBe(PULT[k][lang]);
+    for (const lang of ["ru", "en"] as const)
+      for (const k of ["mode.actions", "mode.actions_note", "mode.faults", "mode.faults_note", "mode.faults_note_plain"] as const) expect(t(lang, k), `${k} ${lang}`).toBe(PULT[k][lang]);
   });
 
   it("реализация порта: ответ стенда как есть — 4xx и исключение стенда — отказ; продление — новый срок", async () => {
@@ -95,13 +96,39 @@ describe("кнопки реакции пульта — флаг, порт, ма�
       revokeMandate: vi.fn(async () => {
         throw new Error("unknown mandate");
       }),
-      sendToReview: vi.fn(() => ({})),
+      sendToReview: vi.fn(() => ({ seq: 17, at: "2026-11-12T12:00:03.000Z" })),
     } as unknown as StandDemo;
     const p = pultActions(demo);
     expect(await p.stopPurchase("X")).toEqual({ ok: false, status: 409, code: "MANDATE_NOT_ACTIVE", rejected: [] });
     expect(await p.remindClient("C")).toEqual({ ok: true, expiresAt: "2026-11-12T12:05:00Z", extended: true });
     expect(await p.revokeMandate("Y")).toEqual({ ok: false, code: "unknown mandate" });
-    expect(await p.sendToReview({ tx: { op_ref: "P" }, condition: "R46", violator: "AGENT" })).toEqual({ ok: true });
+    // Б1 (ревью П-8.1 № 6): номер и время записи стенда — в ответе разбора
+    expect(await p.sendToReview({ tx: { op_ref: "P" }, condition: "R46", violator: "AGENT" })).toEqual({ ok: true, recordSeq: 17, recordAt: "2026-11-12T12:00:03.000Z" });
+  });
+
+  it("Б1 (ревью П-8.1 № 4): длинный текст отказа стенда — не длиннее 120 знаков; сбой адаптера (не `Error` стенда) — `failed`, маршрут — 500, а не 409", async () => {
+    const demo = {
+      revokeMandate: vi.fn(async () => {
+        throw new Error("x".repeat(500));
+      }),
+      stopPurchase: vi.fn(async () => {
+        throw new TypeError("cannot read properties of undefined");
+      }),
+    } as unknown as StandDemo;
+    const p = pultActions(demo);
+    const long = await p.revokeMandate("Y");
+    expect(long).toMatchObject({ ok: false });
+    expect(long.code!.length).toBe(120);
+    expect(long.failed).toBeUndefined();
+    expect(await p.stopPurchase("C")).toEqual({ ok: false, failed: true, code: "ADAPTER_FAILED" });
+    const feed = { react: vi.fn() };
+    const r = await pultAct("stop", new URLSearchParams("cart=C1"), p, feed, NOW);
+    expect(r.status).toBe(500);
+    // не «сделано»: исход — «отказано», в журнал реакций ушёл отказ (инвариант 2; ревью Б1 № 7)
+    expect(r.body).toMatchObject({ outcome: "refused", result: { failed: true } });
+    expect(feed.react).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "refused" }));
+    const r2 = await pultAct("revoke", new URLSearchParams("mandate=M1"), p, feed, NOW);
+    expect(r2.status).toBe(409);
   });
 });
 
@@ -120,15 +147,19 @@ describe("кнопки реакции на живом стенде с насто
       await pause(50);
     }
   }
-  const after = (n: number, name: string) => () => steps().slice(n).find((s) => s.step === name);
+  // Отсечка «после» — по номеру записи (`seq`), а не по позиции в истории шины: окно истории обрезается, позиции съезжают
+  // (Б1, повторное ревью П-8.1-р № 4).
+  const lastStep = () => steps().reduce((s, x) => Math.max(s, x.seq), 0);
+  const lastEvent = () => events().reduce((s, x) => Math.max(s, x.seq), 0);
+  const after = (n: number, name: string) => () => steps().find((s) => s.seq > n && s.step === name);
   const post = (path: string, origin = demo.monitor.url) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin } });
   /** Сюжет 4 до ожидания подтверждения клиентом: подписи — эмулятором банка в автотесте (П2 п. 5). */
   /** Подтверждения прошлых тестов: история шины между сюжетами не очищается (ревью П-8.1 № 3). */
   const seen = new Set<string>();
   async function toPendingConfirmation(): Promise<{ n: number; m: number; intent: string; cart: string; confirmation: string }> {
     await demo.scenarios.settled();
-    const n = steps().length;
-    const m = events().length;
+    const n = lastStep();
+    const m = lastEvent();
     expect((await post("/scenario/upk")).status).toBe(202);
     const w = await until(after(n, "intent.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(w.params.mandate_id));
@@ -139,13 +170,13 @@ describe("кнопки реакции на живом стенде с насто
     await until(after(n, "upk.required"));
     // Только события этого сюжета: запрос подтверждения прошлого теста уже закрыт, его `confirmation.rejected` нашёлся бы
     // сразу и проверка П2 доп. 6 молча ослабла бы.
-    const ev = await until(() => events().slice(m).find((e) => e.what === "confirmation.required"));
+    const ev = await until(() => events().find((e) => e.seq > m && e.what === "confirmation.required"));
     const confirmation = String(ev.ids.confirmation_id);
     expect(seen.has(confirmation)).toBe(false);
     seen.add(confirmation);
     return { n, m, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation };
   }
-  const eventAfter = (m: number, what: string, f: (e: MonitorEvent) => boolean) => () => events().slice(m).find((e) => e.what === what && f(e));
+  const eventAfter = (m: number, what: string, f: (e: MonitorEvent) => boolean) => () => events().find((e) => e.seq > m && e.what === what && f(e));
 
   beforeAll(async () => {
     [demo, plain] = await Promise.all([startDemo({ actions: true }), startDemo()]);
@@ -184,7 +215,7 @@ describe("кнопки реакции на живом стенде с насто
     expect(stop.result?.rejected).toContain(p.confirmation);
     await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
     await demo.scenarios.settled();
-    expect(steps().slice(p.n).some((s) => s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
+    expect(steps().some((s) => s.seq > p.n && s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
   });
 
   it("П2 доп. 6: «Отозвать поручение» при ожидающем подтверждении → агенту confirmation.rejected и mandate.revoked, агент остановился, «оплачено» нет", async () => {
@@ -194,7 +225,7 @@ describe("кнопки реакции на живом стенде с насто
     await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
     await until(eventAfter(p.m, "mandate.revoked", (e) => e.ids.mandate_id === p.intent));
     await demo.scenarios.settled();
-    expect(steps().slice(p.n).some((s) => s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
+    expect(steps().some((s) => s.seq > p.n && s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
     expect(events().some((e) => e.what === "operation.authorized" && e.ids.mandate_id === p.cart)).toBe(false);
   });
 
@@ -246,7 +277,8 @@ async function boardUntil(d: Demo, f: (b: PultBoardState) => boolean, ms = 30_00
 describe("У-04 на живом стенде в режиме сбоев: «Напомнить» → код клиента → «упреждено реакцией» (П-8.2, Р-1531)", { timeout: 180_000 }, () => {
   let demo: Demo;
   const steps = (): ScenarioLine[] => demo.bus.history().flatMap((i: BusItem) => (i.stream === "scenario" ? [i.line] : []));
-  const after = (n: number, name: string) => () => steps().slice(n).find((s) => s.step === name);
+  // По номеру записи, не по позиции (повторное ревью П-8.1-р № 4).
+  const after = (n: number, name: string) => () => steps().find((s) => s.seq > n && s.step === name);
   const post = (path: string) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin: demo.monitor.url } });
   async function until<T>(f: () => T | undefined, ms = 60_000): Promise<T> {
     const end = Date.now() + ms;
@@ -267,7 +299,7 @@ describe("У-04 на живом стенде в режиме сбоев: «На�
 
   it("покупка оплачена по событию; запись R21 — «соблюдено» с «упреждено реакцией», реакция связана с записью CLIENT_REMINDED стенда; паспорта R21 нет", async () => {
     // Сюжет 4 вручную (эмулятор клиента — «Вручную»): подписи — эмулятором банка в автотесте (П2 п. 5).
-    const n = steps().length;
+    const n = steps().reduce((s, x) => Math.max(s, x.seq), 0);
     expect((await post("/scenario/upk")).status).toBe(202);
     const w = await until(after(n, "intent.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(w.params.mandate_id));

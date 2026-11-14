@@ -31,7 +31,8 @@ export async function pultAct(what: string, q: URLSearchParams, actions: PultAct
   const record = (obj: string, result: ActionResult, cond?: string): PultActReply => {
     const reaction: Reaction = { at: now().toISOString(), action: what, obj, ...(cond !== undefined && { cond }), outcome: result.ok ? "done" : "refused", result };
     feed.react(reaction);
-    return { status: result.ok ? 200 : 409, body: reaction };
+    // Сбой адаптера — 500, отказ стенда по правилам — 409 (ревью П-8.1 № 4).
+    return { status: result.ok ? 200 : result.failed ? 500 : 409, body: reaction };
   };
   switch (what) {
     case "stop": {

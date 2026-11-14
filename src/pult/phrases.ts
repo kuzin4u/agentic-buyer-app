@@ -245,6 +245,10 @@ export const PULT = {
   "act.link.record": p("запись журнала стенда №", "stand log record no."),
   "act.link.unavailable": p("журнал стенда недоступен (только в режиме сбоев)", "the stand log is unavailable (fault mode only)"),
   "act.link.not_found": p("записи в журнале стенда нет", "no record in the stand log"),
+  "act.link.pending": p("ждём запись журнала стенда", "waiting for the stand log record"),
+  "act.link.unknown": p("записи нет — состояние стенда неизвестно", "no record — the stand state is unknown"),
+  // Б1 (ревью П-8.1 № 4, ревью Б1 № 2, 5): сбой адаптера или маршрута — не «отказано» стендом и не «стенд не ответил».
+  "act.failed_internal": p("не удалось — сбой пульта или стенда", "failed — a console or stand fault"),
   "act.preempted": p("упреждено реакцией: напоминание было до подтверждения — нарушения нет", "pre-empted by a reaction: the reminder came before the confirmation — no breach"),
   "act.kind.stop": p("остановить покупку", "stop the purchase"),
   "act.kind.remind": p("напомнить клиенту", "remind the client"),
@@ -253,6 +257,8 @@ export const PULT = {
   "act.kind.review": p("передать на разбор", "send for review"),
   // {sec} — срок из `stand.params.order_hold_sec` (ревью П-1.3 № 5, П-8.1), не литерал.
   "mode.faults_note": p("прогон тестов пульта: сбои стенда по кнопкам, срок подтверждения {sec} с", "console test run: stand faults by buttons, confirmation deadline {sec} s"),
+  // Б1 (ревью П-8.1 № 8, ревью Б1 № 4): срок неизвестен — пояснение без срока, а не «?».
+  "mode.faults_note_plain": p("прогон тестов пульта: сбои стенда по кнопкам", "console test run: stand faults by buttons"),
   "status.pult_closed": p("пульт отключён от сервера стенда — обновите страницу", "the console is disconnected from the stand server — reload the page"),
   // Код записи стенда в строке журнала реакций — словами (ревью П-8.2 № 5); перечень — `REACTION_RECORDS` (`reactions.ts`).
   "act.what.CLIENT_REMINDED": p("клиенту напомнено", "client reminded"),

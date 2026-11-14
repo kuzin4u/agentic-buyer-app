@@ -33,6 +33,33 @@ describe("журнал реакций ↔ протокол стенда (П-8.2)
     ]);
   });
 
+  it("Б1 (ревью П-8.2 № 3): журнал стенда ещё не дошёл до нажатия — «ждём запись», а не «записи нет»; дошёл — связь или «нет»; отказ исключением — сразу «нет»", () => {
+    const early = [rec(1, "CLIENT_REMINDED", { confirmation_id: "Q2" }, 10)];
+    expect(linkReactions([react("remind", "Q1", 20)], early)[0]!.link).toEqual({ state: "pending" });
+    expect(linkReactions([react("remind", "Q1", 20)], [])[0]!.link).toEqual({ state: "pending" });
+    // запись пришла — связь
+    const arrived = [...early, rec(2, "CLIENT_REMINDED", { confirmation_id: "Q1" }, 20)];
+    expect(linkReactions([react("remind", "Q1", 20)], arrived)[0]!.link).toMatchObject({ state: "linked", seq: 2 });
+    // журнал ушёл дальше нажатия, а записи по объекту нет — «нет»
+    const past = [...early, rec(3, "CLIENT_REMINDED", { confirmation_id: "Q9" }, 25)];
+    expect(linkReactions([react("remind", "Q1", 20)], past)[0]!.link).toEqual({ state: "not_found" });
+    // отказ исключением стенда (без ответа шлюза) — записи не будет
+    const exc: Reaction = { ...react("stop", "C1", 20, "refused"), result: { ok: false, code: "UNKNOWN_MANDATE" } };
+    expect(linkReactions([exc], early)[0]!.link).toEqual({ state: "not_found" });
+  });
+
+  it("ревью Б1 № 1: сбой адаптера — стенд мог успеть записать действие: запись действия или отказа связывается; нет — «состояние неизвестно», не «записи нет»", () => {
+    const failed: Reaction = { ...react("stop", "C1", 20, "refused"), result: { ok: false, failed: true, code: "ADAPTER_FAILED" } };
+    // стенд записал остановку до сбоя
+    const stopped = [rec(1, "PURCHASE_STOPPED", { mandate_id: "C1" }, 19), rec(2, "CLIENT_REMINDED", { confirmation_id: "Q9" }, 25)];
+    expect(linkReactions([failed], stopped)[0]!.link).toMatchObject({ state: "linked", what: "PURCHASE_STOPPED" });
+    // записи нет, журнал ушёл дальше — состояние неизвестно
+    const none = [rec(3, "CLIENT_REMINDED", { confirmation_id: "Q9" }, 25)];
+    expect(linkReactions([failed], none)[0]!.link).toEqual({ state: "unknown" });
+    // журнал ещё не дошёл — ждём
+    expect(linkReactions([failed], [rec(4, "CLIENT_REMINDED", { confirmation_id: "Q9" }, 10)])[0]!.link).toEqual({ state: "pending" });
+  });
+
   it("запись другого объекта или позже нажатия — не связывается («записи нет»); «напомнено» без стенда — без записи; журнала нет — «недоступен»", () => {
     const log = [rec(1, "CLIENT_REMINDED", { confirmation_id: "Q2" }, 10), rec(2, "CLIENT_REMINDED", { confirmation_id: "Q1" }, 30)];
     expect(linkReactions([react("remind", "Q1", 20)], log)[0]!.link).toEqual({ state: "not_found" });

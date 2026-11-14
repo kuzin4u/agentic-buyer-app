@@ -12,6 +12,10 @@ export type ReactionLink =
   | { readonly state: "linked"; readonly seq: number; readonly what: StandLogWhat; readonly at: string }
   | { readonly state: "unavailable" }
   | { readonly state: "no_stand" }
+  /** Журнал стенда на шине ещё не дошёл до момента нажатия — запись может быть в пути (Б1, ревью П-8.2 № 3). */
+  | { readonly state: "pending" }
+  /** Сбой адаптера или стенда (`failed`): записи ни действия, ни отказа нет — состояние стенда неизвестно (ревью Б1 № 1). */
+  | { readonly state: "unknown" }
   | { readonly state: "not_found" };
 
 export interface LinkedReaction extends Reaction {
@@ -51,10 +55,17 @@ export function linkReactions(reactions: readonly Reaction[], log: readonly Stan
   return reactions.map((r): LinkedReaction => {
     if (r.action === "remind_note") return { ...r, link: { state: "no_stand" } };
     if (log === undefined) return { ...r, link: { state: "unavailable" } };
-    const kinds: readonly StandLogWhat[] = r.outcome === "refused" ? [REFUSED_RECORD] : RECORD_OF[r.action];
+    // Сбой адаптера (`failed`): стенд мог успеть записать и само действие, и отказ — ищутся оба вида (ревью Б1 № 1).
+    const failed = r.result?.failed === true;
+    const kinds: readonly StandLogWhat[] = failed ? [...RECORD_OF[r.action], REFUSED_RECORD] : r.outcome === "refused" ? [REFUSED_RECORD] : RECORD_OF[r.action];
     const at = Date.parse(r.at);
     const e = log.filter((x) => !taken.has(x.seq) && kinds.includes(x.what) && sameObj(r, x) && Date.parse(x.at) <= at).at(-1);
-    if (!e) return { ...r, link: { state: "not_found" } };
+    // Записи нет, а журнал на шине ещё не дошёл до нажатия (последняя его запись раньше) — «ждём запись стенда», не «нет».
+    // Отказ исключением стенда по правилам (обычный `Error`, без ответа шлюза) записи не оставляет — ждать нечего; сбой —
+    // «состояние неизвестно».
+    const behind = log.every((x) => Date.parse(x.at) < at);
+    const noRecordExpected = r.outcome === "refused" && r.result?.status === undefined && !failed;
+    if (!e) return { ...r, link: { state: behind && !noRecordExpected ? "pending" : failed ? "unknown" : "not_found" } };
     taken.add(e.seq);
     return { ...r, link: { state: "linked", seq: e.seq, what: e.what, at: e.at }, ...(r.action === "remind" && preempted.has(e.seq) && { preempted: "R21" as const }) };
   });

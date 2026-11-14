@@ -860,14 +860,19 @@
   }
   function describeReaction(x) {
     if (!x || typeof x !== "object") return label("act.failed");
+    // 500 маршрута — сбой, а не отказ стенда (ревью Б1 № 2).
+    if (x.error === "ACTION_FAILED") return label("act.failed_internal") + " · " + x.error;
     if (typeof x.error === "string") return label("act.refused") + " · " + x.error;
     if (x.outcome === "noted") return label("act.noted");
     const r = x.result && typeof x.result === "object" ? x.result : {};
     // Напоминание без продления (стенд уже продлевал срок): не «сделано», а отдельный итог (ревью П-8.1 № 5).
     if (x.outcome === "done" && r.extended === false) return label("act.not_extended") + " " + (typeof r.expiresAt === "string" ? clock(r.expiresAt) : "—");
-    const parts = [label(x.outcome === "done" ? "act.done" : "act.refused")];
+    // Сбой адаптера — «не удалось», а не «отказано» стендом (Б1, ревью П-8.1 № 4).
+    const parts = [label(x.outcome === "done" ? "act.done" : r.failed === true ? "act.failed_internal" : "act.refused")];
     if (typeof r.status === "number") parts.push(String(r.status));
     if (typeof r.code === "string") parts.push(r.code);
+    // Запись стенда по действию — номер и время (ревью П-8.1 № 6).
+    if (typeof r.recordSeq === "number") parts.push(label("act.link.record") + " " + r.recordSeq + (typeof r.recordAt === "string" ? " (" + clock(r.recordAt) + ")" : ""));
     if (typeof r.expiresAt === "string" && r.extended) parts.push(label("act.extended") + " " + clock(r.expiresAt));
     if (Array.isArray(r.rejected) && r.rejected.length > 0) parts.push(label("act.closed") + ": " + r.rejected.join(", "));
     return parts.join(" · ");
@@ -880,7 +885,7 @@
       const k = "act.what." + link.what;
       return " · " + label("act.link.record") + " " + link.seq + " (" + (Object.prototype.hasOwnProperty.call(L, k) ? L[k] : link.what) + ")";
     }
-    if (link.state === "unavailable" || link.state === "not_found") return " · " + label("act.link." + link.state);
+    if (link.state === "unavailable" || link.state === "not_found" || link.state === "pending" || link.state === "unknown") return " · " + label("act.link." + link.state);
     return "";
   }
   /** Поле разбора по типу номера на пульте (ревью П-8.1 № 1; повторное № 1): `cart:` — поручение корзины (транзакция с

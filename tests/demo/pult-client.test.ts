@@ -960,6 +960,46 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     expect(active().dataset.act).toBe("stop");
   });
 
+  it("Б1: строка режима сбоев — срок из `holdSec`, без него фразы о сроке нет (не «?»; ревью П-8.1 № 8)", () => {
+    const withSec = pultPage("ru", brand, false, { faults: true, holdSec: 45 });
+    expect(withSec).toContain("срок подтверждения 45 с");
+    const line = (html: string) => /<p class="faults-mode">[\s\S]*?<\/p>/.exec(html)![0];
+    expect(line(withSec)).toContain("45 с");
+    for (const lang of ["ru", "en"] as const) {
+      const noSec = line(pultPage(lang, brand, false, { faults: true }));
+      expect(noSec, lang).not.toContain("?");
+      expect(noSec, lang).not.toContain("{sec}");
+      expect(noSec, lang).toContain(PULT["mode.faults"][lang]);
+      // пояснение без срока остаётся (ревью Б1 № 4)
+      expect(noSec, lang).toContain(PULT["mode.faults_note_plain"][lang]);
+    }
+  });
+
+  it("Б1: ответ на кнопку — сбой адаптера «не удалось», номер записи стенда у разбора; журнал реакций — «ждём запись стенда» (ревью П-8.1 № 4, 6; П-8.2 № 3)", async () => {
+    const env = start({ actions: true, faults: true });
+    let reply: unknown = { action: "stop", obj: "CT1", outcome: "refused", result: { ok: false, failed: true, code: "ADAPTER_FAILED" } };
+    env.window.fetch = () => Promise.resolve({ json: () => Promise.resolve(reply) });
+    env.sources[0]!.send(msg);
+    btn(env, "stop")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const res = () => $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
+    expect(res()).toContain(`${ru("act.failed_internal")} · ADAPTER_FAILED`);
+    expect(res()).not.toContain(ru("act.refused"));
+    // 500 маршрута (`{error: "ACTION_FAILED"}`) — тоже сбой, не отказ стенда (ревью Б1 № 2)
+    reply = { error: "ACTION_FAILED" };
+    btn(env, "stop")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(res()).toContain(`${ru("act.failed_internal")} · ACTION_FAILED`);
+    reply = { action: "review", obj: "CT1", outcome: "done", result: { ok: true, recordSeq: 17, recordAt: "2026-11-10T12:00:05.000Z" } };
+    btn(env, "review")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(res()).toContain(`${ru("act.link.record")} 17`);
+    // журнал реакций: запись стенда ещё в пути — «ждём», не «нет»
+    env.sources[0]!.send({ ...msg, board: { ...msg.board, reactions: [{ at: NOW, action: "stop", obj: "CT1", outcome: "done", link: { state: "pending" } }] } });
+    expect($(env, "b-log").textContent).toContain(ru("act.link.pending"));
+    expect($(env, "b-log").textContent).not.toContain(ru("act.link.not_found"));
+  });
+
   it("Х4: пометка «подтверждение истекло» на карточке доски — ru и en", () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });

@@ -181,7 +181,7 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   <nav class="lang">${o.dashboards ? `${switcherHtml("monitor", lang)} · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
-${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${e("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${o.holdSec !== undefined ? e("mode.faults_note").replace("{sec}", String(o.holdSec)) : e("mode.faults_note_plain")}</p>` : ""}
 ${o.actionsMode ? `<p class="faults-mode" role="status"><strong>${e("mode.actions")}</strong> — ${e("mode.actions_note")}</p>` : ""}
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>

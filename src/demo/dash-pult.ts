@@ -91,7 +91,7 @@ export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { fa
   <nav>${switcherHtml("pult", lang)} <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/pult?lang=${other}">${other}</a></span></nav>
 </header>
 <div class="bar">
-  ${o.faults ? `<p class="faults-mode"><strong>${s("mode.faults")}</strong> — ${s("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+  ${o.faults ? `<p class="faults-mode"><strong>${s("mode.faults")}</strong> — ${o.holdSec !== undefined ? s("mode.faults_note").replace("{sec}", String(o.holdSec)) : s("mode.faults_note_plain")}</p>` : ""}
   ${o.actionsMode ? `<p class="faults-mode"><strong>${s("mode.actions")}</strong> — ${s("mode.actions_note")}</p>` : ""}
   <p class="status"><span id="conn" class="conn conn-wait" role="status"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span></p>
   <span class="layout">${s("layout.label")}:<button type="button" data-layout="grid" aria-pressed="true">${s("layout.grid")}</button> <button type="button" data-layout="tabs" aria-pressed="false">${s("layout.tabs")}</button></span>

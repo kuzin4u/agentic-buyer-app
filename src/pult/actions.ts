@@ -27,6 +27,11 @@ export interface ActionResult {
   readonly rejected?: readonly string[];
   readonly expiresAt?: string;
   readonly extended?: boolean;
+  /** Сбой адаптера или стенда, а не отказ по правилам: маршрут отвечает 500 (Б1, ревью П-8.1 № 4). */
+  readonly failed?: true;
+  /** Запись журнала стенда, которую сделало действие (сейчас — «Передать на разбор»; ревью П-8.1 № 6). */
+  readonly recordSeq?: number;
+  readonly recordAt?: string;
 }
 
 export interface PultActions {
