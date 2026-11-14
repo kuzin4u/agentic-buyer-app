@@ -46,7 +46,14 @@ export const HELP_KEYS: readonly { readonly key: Texts; readonly what: Texts }[]
   { key: same("5–6"), what: p("виды «Хода»: доска, «График»", "process views: board, graph") },
   { key: same("7–8"), what: p("виды «Контроля»: «Приоритет», «Все 89»", "control views: priority, all 89") },
   { key: same("?"), what: p("эта справка", "this help") },
-  { key: p("пробел", "Space"), what: p("пауза ленты: новые записи копятся, показ — после снятия паузы", "pause the feed: new records accumulate and show after resuming") },
+  // П12 (Р-1557): пауза — весь пульт, «смотреть, не действовать» (правка окна А по Р-1493).
+  {
+    key: p("пробел", "Space"),
+    what: p(
+      "пауза пульта: «Ход», «Контроль», «Интерпретатор» и «Журнал» стоят, часы тоже; новые данные копятся и показываются после снятия паузы; кнопки, отправляющие запрос, на паузе неактивны",
+      "pause the console: Process, Control, Interpreter and Log stand still, clocks too; new data accumulates and shows after resuming; buttons that send a request are disabled while paused",
+    ),
+  },
   { key: same("Esc"), what: p("закрыть справку; фокус — уровнем выше", "close the help; focus — one level up") },
 ];
 

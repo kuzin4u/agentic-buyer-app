@@ -65,7 +65,7 @@ describe("клавиши пульта (П-9.1)", () => {
     expect(ctlView()).toBe("prio");
   });
 
-  it("? — событие справки; пробел — пауза вкл. / выкл.: «Ленты» встают, доска на событие паузы не ломается", () => {
+  it("? — событие справки; пробел — пауза вкл. / выкл.: «Ленты» и доска встают (Х1, П10), после снятия — последняя доска", () => {
     const env = start();
     const got: unknown[] = [];
     env.document.addEventListener("pult:help", (e: FakeEvent) => got.push(["help", e.detail]));
@@ -75,12 +75,13 @@ describe("клавиши пульта (П-9.1)", () => {
     key(env, " ");
     const note = env.document.getElementById("int-feeds")!.querySelector(".feeds-paused")!;
     expect(note.hidden).toBe(false);
-    // Доска на паузе (пока П-8.1 её не останавливает) — обычная перерисовка, без ошибок.
+    // Доска на паузе (Х1, Р-1523 В14 (а)): пришедшая не показывается; после снятия паузы — показывается последняя.
     const pultEs = env.sources.find((s) => s.url.startsWith("/pult/events"))!;
     pultEs.send({ type: "board", board: { now: "2026-11-12T12:00:00.000Z", cards: [{ id: "c1", kind: "tx", column: "cart", worst: "norm", order: 1, since: "2026-11-12T12:00:00.000Z" }], jumps: [] } });
-    expect(env.document.getElementById("b-proc")!.textContent).toContain("c1");
+    expect(env.document.getElementById("b-proc")!.textContent).not.toContain("c1");
     key(env, " ");
     expect(note.hidden).toBe(true);
+    expect(env.document.getElementById("b-proc")!.textContent).toContain("c1");
     expect(got).toEqual([
       ["help", { toggle: true }],
       ["pause", { paused: true }],

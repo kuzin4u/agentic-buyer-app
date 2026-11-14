@@ -226,6 +226,9 @@ export const PULT = {
   "act.notify.none": p("на стенде нет", "not on the stand"),
   // Р-1542: при конфликте звеньев действия по транзакции — до выбора покупки.
   "act.conflict": p("конфликт звеньев — выберите покупку", "link conflict — choose the purchase"),
+  // П12 (Р-1557): пауза — «смотреть, не действовать»: кнопки, отправляющие запрос, неактивны.
+  "act.paused": p("пауза — снимите паузу", "paused — resume first"),
+  "status.paused": p("пульт на паузе — смотреть, не действовать", "console paused — view only"),
   "act.sending": p("отправлено стенду…", "sent to the stand…"),
   "act.done": p("сделано", "done"),
   "act.refused": p("отказано", "refused"),

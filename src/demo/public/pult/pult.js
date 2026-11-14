@@ -180,6 +180,19 @@
   const procBox = document.getElementById("b-proc");
   let board = null;
   let boardAt = 0;
+  // Х1 (Р-1523 В14 (а), П10, П12 — Р-1557): пауза пульта — событие `pult:pause` (`detail.paused`; источник — пробел,
+  // `keys.js`). Правило: пауза — «смотреть, не действовать».
+  //  - Доска не применяется: «Ход», «Контроль», «Причины» и «Журнал» стоят на последней показанной доске — это один снимок,
+  //    иначе на экране были бы две доски разного времени; приходящая копится (только последняя) со временем прихода и после
+  //    снятия паузы применяется с ним.
+  //  - Часы экрана стоят (`clockNow`): счётчики, «График», порог «Идёт к нарушению» — на момент паузы, при любой перерисовке.
+  //  - Кнопки, отправляющие запрос (реакции, «Поломки стенда», «Авто», «Собрать отчёт»), неактивны с пояснением.
+  //  - Пометка «пульт на паузе» — у строки статуса. Связь и статус — как обычно.
+  let paused = false;
+  let pausedAt = 0;
+  let pendingBoard = null;
+  let pendingAt = 0;
+  const clockNow = () => (paused ? pausedAt : Date.now());
 
   const el = (tag, text, cls) => {
     const e = document.createElement(tag);
@@ -194,7 +207,7 @@
   // «В стадии N с» — по часам шины на момент пересчёта плюс время, прошедшее у экрана с прихода доски.
   const secondsIn = (since) => {
     const base = Date.parse(board.now) - Date.parse(since);
-    return Math.max(0, Math.round((base + (Date.now() - boardAt)) / 1000));
+    return Math.max(0, Math.round((base + (clockNow() - boardAt)) / 1000));
   };
   const stageText = (since) => label("card.in_stage") + " " + secondsIn(since) + " " + label("card.sec");
   const WORST = { norm: "", conflict: " warn", error: " bad", fraud: " bad" };
@@ -283,7 +296,7 @@
   // ---- «График» (П-2.2, модель 1.23 `renderGraph`): строки — транзакции, отрезки стадий по времени, «сейчас» ----
   // Узлы строятся по событию (новая доска, смена фокуса, смена вида); раз в секунду — только положения (layoutGraph):
   // отрезок, идущий до «сейчас», растёт, узлы и фокус клавиатуры не пересоздаются.
-  const nowMs = () => Date.parse(board.now) + (Date.now() - boardAt);
+  const nowMs = () => Date.parse(board.now) + (clockNow() - boardAt);
 
   function renderGraph() {
     if (!board) return;
@@ -770,6 +783,8 @@
   const actState = { pending: "", results: {} };
   const VIOLATOR = { agent: "AGENT", merchant: "MERCHANT", bank: "BANK", platform: "PLATFORM", operator: "OPERATOR" };
   function actButton(key, text, act, params, cls) {
+    // П12: на паузе кнопка реакции неактивна с пояснением — запрос по замороженной доске не уходит.
+    if (paused) return disabledButton(text, label("act.paused"));
     const b = el("button", text, "act-btn" + (cls ? " " + cls : ""));
     b.type = "button";
     b.dataset.act = act;
@@ -825,6 +840,8 @@
     return { mandate_id: obj };
   }
   function sendAct(act, query, key) {
+    // Подстраховка того же клиентского рубежа (не вторая линия: о паузе сервер не знает, П12).
+    if (paused) return;
     actState.results[key] = label("act.sending");
     renderCtl();
     const f = window.fetch;
@@ -1111,7 +1128,7 @@
   // Раз в секунду — только текст счётчиков доски и положения «Графика»: узлы не пересоздаются, фокус и щелчок не теряются
   // (ревью П-2.1 № 4).
   setInterval(() => {
-    if (!board) return;
+    if (!board || paused) return;
     // «Контроль»: набор строк «Идёт к нарушению» сменился (порог пройден) — перестроить; иначе — только секунды.
     if (dueKey(dueWaits()) !== ctlDueKey) renderCtl();
     else if (ctlBox) {
@@ -1187,9 +1204,11 @@
     const build = el("button", label("report.build"), "report-build");
     build.type = "button";
     build.dataset.report = "1";
-    // Пока сборка идёт — кнопка неактивна: каждое нажатие считает таблицу на сервере заново (ревью П-6.2 № 8).
-    if (report.pending) build.setAttribute("disabled", "");
+    // Пока сборка идёт — кнопка неактивна: каждое нажатие считает таблицу на сервере заново (ревью П-6.2 № 8). На паузе —
+    // тоже (П12): сервер собрал бы акт своим «сейчас», а экран стоит на замороженной доске.
+    if (report.pending || paused) build.setAttribute("disabled", "");
     wrap.appendChild(build);
+    if (paused) wrap.appendChild(el("span", " " + label("act.paused"), "muted"));
     const d = report.data;
     if (report.pending) wrap.appendChild(el("p", label("report.building"), "muted"));
     else if (report.failed) wrap.appendChild(el("p", label("report.failed") + " · " + report.failed, "muted"));
@@ -1222,7 +1241,7 @@
   }
   function buildReport() {
     const f = window.fetch;
-    if (typeof f !== "function" || report.pending) return;
+    if (typeof f !== "function" || report.pending || paused) return;
     report.pending = true;
     report.failed = "";
     renderLog();
@@ -1286,7 +1305,7 @@
     showAuto(undefined);
     faultsBox.addEventListener("click", (ev) => {
       const b = ev.target instanceof Element ? ev.target.closest("button") : null;
-      if (!b) return;
+      if (!b || paused || b.hasAttribute("disabled")) return;
       if (b.dataset.auto === "on" || b.dataset.auto === "off") {
         post("/client/auto/" + b.dataset.auto, (body) => showAuto(body && typeof body.auto === "boolean" ? body.auto : undefined));
         return;
@@ -1324,6 +1343,59 @@
   renderFocus();
   setStatus("connecting");
 
+  /** Доска — с временем её прихода (накопленная на паузе — со своим, П12): часы экрана считают от него. */
+  function applyBoard(b, at) {
+    board = b;
+    boardAt = at;
+    syncMerchants();
+    renderProc();
+    renderCtl();
+    renderInt();
+    renderLog();
+    showAuto(board.clientAuto);
+  }
+  // Пометка паузы — внутри строки статуса (`role="status"`): видна при любой вкладке и раскладке (П12).
+  const pauseNote = el("span", " · " + label("status.paused"), "conn-paused");
+  pauseNote.hidden = true;
+  if (statusBox) statusBox.appendChild(pauseNote);
+  /** «Поломки стенда» и «Авто» — статичная разметка без выключенных кнопок (`dash-pult.ts`): на паузе неактивны, с
+   *  пояснением (повторное ревью Х1 № 1, № 5). */
+  const faultsPaused = faultsBox ? el("p", label("act.paused"), "muted faults-paused") : null;
+  if (faultsBox && faultsPaused) {
+    faultsPaused.hidden = true;
+    faultsBox.appendChild(faultsPaused);
+  }
+  function pauseFaults(off) {
+    if (!faultsBox) return;
+    for (const b of faultsBox.querySelectorAll("button")) {
+      if (off) b.setAttribute("disabled", "");
+      else b.removeAttribute("disabled");
+    }
+    if (faultsPaused) faultsPaused.hidden = !off;
+  }
+  document.addEventListener("pult:pause", (ev) => {
+    const next = Boolean(ev && ev.detail && ev.detail.paused === true);
+    if (next === paused) return;
+    if (next) {
+      pausedAt = Date.now();
+      // Начатый отзыв («Да, отозвать») пауза снимает: после снятия один щелчок отозвал бы по другой доске (повторное ревью
+      // Х1 № 7; П12 — «Отклонено (б)»).
+      actState.pending = "";
+    }
+    paused = next;
+    pauseNote.hidden = !paused;
+    pauseFaults(paused);
+    if (!paused && pendingBoard) {
+      const b = pendingBoard;
+      pendingBoard = null;
+      applyBoard(b, pendingAt);
+      return;
+    }
+    // Кнопки «Контроля» и «Собрать отчёт» — неактивны / снова активны на той же доске.
+    if (board) renderCtl();
+    renderLog();
+  });
+
   const es = new EventSource("/pult/events");
   es.onmessage = (m) => {
     let e;
@@ -1336,14 +1408,10 @@
     // Подключение (и переподключение EventSource после перезапуска стенда) — режим «Авто» заново у источника (ревью № 11).
     if (e.type === "hello" && faultsBox && typeof e.clientAuto === "boolean") showAuto(e.clientAuto);
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
-      board = e.board;
-      boardAt = Date.now();
-      syncMerchants();
-      renderProc();
-      renderCtl();
-      renderInt();
-      renderLog();
-      showAuto(board.clientAuto);
+      if (paused) {
+        pendingBoard = e.board;
+        pendingAt = Date.now();
+      } else applyBoard(e.board, Date.now());
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если

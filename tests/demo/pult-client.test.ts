@@ -184,6 +184,44 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect(env.document.activeElement).toBe(again);
   });
 
+  it("Х1 (Р-1523 В14 (а), П10): пауза `pult:pause` — доска и «Контроль» стоят, счётчики не идут, пришедшая доска копится (последняя); снятие — показывается последняя; ru и en", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      const pause = (paused: boolean) => env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused } }));
+      env.sources[0]!.send(boardMsg([card("T", "pay")]));
+      const node = env.document.querySelector("[data-card='T']") as FakeElement;
+      const ctl = $(env, "b-ctl").textContent;
+      const counter = node.querySelector(".bc-t")!;
+      const shown = counter.textContent;
+      pause(true);
+      env.sources[0]!.send(boardMsg([card("U", "cart")]));
+      env.sources[0]!.send(boardMsg([card("V", "result")]));
+      // доска прежняя: те же узлы, новых карточек нет, «Контроль» не перестроен
+      expect(env.document.querySelector("[data-card='T']")).toBe(node);
+      expect(env.document.querySelector("[data-card='U']")).toBeNull();
+      expect(env.document.querySelector("[data-card='V']")).toBeNull();
+      expect($(env, "b-ctl").textContent).toBe(ctl);
+      // счётчики на паузе не идут: текст не пересчитывается
+      counter.textContent = shown + "*";
+      for (const f of env.intervals) f();
+      expect(counter.textContent).toBe(shown + "*");
+      // повторное «на паузе» ничего не меняет; снятие — последняя пришедшая доска (V), промежуточной (U) нет
+      pause(true);
+      expect(env.document.querySelector("[data-card='V']")).toBeNull();
+      pause(false);
+      expect(env.document.querySelector("[data-card='V']")).not.toBeNull();
+      expect(env.document.querySelector("[data-card='U']")).toBeNull();
+      expect(env.document.querySelector("[data-card='T']")).toBeNull();
+      // без паузы — как раньше
+      env.sources[0]!.send(boardMsg([card("W", "cart")]));
+      expect(env.document.querySelector("[data-card='W']")).not.toBeNull();
+      // снятие без накопленной доски — доска прежняя
+      pause(true);
+      pause(false);
+      expect(env.document.querySelector("[data-card='W']")).not.toBeNull();
+    }
+  });
+
   it("скрипт фокуса не загрузился — строка фокуса скрыта, доска и раскладка работают", () => {
     const env = start({ noFocus: true });
     expect($(env, "focusbar").hidden).toBe(true);
@@ -768,6 +806,181 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
     expect(res).toContain(`${ru("act.refused")} · 409 · MANDATE_NOT_ACTIVE`);
     expect(res).not.toContain(ru("act.done"));
+  });
+
+  const pauseOf = (env: PageEnv) => (paused: boolean) => env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused } }));
+
+  it("П12 (Р-1557): пауза — «смотреть, не действовать»: кнопки реакции неактивны с пояснением, запросов нет; пометка у статуса; накопленная доска с конфликтом после снятия — по Р-1542; ru и en", () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ actions: true, lang });
+      const calls = withFetch(env);
+      const pause = pauseOf(env);
+      env.sources[0]!.send(msg);
+      expect(btn(env, "stop").length, lang).toBe(1);
+      const note = $(env, "conn").querySelector(".conn-paused")!;
+      expect(note.hidden, lang).toBe(true);
+      pause(true);
+      expect(note.hidden, lang).toBe(false);
+      expect(note.textContent, lang).toContain(PULT["status.paused"][lang]);
+      // на той же доске кнопки — неактивны с пояснением «пауза»
+      const box = $(env, "b-ctl");
+      expect(box.querySelectorAll("button[data-act]"), lang).toEqual([]);
+      const off = box.querySelectorAll(".act-off").map((x) => x.textContent);
+      for (const k of ["act.stop", "act.revoke", "act.remind", "act.review"] as const)
+        expect(off.some((t) => t.startsWith(PULT[k][lang]) && t.includes(PULT["act.paused"][lang])), `${lang} ${k}`).toBe(true);
+      for (const b of box.querySelectorAll(".act-off").flatMap((x) => x.querySelectorAll("button"))) b.click();
+      expect(calls, lang).toEqual([]);
+      // доска с конфликтом приходит на паузе — копится; кнопки по-прежнему «пауза», запросов нет (блокер ревью Х1 № 1)
+      env.sources[0]!.send({ ...msg, board: { ...msg.board, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", linkConflict: true }] } });
+      expect(box.querySelectorAll(".act-off").map((x) => x.textContent).filter((t) => t.includes(PULT["act.conflict"][lang])), lang).toEqual([]);
+      expect(calls, lang).toEqual([]);
+      // снятие — накопленная доска: «Остановить» и «Отозвать» — по Р-1542 (конфликт), «пауза» снята
+      pause(false);
+      expect(note.hidden, lang).toBe(true);
+      const after = box.querySelectorAll(".act-off").map((x) => x.textContent);
+      expect(after.filter((t) => t.includes(PULT["act.conflict"][lang])), lang).toHaveLength(2);
+      expect(after.some((t) => t.includes(PULT["act.paused"][lang])), lang).toBe(false);
+      expect(btn(env, "remind").length, lang).toBe(1);
+    }
+  });
+
+  it("П12, ревью Х1 № 4: на паузе «Контроль», «Интерпретатор» («Причины») и «Журнал» стоят на прежней доске, после снятия — новая", () => {
+    const env = start({ actions: true });
+    withFetch(env);
+    const pause = pauseOf(env);
+    env.sources[0]!.send(msg);
+    const text = () => ["b-ctl", "b-int", "b-log"].map((id) => $(env, id).textContent);
+    pause(true);
+    const before = text();
+    const next = {
+      ...msg,
+      board: {
+        ...msg.board,
+        cards: [{ ...card("CT9", "pay"), intentId: "IT9", cartMandateId: "CT9" }],
+        control: { ...ctl, passports: [], waits: [], active: [{ id: "CT9", column: "pay", since: T0 }] },
+        reactions: [{ at: NOW, action: "stop", obj: "CT9", outcome: "done" }],
+        causes: [{ id: "CT9", outcome: "paid", items: [], waits: [], chain: [], chainTotal: 0, chainLimit: 40 }],
+      },
+    };
+    env.sources[0]!.send(next);
+    expect(text()).toEqual(before);
+    for (const id of ["b-ctl", "b-int", "b-log"]) expect($(env, id).textContent, id).not.toContain("CT9");
+    pause(false);
+    // все три панели — с новой доски (ревью Х1 повторное № 3: «Причины» тоже различаются)
+    for (const id of ["b-ctl", "b-int", "b-log"]) expect($(env, id).textContent, id).toContain("CT9");
+  });
+
+  it("П12, ревью Х1 № 2, 3: часы экрана на паузе стоят при любой перерисовке; накопленная доска — со временем своего прихода", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1_000_000);
+      const env = start();
+      const pause = pauseOf(env);
+      // NOW — 12:00:10, карточка в стадии с 12:00:00: 10 с
+      env.sources[0]!.send(boardMsg([card("T", "pay")]));
+      const sec = () => env.document.querySelector("[data-card='T']")!.querySelector(".bc-t")!.textContent;
+      expect(sec()).toBe(`${ru("card.in_stage")} 10 ${ru("card.sec")}`);
+      pause(true);
+      now.mockReturnValue(1_020_000);
+      // перерисовка «Хода» на паузе (фокус) — часы стоят: те же 10 с
+      env.document.dispatchEvent(new FakeEvent("pult:focus", { detail: {} }));
+      for (const f of env.intervals) f();
+      expect(sec()).toBe(`${ru("card.in_stage")} 10 ${ru("card.sec")}`);
+      // повторное «пауза вкл.» с ушедшими часами — момент паузы прежний (повторное ревью № 4)
+      now.mockReturnValue(1_025_000);
+      pause(true);
+      env.document.dispatchEvent(new FakeEvent("pult:focus", { detail: {} }));
+      expect(sec()).toBe(`${ru("card.in_stage")} 10 ${ru("card.sec")}`);
+      // доска пришла через 30 с после первой — копится со своим временем
+      now.mockReturnValue(1_030_000);
+      env.sources[0]!.send(boardMsg([card("T", "pay")]));
+      // снятие через 40 с: доска «сейчас» 12:00:10 + 10 с с её прихода = 20 с, а не 10 (время снятия)
+      now.mockReturnValue(1_040_000);
+      pause(false);
+      expect(sec()).toBe(`${ru("card.in_stage")} 20 ${ru("card.sec")}`);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("П12, повторное ревью Х1 № 2: секунды «Идёт к нарушению» (часы `nowMs`) на паузе стоят и при перерисовке «Контроля» сменой вида", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(2_000_000);
+      const env = start({ actions: true });
+      withFetch(env);
+      const pause = pauseOf(env);
+      env.sources[0]!.send(msg);
+      const waitsText = () => $(env, "b-ctl").querySelectorAll(".wait-s").map((x) => x.textContent);
+      const before = waitsText();
+      expect(before.length).toBeGreaterThan(0);
+      pause(true);
+      now.mockReturnValue(2_030_000);
+      // перерисовка «Контроля» на паузе — сменой вида туда и обратно
+      $(env, "b-ctl").querySelector("[data-ctl-view='all']")!.click();
+      $(env, "b-ctl").querySelector("[data-ctl-view='prio']")!.click();
+      expect(waitsText()).toEqual(before);
+      // после снятия — часы идут: на 30 с больше
+      pause(false);
+      for (const f of env.intervals) f();
+      expect(waitsText()).not.toEqual(before);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("П12, повторное ревью Х1 № 7: начатый до паузы отзыв («Да, отозвать») пауза снимает — после снятия один щелчок не отзывает", () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    const pause = pauseOf(env);
+    env.sources[0]!.send(msg);
+    btn(env, "revoke")[0]!.click();
+    expect($(env, "b-ctl").textContent).toContain(ru("act.revoke.ask"));
+    pause(true);
+    pause(false);
+    expect($(env, "b-ctl").textContent).not.toContain(ru("act.revoke.ask"));
+    expect(btn(env, "revoke").filter((b) => b.dataset.second === "1")).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("П12, пункт 7 чата: «Собрать отчёт» на паузе неактивна, нажатие — без запроса; после снятия — запрос", () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    const pause = pauseOf(env);
+    env.sources[0]!.send(msg);
+    pause(true);
+    const rb = () => $(env, "b-log").querySelector("button[data-report]")!;
+    expect(rb().hasAttribute("disabled")).toBe(true);
+    expect($(env, "b-log").textContent).toContain(ru("act.paused"));
+    rb().click();
+    expect(calls.filter((u) => u.startsWith("/pult/report"))).toEqual([]);
+    pause(false);
+    expect(rb().hasAttribute("disabled")).toBe(false);
+    rb().click();
+    expect(calls.filter((u) => u.startsWith("/pult/report"))).toHaveLength(1);
+  });
+
+  it("П12, ревью Х1 № 9: «Поломки стенда» и «Авто» на паузе неактивны, нажатие — без запроса; после снятия — снова активны", () => {
+    const env = start({ faults: true });
+    const calls = withFetch(env);
+    const pause = pauseOf(env);
+    const buttons = () => $(env, "pult-faults").querySelectorAll("button");
+    expect(buttons().length).toBeGreaterThan(0);
+    const note = () => $(env, "pult-faults").querySelector(".faults-paused")!;
+    expect(note().hidden).toBe(true);
+    pause(true);
+    for (const b of buttons()) expect(b.hasAttribute("disabled"), b.textContent).toBe(true);
+    // пояснение «пауза — снимите паузу» — и у «Поломок» (повторное ревью Х1 № 1)
+    expect(note().hidden).toBe(false);
+    expect(note().textContent).toBe(ru("act.paused"));
+    for (const b of buttons()) b.click();
+    expect(calls).toEqual([]);
+    pause(false);
+    for (const b of buttons()) expect(b.hasAttribute("disabled"), b.textContent).toBe(false);
+    expect(note().hidden).toBe(true);
+    const en = start({ faults: true, lang: "en" });
+    pauseOf(en)(true);
+    expect($(en, "pult-faults").querySelector(".faults-paused")!.textContent).toBe(PULT["act.paused"].en);
   });
 
   it("Р-1542: конфликт звеньев (несколько корзин, одно намерение) — «Остановить» и «Отозвать» неактивны с пояснением, запросов нет; «Напомнить» по номеру запроса и «Передать на разбор» — доступны", () => {

@@ -173,6 +173,8 @@ main { padding: 10px 16px 24px; }
 .conn-ok .conn-icon { color: var(--ok); }
 .conn-wait .conn-icon { color: var(--muted); }
 .conn-lost { color: var(--alert); }
+/* П12: пометка паузы — своим цветом, не наследует «связь потеряна» (повторное ревью Х1 № 11). */
+.conn .conn-paused { color: var(--muted); font-weight: 600; }
 
 /* Ширина телефона: панели одна под другой, без горизонтальной прокрутки страницы. */
 @media (max-width: 960px) {
