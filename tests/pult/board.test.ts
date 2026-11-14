@@ -5,6 +5,7 @@ import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
 import { conditionsView } from "../../src/pult/conditions.js";
+import { cardLikeNumber } from "../support/card-like.js";
 import { evaluate, HIDDEN_RECORD } from "../../src/pult/engine.js";
 import { createControlFeed } from "../../src/dashboards/control-feed.js";
 import { clientAutoOf, createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
@@ -355,15 +356,8 @@ describe("лента пульта (П-2.1)", () => {
   });
 
   it("ревью П-5.1 № 5 (инвариант 1): номера карты нет ни в доске и «Причинах», ни в сообщении SSE пульта, ни в выгрузке ACC-1", async () => {
-    // Похожее на номер карты собирается во время теста (литералов номеров нет): префикс 9 — не схема карт, контрольная цифра — Луна.
-    const body = "9" + "3".repeat(14);
-    let sum = 0;
-    for (let i = 0; i < body.length; i++) {
-      let d = Number(body[body.length - 1 - i]);
-      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
-      sum += d;
-    }
-    const n = body + String((10 - (sum % 10)) % 10);
+    // Похожее на номер карты — общим генератором тестов (не номер и не секрет: `tests/support/card-like.ts`).
+    const n = cardLikeNumber("3");
     const f = fakeFeed();
     const sent: string[] = [];
     const p = createPultFeed(f.feed, { now: () => new Date("2026-11-12T12:00:00Z"), debounceMs: 0 });

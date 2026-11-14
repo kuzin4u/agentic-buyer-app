@@ -11,6 +11,7 @@ import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
 import { conditionsView } from "../../src/pult/conditions.js";
+import { cardLikeNumber } from "../support/card-like.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, SCOPE_NO_CART_TITLE, SCOPE_NO_CART_TODO, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
 import { DEMO_TESTS, type DemoLogEntry } from "agentic-ps-platform/stand";
@@ -248,31 +249,24 @@ describe("движок условий пульта (П-3.2б)", () => {
   });
 
   it("R41: последовательность, похожая на номер карты, во фразе или идентификаторе — «нарушено» по записи, без значения; сводно — и вне транзакций", () => {
-    // Номер строится в тесте и в файлах не пишется (CLAUDE.md, «Секреты»): первая цифра 9 — не схема карт, Луна — верная.
-    const body = "9" + "1".repeat(14);
-    let sum = 0;
-    for (let i = 0; i < body.length; i++) {
-      let d = Number(body[body.length - 1 - i]);
-      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
-      sum += d;
-    }
-    const pan = body + String((10 - (sum % 10)) % 10);
-    expect(hasCardNumber(`карта ${pan.slice(0, 4)} ${pan.slice(4, 8)} ${pan.slice(8, 12)} ${pan.slice(12)}`)).toBe(true);
+    // Похожее на номер карты — общим генератором тестов (не номер и не секрет: `tests/support/card-like.ts`).
+    const cardLike = cardLikeNumber("1");
+    expect(hasCardNumber(`карта ${cardLike.slice(0, 4)} ${cardLike.slice(4, 8)} ${cardLike.slice(8, 12)} ${cardLike.slice(12)}`)).toBe(true);
     // Ревью П-3.2б № 3: цифры рядом с номером не прячут его.
-    for (const s of [`${pan.slice(0, 4)} ${pan.slice(4, 8)} ${pan.slice(8, 12)} ${pan.slice(12)} 12:00`, `шаг 3 ${pan}`, `${pan}-01`, `7${pan}`])
+    for (const s of [`${cardLike.slice(0, 4)} ${cardLike.slice(4, 8)} ${cardLike.slice(8, 12)} ${cardLike.slice(12)} 12:00`, `шаг 3 ${cardLike}`, `${cardLike}-01`, `7${cardLike}`])
       expect(hasCardNumber(s), s).toBe(true);
     expect(hasCardNumber("1".repeat(12))).toBe(false);
     // Идентификатор поручения стенда — UUID: группы из одних цифр не дают ложного R41, даже если склейка проходит Луна.
-    const uuidDigits = `${pan.slice(0, 8)}-${pan.slice(8, 12)}-${pan.slice(12, 16)}-a000-000000000000`;
+    const uuidDigits = `${cardLike.slice(0, 8)}-${cardLike.slice(8, 12)}-${cardLike.slice(12, 16)}-a000-000000000000`;
     expect(hasCardNumber(`mnd_${uuidDigits}`)).toBe(false);
     // Хвост шестнадцатеричного идентификатора рядом с буквой — не номер.
-    expect(hasCardNumber(`OPKC-x${pan}`)).toBe(false);
+    expect(hasCardNumber(`OPKC-x${cardLike}`)).toBe(false);
     expect(hasCardNumber("сумма 340,00 ₽, заказ ORD-2026-11-11, 12:00:05")).toBe(false);
     let leak = 0;
     const items = purchase("A", {
       at: {
         pay: () => {
-          const x = step("order.shop_reply", { order_id: "OA" }, { phrase: { ru: `ответ ${pan}`, en: `reply ${pan}` } });
+          const x = step("order.shop_reply", { order_id: "OA" }, { phrase: { ru: `ответ ${cardLike}`, en: `reply ${cardLike}` } });
           leak = x.seq;
           return [x];
         },
@@ -281,8 +275,8 @@ describe("движок условий пульта (П-3.2б)", () => {
     const v = run(items);
     // Номер — в ответе продавца (шаг сюжета), не в записи агента: причина «не агент» (П-3.3, ревью № 6).
     expect(v.objs[0]!.conds.R41).toEqual({ status: "bad", seqs: [leak], cause: { kind: "rule", rule: "card_number_other" } });
-    expect(JSON.stringify(v)).not.toContain(pan);
-    const outside = purchase("Ab", { at: { end: () => [step("search.found", {}, { phrase: { ru: pan, en: pan } })] } });
+    expect(JSON.stringify(v)).not.toContain(cardLike);
+    const outside = purchase("Ab", { at: { end: () => [step("search.found", {}, { phrase: { ru: cardLike, en: cardLike } })] } });
     expect(run(outside).objs[0]!.conds.R41.status).toBe("ok");
     expect(run(outside).system.R41.status).toBe("bad");
   });
@@ -807,16 +801,7 @@ describe("привязка записей журнала стенда (П-3.2г)
 // отступления В7 (Н-03, Н-12), В8 (Н-08), Н-06 — R37 по пометке (STATUS «Открыто»). Субъект проверяется тестом, а не
 // выводится из текста правила.
 describe("кто нарушил / кто защитил (П-3.3)", () => {
-  const panDigits = (() => {
-    const body = "9" + "1".repeat(14);
-    let sum = 0;
-    for (let i = 0; i < body.length; i++) {
-      let d = Number(body[body.length - 1 - i]);
-      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
-      sum += d;
-    }
-    return body + String((10 - (sum % 10)) % 10);
-  })();
+  const cardLike1 = cardLikeNumber("1"); // общий генератор тестов (не номер и не секрет)
   const mk = (test: StandTest, ids: StandLogEntry["ids"]) => entry("MARKED", ids, { test });
   const req = (n: string) => event("confirmation.required", { confirmation_id: `Q${n}`, order_id: `O${n}` }, { stage: "confirmation" });
   type Want = Partial<Pick<Verdict, "kind" | "violator" | "protector" | "node" | "cond" | "guarantee">>;
@@ -1057,13 +1042,13 @@ describe("кто нарушил / кто защитил (П-3.3)", () => {
     { test: "Н-09 оплата другому продавцу — R26, агент", items: () => purchase("W9"), log: () => [mk("Н-09", { order_id: "OW9" })], want: [{ cond: "R26", kind: "violation", violator: "agent" }] },
     {
       test: "Н-10 данные карты в записи агента — R41, агент (на стенде не воспроизводится — инвариант 1)",
-      items: () => purchase("WA", { at: { done: () => [rec("console", "shop.call", { order_id: "OWA" }, { phrase: { ru: panDigits, en: panDigits } })] } }),
+      items: () => purchase("WA", { at: { done: () => [rec("console", "shop.call", { order_id: "OWA" }, { phrase: { ru: cardLike1, en: cardLike1 } })] } }),
       want: [{ cond: "R41", kind: "violation", violator: "agent" }],
     },
     {
       // Ревью П-3.3 № 6: номер в ответе продавца (шаг сюжета), а не в записи агента — нарушитель по источнику не определён.
       test: "R41: номер карты не в записи агента — нарушитель не определён",
-      items: () => purchase("WAb", { at: { done: () => [step("order.shop_reply", { order_id: "OWAb" }, { phrase: { ru: panDigits, en: panDigits } })] } }),
+      items: () => purchase("WAb", { at: { done: () => [step("order.shop_reply", { order_id: "OWAb" }, { phrase: { ru: cardLike1, en: cardLike1 } })] } }),
       want: [{ cond: "R41", kind: "violation", violator: "undetermined" }],
     },
     {
@@ -1596,17 +1581,8 @@ describe("«Причины» пульта на записях в форме ши
     return causesView(model, items, verdicts(ev, model, items), waits(model, items));
   };
   const intentOnly = (id: string, tail: () => Interpretation[]) => [step("intent.awaiting_signature", { mandate_id: id }, { stage: "mandate" }), event("mandate.signed", { mandate_id: id }), ...tail()];
-  /** Похожее на номер карты — собирается во время теста (литералов номеров в тестах нет): префикс 9 — не схема карт, Луна. */
-  const luhnNumber = () => {
-    const body = "9" + "2".repeat(14);
-    let sum = 0;
-    for (let i = 0; i < body.length; i++) {
-      let d = Number(body[body.length - 1 - i]);
-      if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
-      sum += d;
-    }
-    return body + String((10 - (sum % 10)) % 10);
-  };
+  /** Похожее на номер карты — общим генератором тестов (не номер и не секрет: `tests/support/card-like.ts`). */
+  const cardLike2 = () => cardLikeNumber("2");
 
   it("Н-01 (два «оплачено», R46): нарушение — правило Ж03, точка, почему, последствия узла У2, что делать; защит нет — «гарантий нет»", () => {
     const second = () => [event("operation.authorized", { op_ref: "PN1x", order_id: "ON1" }), step("outcome", { op_ref: "PN1x", order_id: "ON1", mandate_id: "CN1" })];
@@ -1740,7 +1716,7 @@ describe("«Причины» пульта на записях в форме ши
   });
 
   it("ревью П-5.1 № 5 (инвариант 1): запись с похожим на номер карты — «скрыта» в «что случилось» и в цепочке; номера нет в «Причинах»", () => {
-    const n = luhnNumber();
+    const n = cardLike2();
     const items = purchase("NK", { at: { end: () => [rec("console", "shop.call", { mandate_id: "CNK", order_id: "ONK" }, { phrase: { ru: `карта ${n}`, en: `card ${n}` } })] } });
     const cs = causesOf(items);
     const it41 = cs.flatMap((c) => c.items).find((x) => x.cond === "R41");
