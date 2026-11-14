@@ -5,10 +5,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { codeWords, interpret, LOCAL_STAND_EMULATED, STAGES, type InterpretEnv } from "../../src/dashboards/interpret.js";
-import { CODE_WORDS, PHRASES } from "../../src/dashboards/phrases.js";
+import { CODE_WORDS, CONTROL, PHRASES } from "../../src/dashboards/phrases.js";
+import { FAULT_OUTCOMES, faultOf, splitRuns } from "../../src/dashboards/control.js";
 import { rawInHumanText } from "./human-text.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { MESSAGES } from "../../src/demo/i18n.js";
+import { timeView } from "../../src/demo/money.js";
 import { parseWireItem, WIRE_SCENARIO_HIDDEN_STEPS, type DiagEntryWire, type DiagSnapshot, type WireItem, type WireMonitorEvent } from "../../src/dashboards/wire.js";
 
 const entry = (code: string, component: DiagEntryWire["component"], source: DiagEntryWire["source"], action: DiagEntryWire["action"]): DiagEntryWire => ({
@@ -62,7 +65,16 @@ const mon = (e: Partial<WireMonitorEvent> & Pick<WireMonitorEvent, "source" | "c
   event: { seq: ++seq, at, ids: {}, ...e },
 });
 const con = (kind: string, fields: Record<string, string> = {}): WireItem => ({ stream: "console", line: { seq: ++seq, at, kind, ...fields } });
-const step = (name: string, params: Record<string, string | number> = {}): WireItem => ({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+/** Шаг сюжета — через разбор линии (`parseWireItem`), как его видят экраны (Х5, повторное ревью П-4.1а № 1): переименование
+ *  поля у драйвера или выпадение его из перечня параметров шины тест ловит. */
+const step = (name: string, params: Record<string, string | number> = {}): WireItem => {
+  const w = parseWireItem({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+  if (w === undefined) throw new Error(`шаг ${name} не прошёл разбор линии`);
+  // Молча отброшенный ключ — тоже отказ (ревью Х5 № 1): поле, которого нет в перечне шины, экраны не увидят.
+  const kept = w.stream === "scenario" ? w.line.params : {};
+  for (const k of Object.keys(params)) if (!(k in kept)) throw new Error(`шаг ${name}: ключ ${k} отброшен разбором линии`);
+  return w;
+};
 const overreach = () => mon({ source: "agent_platform", cls: "decline", what: "POST /pao/v1/credentials", status: 403, code: "MANDATE_REVOKED" });
 
 describe("интерпретатор: квалификация по правилам", () => {
@@ -158,6 +170,11 @@ describe("интерпретатор: квалификация по правил
     const r = interpret(step("failed", { code: "REVOKED_NOT_ENFORCED", state: "AUTHORIZING" }), ENV);
     expect(r).toMatchObject({ kind: "error", stage: "payment" });
     expect(r.who).toMatchObject({ status: "unknown", side: ["agent"], verdict: "failure" });
+    // Сюжет 10: агент дошёл до выдачи по истёкшему поручению — сбой агента, код словами (ревью П-11.1д № 2).
+    const x = interpret(step("failed", { code: "EXPIRED_NOT_ENFORCED", state: "OFFERS" }), ENV);
+    expect(x).toMatchObject({ kind: "error" });
+    expect(x.who).toMatchObject({ side: ["agent"], verdict: "failure" });
+    for (const lang of ["ru", "en"] as const) expect(rawInHumanText(x.phrase[lang], lang), x.phrase[lang]).toBeUndefined();
   });
 
   it("«оплачено» — только у события с источником pao_event (инвариант 6, ревью № 8); без суммы и кода — без пустых скобок", () => {
@@ -233,9 +250,64 @@ describe("интерпретатор: квалификация по правил
     expect(interpret(step("failed", { code: "NO_INTENT", state: "INTENT_PENDING" }), ENV).stage).toBe("mandate");
     expect(interpret(step("failed", { code: "NO_CANDIDATE", state: "OFFERS" }), ENV).stage).toBe("search");
     expect(interpret(step("failed", { code: "UNKNOWN" }), ENV).stage).toBe("outcome");
-    expect(interpret(mon({ source: "pao_event", cls: "other", what: "agent.suspended" }), ENV).phrase).toEqual({ ru: "Событие Платформы: agent.suspended", en: "Platform event: agent.suspended" });
+    // Незнакомое событие ПАО (agent.suspended с П-11.1г знакомо — сюжет 9).
+    expect(interpret(mon({ source: "pao_event", cls: "other", what: "dispute.updated" }), ENV).phrase).toEqual({ ru: "Событие Платформы: dispute.updated", en: "Platform event: dispute.updated" });
+    const suspended = interpret(mon({ source: "pao_event", cls: "other", what: "agent.suspended" }), ENV);
+    expect(suspended).toMatchObject({ stage: "service", actor: "platform", kind: "norm", level: "key" });
+    expect(suspended.phrase.ru).toBe("Платформа: агент приостановлен оператором Системы");
     const pay = interpret(mon({ source: "agent_merchant", cls: "payment", what: "POST /v1/shops/{shop_id}/orders/{order_id}/payment", status: 200 }), ENV);
     expect(pay.phrase).toEqual({ ru: "Агент передал оплату заказа продавцу", en: "The agent sent payment for order to the merchant" });
+  });
+
+  it("П-4.1а: код теста задания — из поля шага `test`, только по форме Н-NN; латинская N, разметка и чужая строка — не берутся", () => {
+    expect(interpret(step("run.fault", { test: "Н-05" }), ENV).test).toBe("Н-05");
+    expect(interpret(step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE", status: 409 }), ENV)).toMatchObject({ test: "Н-08", who: { code: "MANDATE_SCOPE" } });
+    for (const bad of ["N-05", "<b>Н-05</b>", "Н-5", "Н-005", "П-01"]) expect(interpret(step("run.fault", { test: bad }), ENV).test, bad).toBeUndefined();
+    expect(interpret(step("run.fault"), ENV).test).toBeUndefined();
+  });
+
+  it("Х5 (ревью П-4.1а № 4): код исхода длиннее 64 знаков (`UNEXPECTED_` + код стенда) — усечён с пометкой «…», а не потерян; чужие знаки — кода нет", () => {
+    const long = "UNEXPECTED_" + "A".repeat(60);
+    const got = interpret(step("fault.unplayed", { test: "Н-07", code: long }), ENV).testCode;
+    expect(got).toBe(long.slice(0, 63) + "…");
+    expect(got!.length).toBe(64);
+    // составной — по частям, короткая часть — как есть
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: `PREP_FAILED,${long}` }), ENV).testCode).toBe(`PREP_FAILED,${long.slice(0, 63)}…`);
+    for (const bad of ["bad code", "<b>X</b>", "X-1", "A".repeat(257), "A".repeat(300)]) expect(interpret(step("fault.unplayed", { test: "Н-07", code: bad }), ENV).testCode, bad.slice(0, 20)).toBeUndefined();
+    // граница: 64 — как есть, 65 и 256 — усечены, 257 — кода нет (строкой выше; ревью Х5 № 8)
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(64) }), ENV).testCode).toBe("A".repeat(64));
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(65) }), ENV).testCode).toBe("A".repeat(63) + "…");
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(256) }), ENV).testCode).toBe("A".repeat(63) + "…");
+    expect(interpret(step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE" }), ENV).testCode).toBe("MANDATE_SCOPE");
+  });
+
+  it("П-4.1а, ревью № 1–3 (Р-1511): шаги драйвера в его форме → интерпретатор → прогон «ПР»: пять исходов, fault.sent и заметки — не исход, составной код — целиком", () => {
+    const runOf = (...steps: WireItem[]) => faultOf(splitRuns(steps.map((s) => interpret(s, ENV)))[0]!);
+    const head = (test: string) => [step("run.fault", { test }), step("fault.note.prepared", { test }), step("fault.sent", { test })];
+    expect(runOf(...head("Н-05"))).toEqual({ test: "Н-05" });
+    expect(runOf(...head("Н-01"), step("fault.marked", { test: "Н-01", order_id: "ORD-1" }))).toEqual({ test: "Н-01", outcome: "marked" });
+    expect(runOf(...head("Н-08"), step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE", status: 409 }))).toEqual({ test: "Н-08", outcome: "refused", code: "MANDATE_SCOPE" });
+    // Н-05 (П7 доп. 2): «записи стенда сделаны» — самостоятельный исход, после заметок о взводе и чтении каталога.
+    const n05 = [step("fault.note.armed", { test: "Н-05", shop_id: "SHOP-1" }), step("fault.note.catalog_read", { test: "Н-05", shop_id: "SHOP-1" }), step("fault.note.disarmed", { test: "Н-05", shop_id: "SHOP-1" })];
+    expect(runOf(step("run.fault", { test: "Н-05" }), ...n05, step("fault.recorded", { test: "Н-05", shop_id: "SHOP-1" }))).toEqual({ test: "Н-05", outcome: "recorded" });
+    expect(runOf(...head("Н-06"), step("fault.unplayed", { test: "Н-06", code: "PREP_FAILED,NO_RESPONSE" }))).toEqual({ test: "Н-06", outcome: "unplayed", code: "PREP_FAILED,NO_RESPONSE" });
+    expect(runOf(...head("Н-09"), step("fault.failed", { test: "Н-09", code: "NO_SECOND_MERCHANT" }))).toEqual({ test: "Н-09", outcome: "failed", code: "NO_SECOND_MERCHANT" });
+  });
+
+  it("П-4.1а (Р-1511): перечень исходов экрана = итоговые шаги драйвера нарушителя (`src/demo/faulty.ts`, кроме fault.sent и fault.note.*)", () => {
+    const src = readFileSync(join(import.meta.dirname, "../../src/demo/faulty.ts"), "utf8");
+    const steps = new Set([...src.matchAll(/"fault\.([a-z_]+)"/g)].map((m) => m[1]!));
+    steps.delete("sent");
+    expect([...steps].sort()).toEqual([...FAULT_OUTCOMES].sort());
+    // У каждого исхода — подпись ru и en.
+    for (const o of FAULT_OUTCOMES) for (const lang of ["ru", "en"] as const) expect(CONTROL[`fault.outcome.${o}`][lang].length, o).toBeGreaterThan(0);
+    // Х5 (повторное ревью П-4.1а № 2): вторая сверка — по ключам словаря драйвера `step.fault.*` (`src/demo/i18n.ts`):
+    // без `sent` (не исход) и без `note.*` (заметки — не исход, исключение явное) — тот же перечень.
+    for (const lang of ["ru", "en"] as const) {
+      const keys = Object.keys(MESSAGES[lang]).filter((k) => k.startsWith("step.fault.")).map((k) => k.slice("step.fault.".length));
+      const outcomes = keys.filter((k) => k !== "sent" && !k.startsWith("note."));
+      expect(outcomes.sort(), lang).toEqual([...FAULT_OUTCOMES].sort());
+    }
   });
 
   it("словарь покрывает все шаги сюжетов демо-стенда, кроме скрытых с линии (ревью № 14)", () => {
@@ -297,5 +369,35 @@ describe("К1.4а: текст человека без кодов и имён п�
     expect(interpret(con("offer.excluded", { reason: "REQUIRED", merchant: "MER-5501" }), ENV).training).toBeUndefined();
     expect(TRAINING_MERCHANTS).toMatchObject({ "MER-5501": ["REQUIRED", "BAD_"], "MER-3301": ["A5_"] });
     expect(Object.hasOwn(TRAINING_MERCHANTS, "MER-4401")).toBe(false);
+  });
+});
+
+// П-5.1а (Р-1524, Р-1525, Р-1536): срок поручения — только из шага `intent.created` (данные поручения ядра, П-11.5б окна Б),
+// через разбор линии (`parseWireItem`), как на шине; шаг `expiry.wait` (рассказ сюжета) признаком не служит.
+describe("срок поручения validTo (П-5.1а)", () => {
+  const ISO = "2026-11-13T09:30:00.000Z";
+  const line = (name: string, params: Record<string, unknown>) => parseWireItem({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+  it("intent.created с valid_to — validTo из машинного значения; expiry.wait и шаг без срока — без validTo", () => {
+    const created = line("intent.created", { mandate_id: "mnd_1", valid_to: timeView(ISO) });
+    expect(created).toBeDefined();
+    expect(interpret(created!, ENV).validTo).toBe(ISO);
+    const wait = line("expiry.wait", { mandate_id: "mnd_1", valid_to: timeView(ISO) });
+    expect(interpret(wait!, ENV).validTo).toBeUndefined();
+    expect(interpret(line("intent.created", { mandate_id: "mnd_1" })!, ENV).validTo).toBeUndefined();
+    // Строкой (не по форме TimeView) — запись отбрасывается разбором линии целиком.
+    expect(line("intent.created", { mandate_id: "mnd_1", valid_to: ISO })).toBeUndefined();
+  });
+});
+
+describe("метод обращения pao.call (Р-1541)", () => {
+  const line = (kind: string, method: string) => parseWireItem({ stream: "console", line: { seq: ++seq, at, kind, method } });
+  it("метод — только у записи журнала агента pao.call и только по форме", () => {
+    const ok = line("pao.call", "POST /pao/v1/credentials");
+    expect(ok).toBeDefined();
+    expect(interpret(ok!, ENV).method).toBe("POST /pao/v1/credentials");
+    // Не по форме — без метода (если разбор линии вообще пропустит запись).
+    const odd = line("pao.call", "POST /pao/v1/credentials?x=<b>");
+    if (odd) expect(interpret(odd, ENV).method).toBeUndefined();
+    expect(interpret(line("agent.refused", "POST /pao/v1/credentials")!, ENV).method).toBeUndefined();
   });
 });

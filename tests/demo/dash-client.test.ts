@@ -286,5 +286,24 @@ describe("скрипт экрана «Контроль» (К2.3б)", () => {
       s.error();
       expect(s.conn.className).toBe("conn conn-lost");
     });
+
+    it(`${lang}: П-4.1а — прогон «ПР»: «Нарушитель (ПР) — Н-xx» вместо «паспорта нет», исход с кодом, до исхода — «идёт»; без кнопок; данные — текстом`, () => {
+      const s = controlScreen(lang);
+      const base = { name: "fault", startedAt: "2026-11-09T12:00:00.000Z", closed: false, early: { next: false, prev: false } };
+      s.send([{ ...base, key: 40, fault: { test: "Н-05" } }, { ...base, key: 50, early: { next: false, prev: true }, fault: { test: "<b>Н-08</b>", outcome: "refused", code: "MANDATE_SCOPE" } }]);
+      const [refused, going] = s.box.children; // новые — сверху
+      expect(going!.text()).toContain(`${CONTROL["fault.title"][lang]} — Н-05`);
+      expect(going!.text()).toContain(CONTROL["fault.outcome.none"][lang]);
+      expect(going!.text()).not.toContain(CONTROL["no.passport"][lang]);
+      expect(refused!.text()).toContain(`${CONTROL["fault.title"][lang]} — <b>Н-08</b>`);
+      expect(refused!.text()).toContain(`${CONTROL["fault.outcome.refused"][lang]} — MANDATE_SCOPE`);
+      for (const c of [refused!, going!]) expect(c.all().some((n) => n.tag === "button" || n.tag === "b")).toBe(false);
+      // Пометка раннего запуска — и у прогона «ПР» (ревью П-4.1а № 5); без кода теста — словами, не «?» (№ 6).
+      expect(refused!.text()).toContain(CONTROL["early.prev"][lang]);
+      expect(going!.text()).not.toContain(CONTROL["early.prev"][lang]);
+      s.send([{ ...base, key: 60, fault: { outcome: "recorded" } }]);
+      expect(s.box.children[0]!.text()).toContain(`${CONTROL["fault.title"][lang]} — ${CONTROL["fault.test.missing"][lang]}`);
+      expect(s.box.children[0]!.text()).toContain(CONTROL["fault.outcome.recorded"][lang]);
+    });
   }
 });

@@ -4,13 +4,16 @@
 import { interpret, type Interpretation, type InterpretEnv, type Role } from "./interpret.js";
 import type { DashboardSource, SourceStatus } from "./source.js";
 import { SourceError } from "./source.js";
-import type { DiagSnapshot, WireItem } from "./wire.js";
+import type { DiagSnapshot, WireItem, WireStandLine } from "./wire.js";
 
 /** Состояние снимка реестров: ждём, есть, не получен (тогда коды — «неизвестно», код ошибки адаптера — для экрана). */
 export type DiagState = { readonly state: "loading" } | { readonly state: "ready" } | { readonly state: "failed"; readonly code: string };
 
+/** `stand` — запись журнала сбоев и действий стенда (П-11.2а, Р-1514): не интерпретация и не действие участника. В `interpret`
+ *  не идёт; «Интерпретация» и «Контроль» её не показывают и в прогон не берут, её собирает движок пульта (`standLog`). */
 export type FeedEvent =
   | { readonly type: "item"; readonly item: Interpretation }
+  | { readonly type: "stand"; readonly line: WireStandLine }
   | { readonly type: "reset" }
   | { readonly type: "status"; readonly status: SourceStatus }
   | { readonly type: "diag"; readonly diag: DiagState };
@@ -18,6 +21,9 @@ export type FeedEvent =
 export interface InterpretFeed {
   /** Накопленные интерпретации по возрастанию seq. */
   list(): readonly Interpretation[];
+  /** Накопленные записи журнала стенда по возрастанию номера шины (тот же предел, что у интерпретаций); после `reset` — пусто.
+   *  Необязателен, как `subscribeStand` у источника: лента без журнала стенда (песочница) его не даёт. */
+  standLog?(): readonly WireStandLine[];
   status(): SourceStatus;
   diag(): DiagState;
   /** Вернуть — отписка. Слушатель получает только новые события; накопленное — через list(). */
@@ -99,9 +105,23 @@ export function createInterpretFeed(source: DashboardSource, o: InterpretFeedOpt
   };
   loadDiag();
 
+  // Журнал стенда снимку реестров не подчиняется (не интерпретируется) — сразу, без очереди.
+  const stand: WireStandLine[] = [];
+  const addStand = (line: WireStandLine) => {
+    let i = stand.length;
+    while (i > 0 && stand[i - 1]!.seq > line.seq) i--;
+    // Повтор номера — та же запись: движок не должен счесть сбой дважды, даже если источник повторы не отсёк (ревью № 7).
+    if (i > 0 && stand[i - 1]!.seq === line.seq) return;
+    if (stand.length >= limit && i === 0) return;
+    stand.splice(i, 0, line);
+    if (stand.length > limit) stand.splice(0, stand.length - limit);
+    emit({ type: "stand", line });
+  };
+
   const offStatus = source.onStatus((s) => {
     if (s === "reset") {
       items.length = 0;
+      stand.length = 0;
       queue = [];
       emit({ type: "reset" });
       loadDiag();
@@ -111,9 +131,11 @@ export function createInterpretFeed(source: DashboardSource, o: InterpretFeedOpt
     emit({ type: "status", status: s });
   });
   const offItems = source.subscribe(add);
+  const offStand = source.subscribeStand?.((s) => addStand(s.line)) ?? (() => undefined);
 
   return {
     list: () => [...items],
+    standLog: () => [...stand],
     status: () => status,
     diag: () => diag,
     subscribe(l) {
@@ -122,6 +144,7 @@ export function createInterpretFeed(source: DashboardSource, o: InterpretFeedOpt
     },
     async close() {
       offItems();
+      offStand();
       offStatus();
       listeners.clear();
       await source.close();

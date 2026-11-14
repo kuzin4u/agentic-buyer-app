@@ -25,7 +25,8 @@ export default tseslint.config(
     // Р-1246 п. 3: экраны DEMO-2 читают только шину через адаптер источника — код агента, Платформы, ядра и стенда не
     // импортируют (и типы тоже: формат линии — свой, src/dashboards/wire.ts). Основная защита — тест границы с обходом
     // графа (tests/dashboards/boundary.test.ts); это правило — ранний сигнал в редакторе.
-    files: ["src/dashboards/**/*.{ts,mts,cts,tsx,js}"],
+    // Пульт (`src/pult`, П-1) — под той же границей: только адаптер источника и формат линии `src/dashboards`.
+    files: ["src/dashboards/**/*.{ts,mts,cts,tsx,js}", "src/pult/**/*.{ts,mts,cts,tsx,js}"],
     rules: {
       "no-restricted-imports": [
         "error",

@@ -118,6 +118,36 @@ describe("лента «Контроля» (К2.3б)", () => {
     expect(s.c.markdown("en")).toContain("no passport — the scenario is not checked");
   });
 
+  it("П-4.1а: прогон драйвера нарушителя (run.fault) — «Нарушитель (ПР) — Н-xx», исход по последнему шагу исхода (fault.sent — не исход), до исхода — «идёт»; в выгрузке ACC-1", () => {
+    const s = setup();
+    const t = (r: Interpretation, test = "Н-05"): Interpretation => ({ ...r, test });
+    s.add([t(rec(10, { stream: "scenario", ref: "run.fault" }, T0)), t(rec(11, { stream: "scenario", ref: "fault.sent" }, T0 + 1))]);
+    s.at(T0 + 2);
+    // Исхода ещё нет: fault.sent — промежуточный шаг; вердикта нет — паспорта нет.
+    expect(s.c.runs()[0]).toMatchObject({ key: 10, name: "fault", fault: { test: "Н-05" } });
+    expect(s.c.runs()[0]!.fault!.outcome).toBeUndefined();
+    expect(s.c.markdown("ru")).toContain("| Нарушитель (ПР) — Н-05 |");
+    expect(s.c.markdown("ru")).toContain("идёт — исхода ещё нет");
+    expect(s.vote(10, "accepted")).toEqual({ ok: false, code: "NO_PASSPORT" });
+    // Два исхода подряд — последний; исход чужого теста в прогоне не учитывается.
+    s.add([
+      { ...t(rec(12, { stream: "scenario", ref: "fault.failed" }, T0 + 3)), testCode: "NO_SECOND_MERCHANT" },
+      { ...t(rec(13, { stream: "scenario", ref: "fault.refused" }, T0 + 4)), testCode: "MANDATE_SCOPE" },
+      t(rec(14, { stream: "scenario", ref: "fault.marked" }, T0 + 5), "Н-01"),
+    ]);
+    s.at(T0 + 6);
+    expect(s.c.runs()[0]!.fault).toEqual({ test: "Н-05", outcome: "refused", code: "MANDATE_SCOPE" });
+    // В Markdown «_» экранирован (П-4.3, ревью К2.3в № 2) — в акте отрисуется как MANDATE_SCOPE.
+    expect(s.c.markdown("ru")).toContain("| остановлено защитой — MANDATE\\_SCOPE |");
+    expect(s.c.markdown("en")).toContain("| Violator (ПР) — Н-05 |");
+    expect(s.c.markdown("en")).toContain("| stopped by a safeguard — MANDATE\\_SCOPE |");
+    // «Совершено и помечено» — без кода; обычная метка без драйвера — без `fault`.
+    s.add([t(rec(15, { stream: "scenario", ref: "fault.marked" }, T0 + 7)), rec(20, { stream: "scenario", ref: "run.unknown" }, T0 + 8)]);
+    s.at(T0 + 9);
+    expect(s.c.runs()[0]!.fault).toEqual({ test: "Н-05", outcome: "marked" });
+    expect(s.c.runs()[1]!.fault).toBeUndefined();
+  });
+
   it("выгрузка ACC-1: таблица Markdown на ru и en — сюжет, итог, «принято N из N», вердикт, не принятые пункты словами без кодов", () => {
     const s = setup();
     const list = run1(100, T0).filter((r) => r.ref !== "mandate.signed");
@@ -211,6 +241,73 @@ describe("лента «Контроля» (К2.3б)", () => {
     expect(row).not.toMatch(/<[a-z/]/i);
     // Имя — в ячейке целиком, экранированным (повторное ревью К2.3в № 1).
     expect(row).toContain("| a\\\\\\|b&lt;i&gt;x&lt;/i&gt; z |");
+  });
+
+  it("П-4.3 (ревью К2.3в № 2): прочая разметка Markdown — `код`, [ссылка](адрес), *выделение*, _выделение_ — текстом", () => {
+    expect(markdownCell("`x`")).toBe("\\`x\\`");
+    expect(markdownCell("[a](b)")).toBe("\\[a\\](b)");
+    expect(markdownCell("*a* _b_")).toBe("\\*a\\* \\_b\\_");
+    // Косая — первой: «\*» из входа не становится разметкой («\\» + «\*»).
+    expect(markdownCell("\\*")).toBe("\\\\\\*");
+    const s = setup();
+    s.add([rec(10, { stream: "scenario", ref: "run.[x](http://e)*y*_z_`w`" }, T0)]);
+    s.at(T0 + 3_600_000);
+    const row = s.c.markdown("ru").split("\n").find((l) => l.startsWith("| 10 "))!;
+    expect(row).toContain("| \\[x\\](http://e)\\*y\\*\\_z\\_\\`w\\` |");
+    expect(row).not.toMatch(/(^|[^\\])[[\]*_`]/);
+  });
+
+  it("П-4.3 (ревью К2.3б № 6): срок прогона без паспорта — от последней записи, а не от метки; пометка раннего запуска — по нему", () => {
+    // Прогон «ПР» длиной 20 с, срок — последняя запись + W (5 с) = T0 + 25 с. Следующий сюжет в T0 + 23 с — до срока
+    // (пометки), в T0 + 26 с — после (без пометок). От метки срок (T0 + 5 с) прошёл бы в обоих случаях.
+    const fault = [rec(10, { stream: "scenario", ref: "run.fault" }, T0), rec(11, { stream: "scenario", ref: "fault.sent" }, T0 + 20_000)];
+    const early = setup();
+    early.add([...fault, ...run1(100, T0 + 23_000)]);
+    early.at(T0 + 3_600_000);
+    expect(early.c.runs().map((r) => r.early)).toEqual([
+      { next: true, prev: false },
+      { next: false, prev: true },
+    ]);
+    const late = setup();
+    late.add([...fault, ...run1(100, T0 + 26_000)]);
+    late.at(T0 + 3_600_000);
+    expect(late.c.runs().map((r) => r.early)).toEqual([
+      { next: false, prev: false },
+      { next: false, prev: false },
+    ]);
+    // Срок у прогона без паспорта ещё идёт, пока идут его записи.
+    const going = setup();
+    going.add(fault);
+    going.at(T0 + 21_000);
+    expect(going.c.runs()[0]!.closed).toBe(false);
+    going.at(T0 + 25_000);
+    expect(going.c.runs()[0]!.closed).toBe(true);
+  });
+
+  it("П-4.3 (Р-1507, Р-1512): прогон при эмуляторе клиента «Авто» — пометка в акте ACC-1 (ru/en); шаг client.auto_* в прогон не входит", () => {
+    const s = setup();
+    s.add([rec(1, { stream: "scenario", ref: "client.auto_on" }, T0), ...run1(100, T0 + 10), rec(190, { stream: "scenario", ref: "client.auto_off" }, T0 + 60_000), ...run1(200, T0 + 120_000)]);
+    s.at(T0 + 3_600_000);
+    const [a, b] = s.c.runs();
+    expect([a!.clientAuto, b!.clientAuto]).toEqual([true, undefined]);
+    // client.auto_off после прогона a его срок не сдвигает.
+    // Срок — по последней записи, кроме событий Платформы (они в отсчёт не входят).
+    const lastA = Math.max(...run1(100, T0 + 10).filter((r) => r.source !== "pao_event").map((r) => Date.parse(r.at)));
+    expect(a!.result!.deadline).toBe(new Date(lastA + W).toISOString());
+    const row = (lang: "ru" | "en", key: number) => s.c.markdown(lang).split("\n").find((l) => l.startsWith(`| ${key} `))!;
+    expect(row("ru", 100)).toContain("эмулятор клиента: авто");
+    expect(row("en", 100)).toContain("client emulator: auto");
+    expect(row("ru", 200)).not.toContain("эмулятор клиента");
+    // Ревью П-4.3 № 7: пометка и у строки прогона «ПР», и у строки «паспорта нет».
+    const t = setup();
+    t.add([
+      rec(1, { stream: "scenario", ref: "client.auto_on" }, T0),
+      { ...rec(10, { stream: "scenario", ref: "run.fault" }, T0 + 1), test: "Н-05" },
+      rec(20, { stream: "scenario", ref: "run.unknown" }, T0 + 60_000),
+    ]);
+    t.at(T0 + 3_600_000);
+    const md = t.c.markdown("ru").split("\n");
+    for (const key of [10, 20]) expect(md.find((l) => l.startsWith(`| ${key} `)), String(key)).toContain("эмулятор клиента: авто");
   });
 
   it("слушатель получает прогоны при изменении, без повторов одного и того же", () => {

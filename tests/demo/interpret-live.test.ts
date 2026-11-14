@@ -5,6 +5,8 @@ import { interpret, LOCAL_STAND_EMULATED, type InterpretEnv, type Interpretation
 import { parseDiagSnapshot } from "../../src/dashboards/wire.js";
 import { control, DEFAULT_WAIT_MS, splitRuns } from "../../src/dashboards/control.js";
 import { matches } from "../../src/dashboards/passports.js";
+import { evaluate } from "../../src/pult/engine.js";
+import { buildTxModel } from "../../src/pult/tx.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
 import { rawInHumanText } from "../dashboards/human-text.js";
@@ -166,5 +168,96 @@ describe("интерпретатор на пяти сюжетах приёмки
     const k = key(2);
     expect(k.find((r) => r.who?.code === "REQUIRED")).toMatchObject({ training: true, kind: "error" });
     expect(k.filter((r) => r.kind === "norm").every((r) => r.training === undefined)).toBe(true);
+  });
+
+  it("П-1.2: модель транзакций пульта на пяти сюжетах — звенья связаны по идентификаторам, итог — по событию Платформы", () => {
+    const one = (no: ScenarioNo) => buildTxModel(runs.get(no)!);
+    // Сюжет 1 — только поручение, подписанное человеком (событие mandate.signed); покупки нет.
+    const m1 = one(1);
+    expect(m1.txs).toEqual([]);
+    expect(m1.mandates).toEqual([expect.objectContaining({ status: "active", txIds: [] })]);
+    // Сюжеты 2–4 — по одной транзакции: корзина ↔ заказ ↔ операция, поручение-намерение — по intent_id.
+    for (const no of [2, 3, 4] as const) {
+      const m = one(no);
+      expect(m.txs, `сюжет ${no}`).toHaveLength(1);
+      const t = m.txs[0]!;
+      expect(t.cartMandateId, `сюжет ${no}`).toBeDefined();
+      expect(t.intentId, `сюжет ${no}`).toBe(m.mandates[0]!.id);
+      expect(m.mandates[0]!.txIds).toEqual([t.id]);
+      expect(t.orderIds, `сюжет ${no}`).toHaveLength(1);
+      expect(t.opRefs, `сюжет ${no}`).toHaveLength(1);
+      // Событие Платформы об операции — в этой транзакции. В сюжетах 2 и 4 операцию прочитало ядро — у события есть номер
+      // заказа (связка «операция → заказ» на шине, Р-1442); в сюжете 3 ядро операцию отказа не отдаёт (расхождение № 1) —
+      // с заказом и корзиной событие связывает шаг limit.declined.
+      const ev = runs.get(no)!.find((r) => r.source === "pao_event" && r.ref.startsWith("operation."));
+      expect(ev && t.seqs.includes(ev.seq), `сюжет ${no}`).toBe(true);
+      if (no !== 3) expect(ev!.ids?.order_id, `сюжет ${no}`).toBe(t.orderIds[0]);
+      // Шаг итога несёт поручение корзины — связка «операция → корзина» без номера от витрины (Р-1444).
+      const fin = runs.get(no)!.find((r) => r.ref === (no === 3 ? "limit.declined" : "outcome"));
+      expect(fin?.ids?.mandate_id, `сюжет ${no}`).toBe(t.cartMandateId);
+      expect(t.linkConflict, `сюжет ${no}`).toBeUndefined();
+    }
+    expect(one(2).txs[0]!.outcome?.kind).toBe("paid");
+    expect(one(3).txs[0]!.outcome).toMatchObject({ kind: "declined", code: "LIMIT_EXCEEDED" });
+    const t4 = one(4).txs[0]!;
+    expect(t4.confirmationIds.length).toBeGreaterThan(0);
+    expect(t4.outcome?.kind).toBe("paid");
+    // Сюжет 5 — поручение отозвано клиентом в банке; покупки нет.
+    const m5 = one(5);
+    expect(m5.txs).toEqual([]);
+    expect(m5.mandates).toEqual([expect.objectContaining({ status: "revoked" })]);
+    // Все записи с заказом, операцией или подтверждением — в одной и той же транзакции прогона (ревью П-1.2 № 5); в сюжетах
+    // 1 и 5 таких записей нет.
+    for (const no of [1, 2, 3, 4, 5] as const) {
+      const m = one(no);
+      const linked = runs.get(no)!.filter((r) => r.ids?.order_id || r.ids?.op_ref || r.ids?.confirmation_id);
+      if (no === 1 || no === 5) {
+        expect(linked, `сюжет ${no}`).toEqual([]);
+        continue;
+      }
+      const own = new Set(m.txs[0]!.seqs);
+      for (const r of linked) expect(own.has(r.seq), `сюжет ${no}, ${r.ref}`).toBe(true);
+    }
+  });
+
+  it("П-3.2б: движок условий на пяти сюжетах с настоящим агентом — нарушений нет; соблюдено, не применяется и сработало — по записям шины", () => {
+    const view = (no: ScenarioNo) => evaluate(buildTxModel(runs.get(no)!), runs.get(no)!);
+    const st = (no: ScenarioNo, kind: "tx" | "mandate") => {
+      const o = view(no).objs.find((x) => x.kind === kind)!;
+      return Object.fromEntries(Object.entries(o.conds).map(([k, v]) => [k, v.status]));
+    };
+    for (const no of [1, 2, 3, 4, 5] as const) {
+      const v = view(no);
+      for (const [c, res] of Object.entries(v.system)) expect(res.status, `сюжет ${no}, ${c}`).not.toBe("bad");
+      expect(v.system.R41.status, `сюжет ${no}`).toBe("ok");
+    }
+    // Сюжет 1 — поручение подписал клиент в банке.
+    expect(st(1, "mandate")).toMatchObject({ R08: "ok", R37: "na", R18: "na" });
+    // Сюжет 2 — покупка ниже порога: подпись поручения и корзины клиентом до оплаты, оплата той витрине, одно «оплачено».
+    expect(st(2, "tx")).toMatchObject({ R08: "ok", R09: "ok", R18: "ok", R21: "na", R26: "ok", R28: "ok", R30: "ok", R37: "na", R46: "ok", R17: "none" });
+    // Сюжет 3 — отказ банка по лимиту клиента: итог по событию, «оплачено» нет; защита — LIMIT_EXCEEDED клиента.
+    expect(st(3, "tx")).toMatchObject({ R08: "ok", R09: "ok", R18: "ok", R28: "ok", R30: "na", R46: "na" });
+    expect(view(3).guarantees.map((g) => g.kind)).toContain("limit_client");
+    // Сюжет 4 — выше порога: подтверждение клиентом кодом УПК до оплаты.
+    expect(st(4, "tx")).toMatchObject({ R08: "ok", R18: "ok", R21: "ok", R28: "ok", R30: "ok", R46: "ok" });
+    // Сюжет 5 — отзыв клиентом: агент остановился сам — R37 соблюдено, защита «отзыв».
+    expect(st(5, "mandate")).toMatchObject({ R08: "ok", R37: "ok" });
+    // Ветка «нарушено» R37 держится на записи журнала агента «узнал об отзыве» с номером поручения — она приходит на
+    // настоящую шину в этой форме и входит в доказательства R37 (повторное ревью П-3.2б № 7).
+    const knew = runs.get(5)!.find((r) => r.stream === "console" && r.ref === "mandate.revoked");
+    expect(knew?.ids?.mandate_id).toBe(view(5).objs.find((o) => o.kind === "mandate")!.id);
+    expect(view(5).objs.find((o) => o.kind === "mandate")!.conds.R37.seqs).toContain(knew!.seq);
+    expect(view(5).guarantees.map((g) => g.kind)).toContain("revoke");
+    // П-5.1 (ревью П-3.2б № 4; Р-1519) на настоящей шине: одна остановка — одна защита, защитник — по источнику.
+    for (const no of [3, 5] as const) {
+      const keys = view(no).guarantees.map((g) => `${g.kind}|${g.obj ?? ""}`);
+      expect(new Set(keys).size, `сюжет ${no}`).toBe(keys.length);
+    }
+    expect(view(3).guarantees.find((g) => g.kind === "limit_client")!.protector).toBe("bank");
+    const rv = view(5).guarantees.find((g) => g.kind === "revoke")!;
+    // Задание v1.0 (П-08) и Р-1522: событие отзыва — уведомление, агент остановился сам по своему журналу — «защитил агент»;
+    // точно, не «агент или Платформа» (ревью П-5.1 № 7).
+    expect(rv.protector).toBe("agent");
+    expect(rv.seqs.some((s) => runs.get(5)!.find((r) => r.seq === s)?.stream !== "scenario")).toBe(true);
   });
 });

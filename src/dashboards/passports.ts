@@ -2,7 +2,8 @@
 // операции, агента и его ключа, ожидаемая квалификация интерпретатора. Паспорт — данные: что должно быть в ленте
 // интерпретаций сюжета («ожидается») и чего быть не должно («запрещено»). Сверку сюжета целиком делает контролёр (К2.2);
 // здесь — только сопоставление одной интерпретации с одним признаком. Паспорта переиспользуются в П-11 пульта — пять из
-// 25 тестов приёмки (Р-1344). Код агента и Платформы не импортируется (Р-1246 п. 3): факты — только из интерпретаций.
+// 25 тестов приёмки (Р-1344); паспорта 6–10 — правильные тесты задания П-03, П-04, П-06, П-07, П-09 (П-11.1, Р-1457).
+// Код агента и Платформы не импортируется (Р-1246 п. 3): факты — только из интерпретаций.
 import type { Interpretation, Kind, Role, Verdict } from "./interpret.js";
 import type { DiagSource, WireLang, WireMonitorEvent } from "./wire.js";
 
@@ -16,6 +17,12 @@ export const SCENARIOS = [
   { no: 3, name: "limit" },
   { no: 4, name: "upk" },
   { no: 5, name: "revoke" },
+  // Сюжеты 6–10 — правильные тесты задания на тестирование пульта (П-11.1, Р-1457).
+  { no: 6, name: "reject" },
+  { no: 7, name: "unconfirmed" },
+  { no: 8, name: "scope" },
+  { no: 9, name: "suspended" },
+  { no: 10, name: "expired" },
 ] as const;
 export type ScenarioNo = (typeof SCENARIOS)[number]["no"];
 
@@ -292,6 +299,176 @@ const RAW: readonly Passport[] = [
       ...COMMON_FORBID,
       ...NO_PAID,
       { id: "no-sign", what: t("Новых подписей нет: отзывается поручение сюжета 1", "No new signatures: the mandate of scenario 1 is revoked"), match: { stream: "monitor", ref: SIGN } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-03 задания (П-11.1а, Р-1459 В8): отказ подписи корзины в банке; отказ на карточке — ветка сюжета 2.
+    no: 6,
+    name: "reject",
+    title: t("6. Клиент отказался от корзины", "6. The client refused the cart"),
+    outcome: { kind: "stopped", text: t("Клиент отклонил корзину в банке; агент остановился сам — без заказа и оплаты", "The client declined the cart in the bank; the agent stopped itself — no order, no payment") },
+    statuses: { mandate: t("корзина отклонена клиентом, поручение использовано", "cart declined by the client, mandate used"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      step("ask", "reject.ask", t("Сюжет просит клиента отклонить корзину в банке", "The scenario asks the client to decline the cart in the bank")),
+      // Отказ подписи — тот же маршрут решения клиента в банке, что и подпись: по записи монитора «отклонить» от «подписать»
+      // не отличить; что решение — отказ, показывают событие «корзина отклонена», шаг остановки и запрет «корзина подписана»
+      // (ревью П-11.1а № 5).
+      { id: "client-decides", what: t("Решение по корзине — одно, принимает клиент в банке, не агент", "One decision on the cart, made by the client in the bank, not the agent"), match: { ...BY_BANK, ref: SIGN }, times: 1 },
+      event("rejected-event", "mandate.rejected", t("Платформа: клиент отклонил корзину", "Platform: the client declined the cart")),
+      step("rejected", "cart.rejected", t("Агент остановился сам: корзина не подписана", "The agent stopped itself: the cart is not signed"), { code: "MANDATE_NOT_ACTIVE" }),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-cart-signed", what: t("Корзину никто не подписал", "Nobody signed the cart"), match: { stream: "scenario", ref: "cart.signed" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-04 задания (П-11.1б, Р-1459 В6): «Отклонить» на странице УПК или конец срока запроса — оба исхода принимаются.
+    // Платформа сообщает их разными событиями (confirmation.rejected / confirmation.expired) — признак «одно из двух» по
+    // событию не задаётся, поэтому исход — по шагу остановки с кодом ядра, а «подтверждено» и «оплачено» запрещены.
+    no: 7,
+    name: "unconfirmed",
+    title: t("7. Клиент не подтвердил покупку", "7. The client did not confirm the purchase"),
+    outcome: { kind: "stopped", text: t("Клиент не подтвердил покупку выше порога; агент остановился сам — оплаты нет", "The client did not confirm the purchase above the threshold; the agent stopped itself — no payment") },
+    statuses: { mandate: t("корзина подписана, покупка не подтверждена", "cart signed, purchase not confirmed"), operation: t("операция не авторизована", "operation not authorized"), ...ACTIVE },
+    expect: [
+      step("qty", "upk.qty", t("Сумма выше порога подтверждения", "The amount is above the confirmation threshold")),
+      clientSigns("both"),
+      { id: "one-order", what: t("Один заказ на всю сумму — покупка не дробится", "One order for the whole amount — the purchase is not split"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" }, times: 1 },
+      event("required", "confirmation.required", t("Платформа: нужно подтверждение человека", "Platform: human confirmation required"), { kind: "norm" }),
+      step("upk-required", "upk.required", t("Банк просит клиента подтвердить на странице УПК", "The bank asks the client to confirm on the UPK page")),
+      step("ask", "unconfirmed.ask", t("Сюжет просит клиента не подтверждать", "The scenario asks the client not to confirm")),
+      step(
+        "declined",
+        "upk.declined",
+        t("Агент остановился сам: покупка не подтверждена — отклонена или срок истёк", "The agent stopped itself: the purchase was not confirmed — declined or expired"),
+        { code: ["CONFIRMATION_REJECTED", "CONFIRMATION_EXPIRED"] },
+      ),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-approved", what: t("Подтверждения покупки не было", "The purchase was not confirmed"), match: { stream: "monitor", ref: "confirmation.approved" } },
+      { id: "no-split", what: t("Попытки разбить покупку под порог нет", "No attempt to split the purchase below the threshold"), match: { code: "SPLIT_WINDOW" } },
+    ],
+  },
+  {
+    // П-06 задания (П-11.1в, Р-1459 В5): защищает агент — ядро проверяет продавца раньше Платформы. В таблице
+    // тестирования: «исход сходится, защитил агент; защита Платформы MANDATE_SCOPE — в П-11.3».
+    no: 8,
+    name: "scope",
+    title: t("8. Продавец вне поручения — агент отказался сам", "8. Merchant outside the mandate — the agent refused on its own"),
+    outcome: { kind: "stopped", text: t("Агент сам отказался от корзины у продавца вне поручения — до Платформы, заказа и оплаты", "The agent itself refused a cart from a merchant outside the mandate — before the Platform, order and payment") },
+    statuses: { mandate: t("поручение подписано, корзины нет", "mandate signed, no cart"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("created", "intent.created", t("Агент просит поручение (С-01)", "The agent asks for a mandate (С-01)"), { situation: "С-01" }),
+      clientSigns("mandate"),
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      {
+        id: "agent-refused",
+        what: t("Журнал агента: агент сам отказался — продавец вне поручения", "Agent journal: the agent refused itself — merchant outside the mandate"),
+        match: { stream: "console", ref: "agent.refused", code: "MANDATE_OUT_OF_SCOPE" },
+      },
+      step("refused", "scope.refused", t("Покупка остановлена агентом до запроса корзины", "Purchase stopped by the agent before the cart request"), { code: "MANDATE_OUT_OF_SCOPE" }),
+      // Защитил агент, а не сверка у Платформы (ревью П-11.1в № 2): сверка поручения — одна, до поиска. Тот же код ядро даёт,
+      // если Платформа не подтвердила поручение сверкой на шаге корзины, — тогда сверок было бы две. Порядок «после согласия
+      // к Платформе не обращался» проверяет тест (tests/demo/more-scenarios.test.ts).
+      {
+        id: "one-verify",
+        what: t("Сверка поручения у Платформы — одна, до поиска: отказ дал агент, а не Платформа", "One mandate check at the Platform, before the search: the agent refused, not the Platform"),
+        match: { stream: "monitor", ref: "GET /pao/v1/mandates/{mandate_id}/verify" },
+        times: 1,
+      },
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      { id: "no-cart", what: t("Корзины нет", "No cart"), match: { stream: "scenario", ref: "cart.created" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+    ],
+  },
+  {
+    // П-07 задания (П-11.1г, Р-1459 В7): оператор Системы приостанавливает агента до запроса корзины. Защитник — Платформа
+    // (403 AGENT_SUSPENDED на запрос покупки) или агент (подпись приостановлена по событию раньше запроса) — принимаются
+    // оба; какой сработал — шаг сюжета и таблица тестирования. Общий запрет «агент допущен» здесь заменён: приостановка —
+    // ожидаемый код; прочие отказы в допуске запрещены.
+    no: 9,
+    name: "suspended",
+    title: t("9. Агент приостановлен", "9. The agent is suspended"),
+    outcome: {
+      kind: "stopped",
+      text: t("Оператор Системы приостановил агента; покупка остановлена до корзины, заказа и оплаты; после снятия агент снова допущен", "The System operator suspended the agent; the purchase stopped before the cart, order and payment; after reinstatement the agent is admitted again"),
+    },
+    statuses: {
+      mandate: t("поручение подписано, корзины нет", "mandate signed, no cart"),
+      operation: t("операции нет", "no operation"),
+      agent: t("агент был приостановлен, после сюжета активен", "the agent was suspended, active after the scenario"),
+      key: t("ключ агента действует", "agent key valid"),
+    },
+    expect: [
+      step("card", "cart.card", t("Клиенту показана карточка корзины (С-25)", "The client sees the cart card (С-25)"), { situation: "С-25" }),
+      step("agreed", "cart.agreed", t("Клиент согласился с карточкой корзины", "The client agreed to the cart card")),
+      step("suspended", "operator.suspended", t("Оператор Системы приостановил агента", "The System operator suspended the agent")),
+      step("stopped", "suspend.stopped", t("Покупка остановлена: агент приостановлен", "Purchase stopped: the agent is suspended"), { code: "AGENT_SUSPENDED" }),
+      step("reinstated", "operator.reinstated", t("Оператор Системы снял приостановление", "The System operator reinstated the agent")),
+      step("resumed", "suspend.resumed", t("Агент сверился с реестром — снова допущен", "The agent checked the registry — admitted again")),
+      event("reinstated-event", "agent.reinstated", t("Платформа: агент снова допущен", "Platform: the agent is reinstated")),
+    ],
+    forbid: [
+      ...COMMON_FORBID.filter((f) => f.id !== "agent-admitted"),
+      {
+        id: "agent-admitted",
+        what: t("Других отказов в допуске агента нет — только приостановление оператором", "No other agent admission refusals — only the operator suspension"),
+        match: { code: AGENT_CODES.filter((c) => c !== "AGENT_SUSPENDED" && c !== "DECLINED_AGENT_SUSPENDED") },
+      },
+      ...NO_PAID,
+      { id: "no-cart", what: t("Корзины нет", "No cart"), match: { stream: "scenario", ref: "cart.created" } },
+      { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
+      { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
+      { id: "no-reinstate-failed", what: t("Снятие приостановления прошло", "Reinstatement succeeded"), match: { stream: "scenario", ref: "operator.reinstate_failed" } },
+      { id: "no-resume-failed", what: t("Агент возобновил работу после снятия", "The agent resumed after reinstatement"), match: { stream: "scenario", ref: "suspend.resume_failed" } },
+    ],
+  },
+  {
+    // П-09 задания (П-11.1д): своё поручение с коротким сроком; приложение срок не проверяет — только ждёт, остановку даёт
+    // ядро до витрин, корзины и оплаты. Код — как отдаёт ядро 4a4ee7c: MANDATE_OUT_OF_SCOPE (сверка по ПАО 1.4.0 отвечает
+    // OUT_OF_SCOPE и на истёкшее поручение); MANDATE_EXPIRED — после передачи агенту (решение владельца, чат 11.11). В таблице
+    // тестирования: исход сходится, код — замечание до передачи.
+    no: 10,
+    name: "expired",
+    title: t("10. Срок поручения истёк", "10. The mandate has expired"),
+    outcome: { kind: "stopped", text: t("Срок поручения вышел; агент остановил попытку сам — до витрин, корзины и оплаты", "The mandate expired; the agent stopped the attempt itself — before shops, cart and payment") },
+    statuses: { mandate: t("поручение истекло", "mandate expired"), operation: t("операции нет", "no operation"), ...ACTIVE },
+    expect: [
+      step("created", "intent.created", t("Агент просит поручение (С-01)", "The agent asks for a mandate (С-01)"), { situation: "С-01" }),
+      clientSigns("mandate"),
+      step("signed", "intent.signed", t("Поручение действует", "The mandate is active"), { status: "ACTIVE" }),
+      // Корзины нет: запрос мандата у Платформы — один, это само поручение (ревью П-11.1д № 5).
+      { id: "one-mandate", what: t("Запрос мандата — один: поручение; корзины нет", "One mandate request — the mandate; no cart"), match: { stream: "monitor", ref: "POST /pao/v1/mandates" }, times: 1 },
+      step("wait", "expiry.wait", t("Сюжет ждёт конца срока поручения", "The scenario waits for the mandate to expire")),
+      step("attempt", "expiry.attempt", t("Срок вышел — агент пробует покупку", "Expired — the agent tries a purchase")),
+      step(
+        "refused",
+        "expiry.refused",
+        t("После конца срока агент остановил попытку сам: Платформа не подтвердила поручение", "After the expiry the agent stopped the attempt itself: the Platform did not confirm the mandate"),
+        { code: ["MANDATE_OUT_OF_SCOPE", "MANDATE_EXPIRED"] },
+      ),
+    ],
+    forbid: [
+      ...COMMON_FORBID,
+      ...NO_PAID,
+      // «До витрин» — по обращениям агента к витринам на мониторе, а не по шагам сюжета (их сюжет 10 не выдаёт; ревью П-11.1д № 5).
+      { id: "no-shops", what: t("К витринам агент не обращался — остановился до поиска", "The agent did not contact shops — it stopped before the search"), match: { stream: "monitor", ref: "GET /v1/shops" } },
+      { id: "no-catalog", what: t("Каталогов витрин агент не читал", "The agent did not read shop catalogs"), match: { stream: "monitor", ref: "GET /v1/shops/{shop_id}/catalog" } },
       { id: "no-order", what: t("Заказа у витрин нет", "No order at shops"), match: { stream: "monitor", ref: "POST /v1/shops/{shop_id}/orders" } },
       { id: "no-credential", what: t("Реквизита под покупку агент не получал", "The agent did not obtain a payment credential"), match: { stream: "monitor", ref: "POST /pao/v1/credentials" } },
     ],

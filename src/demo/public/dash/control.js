@@ -82,9 +82,20 @@
     const card = el("section", undefined, "run");
     card.dataset.key = String(v.key);
     const head = el("h2", undefined, "run-head");
-    head.appendChild(el("span", v.title ? v.title[lang] : v.name));
+    // Прогон драйвера нарушителя «ПР» (П-4.1а): «Нарушитель (ПР) — Н-xx» вместо имени метки; код и исход — поля ленты.
+    const fault = v.fault && typeof v.fault === "object" ? v.fault : null;
+    head.appendChild(el("span", fault ? label("fault.title") + " — " + (fault.test || label("fault.test.missing")) : v.title ? v.title[lang] : v.name));
     card.appendChild(head);
     card.appendChild(el("div", label("started") + ": " + time(v.startedAt) + " · " + label("seq") + " " + v.key, "note"));
+    if (!v.result && fault) {
+      const out = el("div", label("fault.outcome." + (fault.outcome || "none")) + (fault.code ? " — " + fault.code : ""), "fault-outcome");
+      out.dataset.outcome = fault.outcome || "none";
+      card.appendChild(out);
+      // Пометки раннего запуска — как у прогона с паспортом и в выгрузке ACC-1 (ревью П-4.1а № 5).
+      if (v.early && v.early.next) card.appendChild(el("div", label("early.next"), "early"));
+      if (v.early && v.early.prev) card.appendChild(el("div", label("early.prev"), "early"));
+      return card;
+    }
     if (!v.result) {
       card.appendChild(el("div", label("no.passport"), "no-passport"));
       return card;
