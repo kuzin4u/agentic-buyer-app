@@ -708,7 +708,9 @@ export function testTable(input: TestTableInput): TestTable {
       const r = clean[clean.length - 1];
       if (r) {
         w = windows.get(r)!;
-        runLabel = `run.${name}${all.length > 1 ? ` ×${all.length}` : ""}`;
+        // Прогонов сюжета несколько — какой взят: «номер / всего», без слов (метка одна для ru- и en-акта; Б3, ревью К2 PR #16
+        // № 14). `×N` остаётся только там, где ни один прогон не взят (все со сбоем «П»).
+        runLabel = `run.${name}${all.length > 1 ? ` ${all.indexOf(r) + 1}/${all.length}` : ""}`;
         note = lit(runLabel);
       } else if (all.length) {
         runLabel = `run.${name} ×${all.length}`;

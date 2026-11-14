@@ -28,7 +28,7 @@ import {
   type TestTableInput,
 } from "../../src/pult/testtable.js";
 import { buildTxModel, type PultTx, type TxModel } from "../../src/pult/tx.js";
-import { verdicts, type Verdict } from "../../src/pult/verdict.js";
+import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 
 const T0 = Date.UTC(2026, 10, 12, 12, 0, 0);
 const at = (sec: number) => new Date(T0 + sec * 1000).toISOString();
@@ -269,6 +269,50 @@ describe("П-11.5а: Н-xx — ожидаемый паспорт", () => {
   });
 });
 
+describe("Б3: сверки таблицы с источниками (Р-1511)", () => {
+  it("П-11.5а № 17: запись стенда каждого сбоя «П» с ожидаемым паспортом даёт того нарушителя и защитника, которых ждёт строка (`subjectsOf` движка)", () => {
+    const checked: string[] = [];
+    for (const [test, whats] of Object.entries(FAULT_WHAT) as [TestCode, readonly StandLogEntry["what"][]][]) {
+      const spec = TEST_SPECS.find((s) => s.test === test)!;
+      const e = spec.mvp ?? spec.v10;
+      if (e.kind !== "incorrect" || e.passport === null) continue;
+      // Н-05 судится по пометке «ПР» (R47): у записи INSTRUCTION_SERVED нет причины вида `fault` — исключение проверяет само
+      // себя (ревью Б3 № 3): появится строка в таблице субъектов — тест покраснеет.
+      if (test === "Н-05") {
+        expect(subjectsOf({ kind: "fault", what: "INSTRUCTION_SERVED" })).toBeUndefined();
+        continue;
+      }
+      for (const what of whats) {
+        const row = subjectsOf({ kind: "fault", what });
+        expect(row, `${test} ${what}`).toBeDefined();
+        expect(row!.violator, `${test} ${what}`).toBe(e.passport.violator);
+        if (e.passport.protector !== undefined) expect(row!.protector, `${test} ${what}`).toBe(e.passport.protector);
+        checked.push(test);
+      }
+    }
+    expect(checked.sort()).toEqual(["Н-02", "Н-03", "Н-04", "Н-11"]);
+  });
+
+  it("К1 PR #16 № 7: при «Авто» «не засчитано» — и у У-04, не только у У-01; в итогах — «не проверено»", () => {
+    const items = [rec(0, 0, "client.auto_on"), rec(1, 0, "run.upk"), rec(2, 1, "cart.created"), rec(3, 30, "outcome")];
+    const model = modelOf([tx("T1", [2, 3], { ...paid(3, 30), confirmationIds: ["cnf_1"] })]);
+    const r: TableReaction = { at: at(20), action: "remind", obj: "cnf_1", cond: "R21", outcome: "done", preempted: "R21" };
+    const tt = table({ items, model, reactions: [r] });
+    expect(row(tt, "У-04")).toMatchObject({ agree: "not_counted", auto: true });
+    expect(tt.totals.unchecked).toBe(tt.rows.filter((x) => x.agree === "unchecked" || x.agree === "not_counted").length);
+  });
+
+  // Формулировка факта «итога по операции ещё нет» ≠ столбцу M («сверить не с чем») — меняет строку акта, Б5 (ревью Б3 № 2).
+  it("К1 PR #16 № 8: Н-12 — запись задержки без `op_ref`: вердикт — «не проверено», не «да» и не «нет»", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
+    const model = modelOf([tx("T1", [3])]);
+    const blank = log(1, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-12" });
+    const r = row(table({ items, model, standLog: [blank] }), "Н-12");
+    expect(r.agree).toBe("unchecked");
+    expect(r.fact.ru).toContain("итога по операции ещё нет");
+  });
+});
+
 describe("П-11.5а: У-01…У-04", () => {
   const intent = (seq0: number, sec0: number, m: string, signedAfter?: number) => [
     rec(seq0, sec0, "run.intent"),
@@ -381,7 +425,11 @@ describe("К2: метка прогона и факт с видом вердик�
   it("метка прогона — у строки; прогона нет — метки нет; факт Н-xx показывает «сработало» / «нарушено» и защитника (повторное ревью К1а № 3)", () => {
     const items = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome"), rec(4, 3, "run.purchase"), rec(5, 4, "cart.created")];
     const t = table({ items, model: modelOf([tx("T1", [2, 3], paid(3)), tx("T2", [5], paid(5, 4))]) });
-    expect(row(t, "П-01").run).toBe("run.purchase ×2");
+    // Б3 (ревью К2 PR #16 № 14): какой прогон взят — «номер / всего»
+    expect(row(t, "П-01").run).toBe("run.purchase 2/2");
+    // взят не последний: во втором прогоне взведён сбой «П» — чистый первый, «1/2» (ревью Б3 № 1)
+    const armed = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome"), rec(4, 3, "run.purchase"), rec(5, 3, "stand_fault.armed", { test: "Н-11" }), rec(6, 4, "cart.created")];
+    expect(row(table({ items: armed, model: modelOf([tx("T1", [2, 3], paid(3)), tx("T2", [6])]) }), "П-01").run).toBe("run.purchase 1/2");
     expect(row(t, "П-03").run).toBeUndefined();
     const n08 = [rec(1, 0, "run.fault", { test: "Н-08" }), rec(2, 1, "cart.created"), rec(3, 2, "fault.refused", { test: "Н-08", testCode: "MANDATE_SCOPE" })];
     const v: Verdict = { kind: "violation", obj: "T1", cond: "R17", violator: "agent", seqs: [2] };
