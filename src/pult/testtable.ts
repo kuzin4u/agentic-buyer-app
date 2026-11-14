@@ -22,7 +22,8 @@
 // же условия с другим нарушителем («каждая транзакция поймана» пульту не проверить — примечание таблицы); У-01…У-03 —
 // ожидание объекта прогона дошло до порога; У-04 — «напомнено» по R21 раньше «оплачено» и отметка движка «упреждено
 // реакцией» (П-8.2). «Авто» (В4): у У-01…У-04 — «не засчитано: прогон не по П5 доп. 1 п. 5», у остальных — пометка, на
-// «сходится» не влияет.
+// «сходится» не влияет. Ситуация теста в прогоне не возникла — «не проверено», «нет» — только при расхождении (Р-1553, П8):
+// У-01…У-03 — ожидание оператора до порога не дошло; У-04 — нажатий оператора по объектам прогона нет.
 import { faultOf, splitRuns, type FaultOutcome, type Run } from "../dashboards/control.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import { NOT_REPRODUCIBLE_LABEL, STAND_TEST_TABLE } from "../dashboards/stand-tests.js";
@@ -260,6 +261,8 @@ export interface TestTotals {
 export interface TestTable {
   readonly rows: readonly TestRow[];
   readonly totals: TestTotals;
+  /** Момент, на который посчитана таблица, — `TestTableInput.now` как есть; в акте ACC-1 — время сборки (Р-1553, П8). */
+  readonly at: string;
 }
 
 /** Реакция пульта; `preempted` — отметка движка «упреждено реакцией» у R21 по записи стенда этой реакции (П-8.2,
@@ -525,22 +528,33 @@ export function seenWaits(
 
 function judgeToward(e: Extract<Expect, { kind: "toward" }>, items: readonly Interpretation[], w: Window, objs: ReadonlySet<string>, now: string, waitMs: number): Judged {
   const seen = seenWaits(items, w, objs, e.wait, now, waitMs);
-  if (!seen.length) return { agree: "no", fact: join([lit(e.cond), p("ожидание до порога не дошло", "the wait did not reach the threshold")], " · ") };
+  // Ожидание оператора до порога не дошло — ситуация теста не возникла: «не проверено», а не «нет» (Р-1553, П8).
+  if (!seen.length) return { agree: "unchecked", fact: join([lit(e.cond), p("ожидание до порога не дошло — ситуация не возникла", "the wait did not reach the threshold — the situation did not arise")], " · ") };
   return { agree: "yes", fact: join(seen.map((s) => join([lit(e.cond), lit(s.obj), WAIT_LABEL[e.wait], secs(s.sec)], " · ")), "; ") };
 }
 
 function judgePrevented(e: Extract<Expect, { kind: "prevented" }>, txs: readonly PultTx[], ids: readonly string[], vs: readonly Verdict[], reactions: readonly TableReaction[]): Judged {
   const objs = new Set([...ids, ...txs.flatMap((t) => t.confirmationIds)]);
   const paid = txs.filter((t) => t.outcome?.kind === "paid" || t.outcome?.kind === "settled");
+  const pass = passportsOf(vs);
+  const paidFact = paid.length ? join([p("оплачено:", "paid:"), lit(paid.map((t) => t.id).join(", "))], " ") : p("оплаты нет", "not paid");
+  const passFact = pass.length ? join([p("паспорт:", "passport:"), ...pass.map(findingPhrase)], " ") : p("паспортов нет", "no passports");
+  // Нажатий оператора по объектам прогона нет (любой вид реакции, любой исход) — ситуация теста не возникла: «не
+  // проверено» (Р-1553, П8; В2 (а) — нажал не ту кнопку — ситуация была, это «нет»). Оплата и паспорта прогона — в факте
+  // и здесь (ревью Р-1553 № 2).
+  if (!reactions.some((r) => objs.has(r.obj)))
+    return {
+      agree: "unchecked",
+      fact: join([p("нажатий оператора по объектам прогона нет — ситуация не возникла", "no operator presses on the run's objects — the situation did not arise"), paidFact, passFact], "; "),
+    };
   const firstPaid = Math.min(...paid.map((t) => Date.parse(t.outcome!.at)));
   // «Напомнено» раньше «оплачено» (ревью № 12).
   const reminded = reactions.filter((r) => r.action === "remind" && r.outcome === "done" && r.cond === e.cond && objs.has(r.obj) && Date.parse(r.at) < firstPaid);
   const preempted = reminded.filter((r) => r.preempted === e.cond);
-  const pass = passportsOf(vs);
   const facts: Phrase[] = [
     reminded.length ? join([p("напомнено:", "reminded:"), lit(reminded.map((r) => r.obj).join(", "))], " ") : p("«Напомнить клиенту» до оплаты не нажато", '"Remind the client" not pressed before payment'),
-    paid.length ? join([p("оплачено:", "paid:"), lit(paid.map((t) => t.id).join(", "))], " ") : p("оплаты нет", "not paid"),
-    pass.length ? join([p("паспорт:", "passport:"), ...pass.map(findingPhrase)], " ") : p("паспортов нет", "no passports"),
+    paidFact,
+    passFact,
     preempted.length ? p("«упреждено реакцией»", '"prevented by a reaction"') : p("отметки «упреждено реакцией» нет", 'no "prevented by a reaction" mark'),
   ];
   return { agree: preempted.length > 0 && paid.length > 0 && pass.length === 0 ? "yes" : "no", fact: join(facts, "; ") };
@@ -679,7 +693,7 @@ export function testTable(input: TestTableInput): TestTable {
   const yes = count("yes");
   const no = count("no");
   const noCase = count("no_case");
-  return { rows, totals: { tests: rows.length, yes, no, noCase, unchecked: rows.length - yes - no - noCase } };
+  return { rows, totals: { tests: rows.length, yes, no, noCase, unchecked: rows.length - yes - no - noCase }, at: now };
 }
 
 // Выгрузка для акта ACC-1 — `src/pult/acc1.ts` (П-6.2, окно Б; PR #16, К2).

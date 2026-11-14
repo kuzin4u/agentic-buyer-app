@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { reportResponse, REPORT_FORMATS } from "../../src/demo/pult-report.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
-import { ACC1_EXPORTS, acc1Markdown, ACC1_TITLE, UTF8_BOM } from "../../src/pult/acc1.js";
+import { acc1BuiltAt, ACC1_EXPORTS, acc1Markdown, acc1MdCell, ACC1_TITLE, UTF8_BOM } from "../../src/pult/acc1.js";
 import type { PultReport } from "../../src/pult/feed.js";
 import { testTable } from "../../src/pult/testtable.js";
 import { buildTxModel } from "../../src/pult/tx.js";
@@ -32,15 +32,18 @@ describe("«Отчёт»: ответ маршрута по снимку (П-6.2)
     expect(b.agreeLabels).toBeDefined();
   });
 
-  it("выгрузки — файлом, тексты окна Б как есть (Markdown — `acc1Markdown`, CSV — 26 строк, CSV для Excel — с BOM), имя — по времени сборки и языку", () => {
+  it("выгрузки — файлом, тексты окна Б как есть (Markdown — `acc1Markdown`, CSV — 27 строк с временем сборки, CSV для Excel — с BOM), имя и время в тексте — по времени сборки (Р-1553)", () => {
     const rep = empty();
     const md = reportResponse(rep, "md", "en");
     expect(md).toMatchObject({ status: 200, type: "text/markdown; charset=utf-8", filename: "acc1-2026-11-13T20-55-en.md" });
     expect(md.body).toBe(acc1Markdown(rep.table, "en", rep.records));
     expect(md.body).toContain(ACC1_TITLE.en);
+    // время сборки внутри акта — то же, что `builtAt` отчёта (одно «сейчас» на отчёт)
+    expect(md.body).toContain(acc1MdCell(acc1BuiltAt(BUILT, "en")));
     const csv = reportResponse(rep, "csv", "ru");
     expect(csv).toMatchObject({ type: "text/csv; charset=utf-8", filename: "acc1-2026-11-13T20-55-ru.csv" });
-    expect(csv.body.trimEnd().split("\r\n")).toHaveLength(26);
+    expect(csv.body.trimEnd().split("\r\n")).toHaveLength(27);
+    expect(csv.body).toContain("Время сборки: 2026-11-13T20:55:07Z (UTC)");
     const xl = reportResponse(rep, "csv_excel", "ru");
     expect(xl.filename).toBe("acc1-2026-11-13T20-55-ru-excel.csv");
     expect(xl.body.startsWith(UTF8_BOM)).toBe(true);
@@ -92,10 +95,10 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(Number.isFinite(Date.parse(body.builtAt))).toBe(true);
     const agree = Object.fromEntries(body.rows.map((r) => [r.test, r.agree]));
     expect([agree["П-01"], agree["П-05"], agree["П-02"], agree["П-08"]]).toEqual(["yes", "yes", "yes", "yes"]);
-    // Ложного «нет» по другим строкам нет (ревью П-6.2 № 2), кроме У-01…У-04: их ситуация (ожидание оператора, «Напомнить»)
-    // в прогоне без оператора не возникла, а таблица окна Б пока ставит «нет». По Р-1553 (#issuecomment-6861186528) — должно
-    // быть «не проверено»: правка `testtable.ts` — первым кирпичом П-11.5б (14.11); тогда здесь — `totals.no === 0`.
-    expect(body.rows.filter((r) => r.agree === "no").map((r) => r.test)).toEqual(["У-01", "У-02", "У-03", "У-04"]);
+    // Ложного «нет» нет (ревью П-6.2 № 2): ситуация У-01…У-04 (ожидание оператора, «Напомнить») в прогоне без оператора не
+    // возникла — «не проверено», а не «нет» (Р-1553, П8).
+    expect(body.totals.no).toBe(0);
+    expect(body.rows.filter((r) => r.test.startsWith("У-")).map((r) => r.agree)).toEqual(["unchecked", "unchecked", "unchecked", "unchecked"]);
     expect(typeof body.unlinked).toBe("number");
     // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3).
     const md = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru`);
@@ -104,7 +107,10 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(md.headers.get("x-content-type-options")).toBe("nosniff");
     expect(md.headers.get("content-security-policy")).toBeTruthy();
     expect(md.headers.get("cache-control")).toBe("no-store");
-    expect(await md.text()).toContain(ACC1_TITLE.ru);
+    const mdText = await md.text();
+    expect(mdText).toContain(ACC1_TITLE.ru);
+    // время сборки — внутри текста выгрузки (Р-1553, П8)
+    expect(mdText.split("\n")[2]).toMatch(/^Время сборки<span>:<\/span> \d{4}-\d\d-\d\dT/);
     const xl = await fetch(`${demo.monitor.url}/pult/report?format=csv_excel&lang=en`);
     expect(xl.headers.get("content-disposition")).toMatch(/-en-excel\.csv"$/);
     // Коды через маршрут: неизвестный формат — 400; json — без вложения.

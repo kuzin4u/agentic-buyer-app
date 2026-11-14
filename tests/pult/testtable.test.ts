@@ -259,20 +259,49 @@ describe("П-11.5а: У-01…У-04", () => {
     ...(signedAfter === undefined ? [] : [rec(seq0 + 3, sec0 + 1 + signedAfter, "mandate.signed", { stream: "monitor", source: "pao_event", ids: { mandate_id: m } })]),
   ];
   const t = (items: Interpretation[]) => table({ items, model: buildTxModel(items) });
-  it("У-01: ожидание видно только в истории — проигрывание прогона; клиент медлил 19 с — «да», 4 с — «нет»", () => {
+  it("У-01: ожидание видно только в истории — проигрывание прогона; клиент медлил 19 с — «да», 4 с — ситуация не возникла: «не проверено» (Р-1553, П8)", () => {
     const slow = t(intent(1, 0, "mnd_a", 19));
     expect(row(slow, "У-01").agree).toBe("yes");
     expect(row(slow, "У-01").fact.ru).toContain("mnd_a");
     expect(row(slow, "У-01").fact.ru).toMatch(/\d+ с/);
     expect(row(slow, "У-01").fact.en).toMatch(/\d+ s/);
-    expect(row(t(intent(1, 0, "mnd_a", 4)), "У-01").agree).toBe("no");
+    const fast = row(t(intent(1, 0, "mnd_a", 4)), "У-01");
+    expect(fast.agree).toBe("unchecked");
+    expect(fast.fact.ru).toContain("ситуация не возникла");
+    expect(fast.fact.en).toContain("the situation did not arise");
   });
-  it("ревью № 3: неподписанное поручение прошлого прогона не даёт «да» новому", () => {
-    expect(row(t([...intent(1, 0, "mnd_old"), ...intent(10, 100, "mnd_new", 2)]), "У-01").agree).toBe("no");
+  it("ревью № 3: неподписанное поручение прошлого прогона не даёт «да» новому — ситуации в этом окне нет, «не проверено»", () => {
+    expect(row(t([...intent(1, 0, "mnd_old"), ...intent(10, 100, "mnd_new", 2)]), "У-01").agree).toBe("unchecked");
   });
-  it("ревью № 4: окно закрыто следующим прогоном — ожидание кончается на нём, а не на «сейчас»", () => {
+  it("ревью № 4: окно закрыто следующим прогоном — ожидание кончается на нём, а не на «сейчас»; до порога не дошло — «не проверено»", () => {
     const items = [...intent(1, 0, "mnd_a"), rec(5, 2, "run.purchase"), rec(6, 4, "mandate.signed", { stream: "monitor", source: "pao_event", ids: { mandate_id: "mnd_a" } })];
-    expect(row(t(items), "У-01").agree).toBe("no");
+    expect(row(t(items), "У-01").agree).toBe("unchecked");
+  });
+  it("Р-1553: у У-01…У-04 есть прогоны с быстрым клиентом и без нажатий — «не проверено» по новому правилу (не «прогона нет»), в итоге «не проверено», а не «не сходится»; таблица помнит свой момент (`at`)", () => {
+    // сюжеты 1 (`intent`), 2 (`purchase`), 4 (`upk`): клиент подписал, согласился и подтвердил за 2–4 с
+    const items = [
+      ...intent(1, 0, "mnd_a", 4),
+      rec(10, 20, "run.purchase"),
+      rec(11, 21, "cart.created", { ids: { mandate_id: "crt_b" } }),
+      rec(12, 21, "cart.awaiting_signature", { ids: { mandate_id: "crt_b" } }),
+      rec(13, 23, "mandate.signed", { stream: "monitor", source: "pao_event", ids: { mandate_id: "crt_b" } }),
+      rec(20, 40, "run.upk"),
+      rec(21, 41, "cart.created", { ids: { mandate_id: "crt_c" } }),
+      rec(22, 42, "confirmation.required", { stream: "monitor", source: "pao_event", ids: { mandate_id: "crt_c", confirmation_id: "cnf_c" } }),
+      rec(23, 44, "confirmation.approved", { stream: "monitor", source: "pao_event", ids: { mandate_id: "crt_c", confirmation_id: "cnf_c" } }),
+    ];
+    const tt = t(items);
+    const u = tt.rows.filter((r) => r.test.startsWith("У-"));
+    expect(u.map((r) => r.agree)).toEqual(["unchecked", "unchecked", "unchecked", "unchecked"]);
+    for (const r of u) {
+      expect(r.run, r.test).toBeDefined();
+      expect(r.fact.ru, r.test).toContain("ситуация не возникла");
+      expect(r.fact.ru, r.test).toMatch(/^run\.(intent|purchase|upk) — /); // не `NO_RUN` «прогона нет»
+    }
+    // «нет» в итоге — только у П-xx этих прогонов (у покупок здесь нет итога), не у У-xx
+    expect(tt.rows.filter((r) => r.agree === "no").map((r) => r.test).filter((c) => c.startsWith("У-"))).toEqual([]);
+    expect(tt.totals.unchecked).toBe(tt.rows.filter((r) => r.agree === "unchecked" || r.agree === "not_counted").length);
+    expect(tt.at).toBe(NOW);
   });
   it("У-01 при «Авто» — «не засчитано: прогон не по П5 доп. 1 п. 5», в итогах — «не проверено»", () => {
     const tt = t([rec(0, 0, "client.auto_on"), ...intent(1, 0, "mnd_a", 19)]);
@@ -287,6 +316,23 @@ describe("П-11.5а: У-01…У-04", () => {
     const plain: TableReaction = { at: r.at, action: r.action, obj: r.obj, cond: "R21", outcome: r.outcome };
     expect(row(table({ items, model, reactions: [plain] }), "У-04").agree).toBe("no");
     expect(row(table({ items, model, reactions: [{ ...r, at: at(40) }] }), "У-04").agree).toBe("no");
+  });
+  it("Р-1553: У-04 без нажатий оператора по объектам прогона — «не проверено»; нажата не та кнопка или по чужому объекту — по факту", () => {
+    const items = [rec(1, 0, "run.upk"), rec(2, 1, "cart.created"), rec(3, 30, "outcome")];
+    const model = modelOf([tx("T1", [2, 3], { ...paid(3, 30), confirmationIds: ["cnf_1"] })]);
+    const none = row(table({ items, model }), "У-04");
+    expect(none.agree).toBe("unchecked");
+    expect(none.fact.ru).toContain("нажатий оператора по объектам прогона нет");
+    expect(none.fact.en).toContain("no operator presses on the run's objects");
+    // оплата и паспорта прогона — и в факте «не проверено» (ревью Р-1553 № 2)
+    expect(none.fact.ru).toContain("оплачено: T1");
+    expect(none.fact.ru).toContain("паспортов нет");
+    // нажатие по объекту другого прогона ситуацию этого не создаёт
+    const alien: TableReaction = { at: at(20), action: "remind", obj: "cnf_other", cond: "R21", outcome: "done", preempted: "R21" };
+    expect(row(table({ items, model, reactions: [alien] }), "У-04").agree).toBe("unchecked");
+    // «Остановить» вместо «Напомнить» — ситуация возникла, реакция не та: «нет» (В2 (а))
+    const stop: TableReaction = { at: at(20), action: "stop", obj: "T1", outcome: "done" };
+    expect(row(table({ items, model, reactions: [stop] }), "У-04").agree).toBe("no");
   });
 });
 

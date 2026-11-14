@@ -186,6 +186,29 @@ export function acc1CsvCell(s: string): string {
   return `"${safe.replace(/"/g, '""')}"`;
 }
 
+const BUILT_LABEL: Phrase = p("Время сборки:", "Built at:");
+const LOCAL_LABEL: Phrase = p("местное:", "local:");
+/** Время сборки внутри акта (Р-1553, П8): акт без пульта привязан к моменту, на который посчитана таблица (`TestTable.at`).
+ *  UTC — до секунды; местное — по часовому поясу процесса стенда (`timeZone` — для теста), со смещением от UTC. Время не
+ *  разбирается `Date`; неразборчивое — пишется как есть. */
+export function acc1BuiltAt(at: string, lang: Acc1Lang, timeZone?: string): string {
+  const d = new Date(at);
+  if (!Number.isFinite(d.getTime())) return `${BUILT_LABEL[lang]} ${at}`;
+  const utc = d.toISOString().replace(/\.\d{3}Z$/, "Z");
+  const local = new Intl.DateTimeFormat(lang === "ru" ? "ru-RU" : "en-US", {
+    ...(timeZone !== undefined && { timeZone }),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "shortOffset",
+  }).format(d);
+  return `${BUILT_LABEL[lang]} ${utc} (UTC) · ${LOCAL_LABEL[lang]} ${local}`;
+}
+
 const totalsLine = (t: TestTable, lang: Acc1Lang): string => {
   const s = t.totals;
   return lang === "ru"
@@ -193,11 +216,11 @@ const totalsLine = (t: TestTable, lang: Acc1Lang): string => {
     : `Total: ${s.tests} tests, ${s.yes} agree, ${s.no} do not agree, ${s.noCase} no case, ${s.unchecked} not checked.`;
 };
 
-/** Акт ACC-1 в Markdown: заголовок, таблица 25 строк, записи без строки теста, итоги, примечание таблицы. */
+/** Акт ACC-1 в Markdown: заголовок, время сборки, таблица 25 строк, записи без строки теста, итоги, примечание таблицы. */
 export function acc1Markdown(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
   const line = (xs: readonly string[]) => `| ${xs.map(acc1MdCell).join(" | ")} |`;
   const head = HEAD[lang];
-  const out = [acc1MdTitle(ACC1_TITLE[lang]), "", line(head), `|${head.map(() => "---").join("|")}|`];
+  const out = [acc1MdTitle(ACC1_TITLE[lang]), "", acc1MdCell(acc1BuiltAt(table.at, lang)), "", line(head), `|${head.map(() => "---").join("|")}|`];
   for (const r of acc1Rows(table, records)) out.push(line(cells(r, lang)));
   const free = acc1Unlinked(table, records);
   if (free.length) out.push("", acc1MdCell(`${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`));
@@ -210,11 +233,14 @@ function csvWith(sep: "," | ";", table: TestTable, lang: Acc1Lang, records: read
   const out = [line(HEAD[lang]), ...acc1Rows(table, records).map((r) => line(cells(r, lang)))];
   const free = acc1Unlinked(table, records);
   if (free.length) out.push(line(["", "", "", "", "", `${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`, "", ""]));
+  // Время сборки — последней строкой, в колонке «Замечание», по образцу записей без теста: первая строка остаётся
+  // заголовком колонок (Р-1553, П8; В3 (а)).
+  out.push(line(["", "", "", "", "", acc1BuiltAt(table.at, lang), "", ""]));
   return out.join("\r\n") + "\r\n";
 }
 
-/** Акт ACC-1 в CSV для машинного чтения: строка заголовка, 25 строк и строка записей без теста (если есть); разделитель —
- *  запятая, без BOM, конец строки — CRLF (RFC 4180). */
+/** Акт ACC-1 в CSV для машинного чтения: строка заголовка, 25 строк, строка записей без теста (если есть) и строка времени
+ *  сборки; разделитель — запятая, без BOM, конец строки — CRLF (RFC 4180). */
 export function acc1Csv(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
   return csvWith(",", table, lang, records);
 }
