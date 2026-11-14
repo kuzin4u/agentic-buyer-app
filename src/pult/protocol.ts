@@ -73,8 +73,11 @@ export interface ProtocolState {
   readonly seq: number;
   /** Ключи записей, вытесненных пределом `PROTO_KEPT`: живой вердикт не заводит их заново под новым номером (ревью № 4). */
   readonly gone: readonly string[];
+  /** Доказательства вытесненных записей системы (`вид → seq`): та же остановка после вытеснения и сдвига окна не заводится
+   *  заново (ревью Б4 № 1). */
+  readonly goneSys: readonly { readonly kind: string; readonly seqs: readonly number[] }[];
 }
-export const emptyProtocol = (): ProtocolState => ({ entries: [], seq: 0, gone: [] });
+export const emptyProtocol = (): ProtocolState => ({ entries: [], seq: 0, gone: [], goneSys: [] });
 
 /** Реакция пульта; у напоминания журнал реакций знает, упредила ли его запись стенда R21 (`reactions.ts`, П-8.2). */
 export type ProtoReaction = Reaction & { readonly preempted?: "R21" };
@@ -101,7 +104,8 @@ const GONE_KEPT = 20_000;
 export const UNCONDITIONED_REACT_MS = 15_000;
 
 /** Ключ записи: тип + условие (или гарантия) + объект; у R21 — ещё номер запроса подтверждения (повтор после отказа — своя
- *  запись, ревью № 2); у записи системы — ещё первое доказательство (разные остановки не сливаются, ревью № 3). */
+ *  запись, ревью № 2); у записи системы — ещё первое доказательство при появлении. Узнаётся запись системы не по ключу, а по
+ *  пересечению доказательств (`sysSeqs`, Б4): ключ — для `index` и `gone`. */
 const keyOf = (type: ProtoType, cond: string | undefined, obj: string, sub?: string) => `${type}|${cond ?? ""}|${obj}${sub !== undefined ? `#${sub}` : ""}`;
 const entryKey = (e: Pick<ProtoEntry, "type" | "cond" | "guarantee" | "obj" | "confirmationId"> & { readonly sysSeq?: number }) =>
   keyOf(e.type, e.cond ?? e.guarantee, e.obj, e.confirmationId ?? (e.sysSeq !== undefined ? String(e.sysSeq) : undefined));
@@ -109,7 +113,12 @@ const nodeOf = (cond: string | undefined): NodeId | undefined =>
   cond === undefined ? undefined : (Object.keys(NODES) as NodeId[]).find((n) => (NODES[n].conds as readonly string[]).includes(cond));
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** Шаг протокола: новые записи по входу, переходы статусов, связь с реакциями. Чистая функция: прежние записи не меняются. */
+/** Сколько вытесненных записей системы помнить по доказательствам. */
+const GONE_SYS_KEPT = 1_000;
+
+/** Шаг протокола: новые записи по входу, переходы статусов, связь с реакциями. Чистая функция: вход не меняется; у записи
+ *  меняются статус, реакция, доказательства системы и (запись системы получила объект, Б4) объект с ключом — номер и время
+ *  появления прежние. */
 export function protocolStep(prev: ProtocolState, input: ProtocolInput): ProtocolState {
   const bySeq = new Map(input.items.map((x) => [x.seq, x] as const));
   const txById = new Map(input.model.txs.map((t) => [t.id, t] as const));
@@ -117,20 +126,69 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
     const ms = seqs.map((s) => bySeq.get(s)).filter((x): x is Interpretation => x !== undefined).map((x) => Date.parse(x.at));
     return ms.length > 0 ? iso(Math.max(...ms)) : input.now;
   };
-  const entries: (ProtoEntry & { readonly sysSeq?: number })[] = [...prev.entries];
+  // `sysSeqs` — доказательства записи системы (для узнавания той же остановки при сдвиге окна и при появлении объекта, Б4).
+  type Entry = ProtoEntry & { readonly sysSeq?: number; readonly sysSeqs?: readonly number[] };
+  const entries: Entry[] = [...(prev.entries as readonly Entry[])];
   const index = new Set(entries.map(entryKey));
   const gone = new Set(prev.gone);
+  const goneSys = [...(prev.goneSys ?? [])];
   let seq = prev.seq;
-  const add = (e: Omit<ProtoEntry, "no" | "status"> & { readonly sysSeq?: number }) => {
-    const k = entryKey(e);
+  const kindOf = (e: Pick<ProtoEntry, "type" | "cond" | "guarantee">) => `${e.type}|${e.cond ?? e.guarantee ?? ""}`;
+  const sameKind = (x: Entry, e: Pick<ProtoEntry, "type" | "cond" | "guarantee">) => kindOf(x) === kindOf(e);
+  const overlaps = (have: readonly number[] | undefined, seqs: readonly number[]) => have?.some((s) => seqs.includes(s)) === true;
+  // Доказательства записи — объединение, без ушедших из окна шины: в вердикт они больше не вернутся (длина ограничена окном;
+  // ревью Б4 № 8). Свежие доказательства вердикта остаются всегда.
+  const merged = (have: readonly number[] | undefined, seqs: readonly number[]) => [...new Set([...(have ?? []).filter((s) => bySeq.has(s)), ...seqs])];
+  // Субъект записи — по последнему вердикту той же остановки, в обеих ветках (ревью Б4 № 5).
+  const subjects = (e: Pick<ProtoEntry, "violator" | "protector">) => ({ ...(e.violator !== undefined && { violator: e.violator }), ...(e.protector !== undefined && { protector: e.protector }) });
+  const add = (e: Omit<ProtoEntry, "no" | "status"> & { readonly sysSeq?: number; readonly seqs?: readonly number[] }) => {
+    const seqs = e.seqs ?? [];
+    const { seqs: _drop, ...rest } = e;
+    void _drop;
+    // Та же остановка системы — по пересечению доказательств, а не по первому из них: уход начала окна не заводит новую
+    // запись (повторное ревью П-6.1а № 15). Ищется и среди записей, уже перенесённых на объект (вердикт снова без объекта —
+    // ревью Б4 № 2), и среди вытесненных (ревью Б4 № 1). Доказательства записи пополняются.
+    if (e.obj === "" && seqs.length > 0) {
+      const j = entries.findIndex((x) => sameKind(x, e) && overlaps(x.sysSeqs, seqs));
+      if (j >= 0) {
+        const x = entries[j]!;
+        entries[j] = { ...x, ...(x.obj === "" && subjects(e)), sysSeqs: merged(x.sysSeqs, seqs) };
+        return;
+      }
+      const g = goneSys.findIndex((x) => x.kind === kindOf(e) && overlaps(x.seqs, seqs));
+      if (g >= 0) {
+        goneSys[g] = { kind: goneSys[g]!.kind, seqs: merged(goneSys[g]!.seqs, seqs) };
+        return;
+      }
+    }
+    // Запись системы той же остановки получила объект — запись переносится на объект, второй не заводится (ревью П-6.1а
+    // № 3). Ключ записи — новый (по объекту), номер `П-NNN` и время появления — прежние; доказательства остаются у записи
+    // (ревью Б4 № 2). Ключ объекта, уже занятый или вытесненный, — переноса нет (ревью Б4 № 6).
+    if (e.obj !== "" && seqs.length > 0) {
+      const j = entries.findIndex((x) => x.obj === "" && sameKind(x, e) && overlaps(x.sysSeqs, seqs));
+      const target = entryKey(rest);
+      if (j >= 0 && !index.has(target) && !gone.has(target)) {
+        const x = entries[j]!;
+        index.delete(entryKey(x));
+        const { sysSeq: _s, ...plain } = x;
+        void _s;
+        const moved: Entry = { ...plain, obj: e.obj, ...subjects(e), sysSeqs: merged(x.sysSeqs, seqs) };
+        index.add(entryKey(moved));
+        entries[j] = moved;
+        return;
+      }
+    }
+    const k = entryKey(rest);
     if (index.has(k) || gone.has(k)) return;
     // Номер — идентификатор записи модели 1.23 («П-NNN»), одинаковый в ru и en (запись в GLOSSARY — STATUS «Открыто», № 8).
     const no = `П-${String(++seq).padStart(3, "0")}`;
     index.add(k);
-    entries.push({ ...e, no, status: e.type === "fired" ? "stopped" : "open" });
+    entries.push({ ...rest, ...(e.obj === "" && seqs.length > 0 && { sysSeqs: [...seqs] }), no, status: e.type === "fired" ? "stopped" : "open" });
   };
 
-  // Нарушения и гарантии — по вердиктам (не только по `GuaranteeHit`); решение клиента — мимо протокола.
+  // Нарушения и гарантии — по вердиктам (не только по `GuaranteeHit`); решение клиента — мимо протокола. Порядок вердиктов
+  // в шаге итог не меняет: вердикт системы с общим доказательством узнаётся и в записи, уже перенесённой на объект (ревью Б4
+  // № 7 — то же свойство сводного вердикта, что № 3).
   for (const v of input.verdicts) {
     if (v.kind === "client_decision") continue;
     add({
@@ -139,6 +197,7 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
       ...(v.guarantee !== undefined && { guarantee: v.guarantee, guaranteeText: GUARANTEE_INFO[v.guarantee].name }),
       obj: v.obj ?? "",
       ...(v.obj === undefined && v.seqs.length > 0 && { sysSeq: Math.min(...v.seqs) }),
+      seqs: v.seqs,
       at: evidenceAt(v.seqs),
       ...(v.violator !== undefined && { violator: v.violator }),
       ...(v.protector !== undefined && { protector: v.protector }),
@@ -214,9 +273,20 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
     if (j < 0) break;
     const [out] = entries.splice(j, 1);
     gone.add(entryKey(out!));
+    if (out!.sysSeqs !== undefined && out!.sysSeqs.length > 0) goneSys.push({ kind: kindOf(out!), seqs: out!.sysSeqs });
   }
-  return { entries, seq, gone: [...gone].slice(-GONE_KEPT) };
+  // Вытесненные записи системы, чьи доказательства все ушли из окна, больше не узнать — и не нужно: вердикт по ним не вернётся.
+  const goneSysKept = goneSys.map((x) => ({ kind: x.kind, seqs: x.seqs.filter((s) => bySeq.has(s)) })).filter((x) => x.seqs.length > 0);
+  return { entries, seq, gone: [...gone].slice(-GONE_KEPT), goneSys: goneSysKept.slice(-GONE_SYS_KEPT) };
 }
+
+/** Запись для экрана — без служебных полей узнавания записи системы (ревью Б4 № 8). */
+const shown = (e: ProtoEntry): ProtoEntry => {
+  const { sysSeq: _s, sysSeqs: _ss, ...rest } = e as ProtoEntry & { readonly sysSeq?: number; readonly sysSeqs?: readonly number[] };
+  void _s;
+  void _ss;
+  return rest;
+};
 
 /** Вид для экрана: записи, решения клиента строками журнала, счётчики статусов и среднее время до реакции. */
 export function protocolView(st: ProtocolState, verdicts: readonly Verdict[], items: readonly Interpretation[]): ProtocolView {
@@ -230,5 +300,5 @@ export function protocolView(st: ProtocolState, verdicts: readonly Verdict[], it
       const ms = v.seqs.map((s) => bySeq.get(s)).filter((x): x is Interpretation => x !== undefined).map((x) => Date.parse(x.at));
       return { obj: v.obj ?? "", ...(v.cond !== undefined && { cond: v.cond }), at: ms.length > 0 ? iso(Math.max(...ms)) : "" };
     });
-  return { entries: st.entries, decisions, counts, ...(rt.length > 0 && { avgReactSec: Math.round((rt.reduce((a, b) => a + b, 0) / rt.length) * 10) / 10 }) };
+  return { entries: st.entries.map(shown), decisions, counts, ...(rt.length > 0 && { avgReactSec: Math.round((rt.reduce((a, b) => a + b, 0) / rt.length) * 10) / 10 }) };
 }

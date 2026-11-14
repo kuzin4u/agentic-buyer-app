@@ -36,14 +36,17 @@ describe("П-06 и П-09 на стенде — вердикт по сроку п
   };
   /** П-6.1а: защита видна в «Журнале» — запись протокола «сработала гарантия», «остановлено гарантией» (по вердикту, а не
    *  только по `GuaranteeHit`: у П-06 и П-09 защита живёт в условии — ревью П-5.1а № 3). */
-  const protocolOf = (items: Interpretation[], j: ReturnType<typeof judge>) =>
-    protocolStep(emptyProtocol(), { verdicts: j.vs, waits: [], waitMs: 15_000, now: items.at(-1)!.at, reactions: [], model: j.model, items, ev: j.view }).entries.map((e) => [
-      e.type,
-      e.cond,
-      e.obj,
-      e.status,
-      e.protector,
-    ]);
+  // Протокол копится по префиксам ленты, как в ленте пульта, а не одним шагом по итогу (Б4, ревью П-6.1а № 7): промежуточный
+  // вердикт (гарантия раньше вердикта условия) оставил бы лишнюю запись — её этот тест увидит.
+  const protocolOf = (items: Interpretation[]) => {
+    let st = emptyProtocol();
+    for (let k = 1; k <= items.length; k++) {
+      const prefix = items.slice(0, k);
+      const j = judge(prefix);
+      st = protocolStep(st, { verdicts: j.vs, waits: [], waitMs: 15_000, now: prefix.at(-1)!.at, reactions: [], model: j.model, items: prefix, ev: j.view });
+    }
+    return st.entries.map((e) => [e.type, e.cond, e.obj, e.status, e.protector]);
+  };
   /** Поручение прогона, срок из его данных и запись журнала агента об отказе ядра — у того же поручения. */
   const parts = (items: Interpretation[]) => {
     const created = items.find((x) => x.ref === "intent.created")!;
@@ -61,7 +64,7 @@ describe("П-06 и П-09 на стенде — вердикт по сроку п
     expect(Date.parse(refusal!.at)).toBeLessThan(Date.parse(created.validTo!));
     const j = judge(items);
     const { model, view, vs } = j;
-    expect(protocolOf(items, j)).toEqual([["fired", "R17", id, "stopped", "agent"]]);
+    expect(protocolOf(items)).toEqual([["fired", "R17", id, "stopped", "agent"]]);
     expect(model.mandates.find((m) => m.id === id)?.txIds).toEqual([]);
     const conds = view.objs.find((o) => o.id === id)!.conds;
     expect(conds.R17).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "mandate_scope_agent" } });
@@ -79,7 +82,7 @@ describe("П-06 и П-09 на стенде — вердикт по сроку п
     expect(Date.parse(refusal!.at)).toBeGreaterThanOrEqual(Date.parse(created.validTo!));
     const j = judge(items);
     const { view, vs } = j;
-    expect(protocolOf(items, j)).toEqual([["fired", "R09", id, "stopped", "agent"]]);
+    expect(protocolOf(items)).toEqual([["fired", "R09", id, "stopped", "agent"]]);
     const conds = view.objs.find((o) => o.id === id)!.conds;
     expect(conds.R09).toMatchObject({ status: "fired", cause: { kind: "rule", rule: "expired_agent_stop" } });
     expect(conds.R17.status).toBe("none");

@@ -26,6 +26,82 @@ function run(prev: ProtocolState, o: Partial<ProtocolInput> & { nowS: number }):
 }
 const byKey = (st: ProtocolState) => st.entries.map((e) => [e.no, e.type, e.cond ?? e.guarantee, e.obj, e.status]);
 
+describe("Б4: одна остановка системы — одна запись протокола (записи акта ACC-1)", () => {
+  const items = [item(3, 3), item(4, 4), item(5, 5), item(7, 7)];
+  it("ревью П-6.1а № 3: остановка сначала без объекта, затем с объектом — запись переносится на объект (номер прежний), второй нет", () => {
+    let st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [5] }], items, nowS: 10 });
+    expect(byKey(st)).toEqual([["П-001", "bad", "R23", "", "open"]]);
+    st = run(st, { verdicts: [{ kind: "violation", obj: "T1", cond: "R23", violator: "platform", seqs: [5, 7] }], items, nowS: 11 });
+    expect(byKey(st)).toEqual([["П-001", "bad", "R23", "T1", "open"]]);
+    // повторный пересчёт — без новой записи
+    st = run(st, { verdicts: [{ kind: "violation", obj: "T1", cond: "R23", violator: "platform", seqs: [5, 7] }], items, nowS: 12 });
+    expect(st.entries).toHaveLength(1);
+  });
+  it("повторное ревью П-6.1а № 15: у записи системы ушло из окна первое доказательство — та же запись, а не новая; другая остановка (без общих доказательств) — своя", () => {
+    let st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R41", violator: "agent", seqs: [3, 4] }], items, nowS: 10 });
+    st = run(st, { verdicts: [{ kind: "violation", cond: "R41", violator: "agent", seqs: [4, 7] }], items, nowS: 11 });
+    expect(byKey(st)).toEqual([["П-001", "bad", "R41", "", "open"]]);
+    // Другая остановка — когда доказательства прежней ушли из окна (сводный вердикт системы с ними был бы [4, 7, 9] — ревью Б4 № 4).
+    st = run(st, { verdicts: [{ kind: "violation", cond: "R41", violator: "agent", seqs: [9] }], items: [item(9, 9)], nowS: 12 });
+    expect(st.entries.map((e) => e.no)).toEqual(["П-001", "П-002"]);
+  });
+  it("ревью Б4 № 3 (свойство сводного вердикта системы, не протокола): вторая остановка, пока доказательства первой в окне, приходит одним вердиктом с ними — одна запись", () => {
+    let st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R41", violator: "agent", seqs: [4, 7] }], items, nowS: 10 });
+    st = run(st, { verdicts: [{ kind: "violation", cond: "R41", violator: "agent", seqs: [4, 7, 9] }], items: [...items, item(9, 9)], nowS: 11 });
+    expect(st.entries.map((e) => e.no)).toEqual(["П-001"]);
+  });
+  it("ревью Б4 № 2: запись, перенесённая на объект, узнаётся и вердиктом снова без объекта — дубля нет", () => {
+    let st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [5] }], items, nowS: 10 });
+    st = run(st, { verdicts: [{ kind: "violation", obj: "T1", cond: "R23", violator: "platform", seqs: [5, 7] }], items, nowS: 11 });
+    st = run(st, { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [5, 7] }], items, nowS: 12 });
+    expect(byKey(st)).toEqual([["П-001", "bad", "R23", "T1", "open"]]);
+  });
+  it("ревью Б4 № 1: запись системы, вытесненная пределом, после сдвига окна не заводится заново", () => {
+    const sys: Verdict = { kind: "protection", guarantee: "revoke", protector: "platform", seqs: [3, 4] };
+    const many: Verdict[] = Array.from({ length: PROTO_KEPT }, (_, i) => ({ kind: "protection", obj: `C${i}`, cond: "R17", protector: "agent", seqs: [] }));
+    let st = run(emptyProtocol(), { verdicts: [sys], items, nowS: 10 });
+    st = run(st, { verdicts: [sys, ...many], items, nowS: 11 });
+    expect(st.entries.some((e) => e.obj === "" && e.guarantee === "revoke")).toBe(false);
+    expect(st.seq).toBe(PROTO_KEPT + 1);
+    // начало окна (3) ушло, пришло новое доказательство той же остановки
+    st = run(st, { verdicts: [{ ...sys, seqs: [4, 7] }, ...many], items, nowS: 12 });
+    expect(st.seq).toBe(PROTO_KEPT + 1);
+  });
+  it("ревью Б4 № 6: ключ объекта уже вытеснен — запись системы на него не переносится", () => {
+    const st0: ProtocolState = { ...run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [5] }], items, nowS: 10 }) };
+    const st = run({ ...st0, gone: ["bad|R23|T1"] }, { verdicts: [{ kind: "violation", obj: "T1", cond: "R23", violator: "platform", seqs: [5, 7] }], items, nowS: 11 });
+    expect(byKey(st)).toEqual([["П-001", "bad", "R23", "", "open"]]);
+  });
+  it("ревью Б4 № 7: порядок вердиктов в шаге итог не меняет — вердикт системы с общим доказательством узнаётся и в перенесённой записи (свойство № 3)", () => {
+    const sys: Verdict = { kind: "violation", cond: "R23", violator: "platform", seqs: [4, 9] };
+    const onObj: Verdict = { kind: "violation", obj: "T1", cond: "R23", violator: "platform", seqs: [3, 4] };
+    const step = (verdicts: Verdict[]) => {
+      const st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [3, 4] }], items, nowS: 10 });
+      return byKey(run(st, { verdicts, items: [...items, item(9, 9)], nowS: 11 }));
+    };
+    expect(step([sys, onObj])).toEqual([["П-001", "bad", "R23", "T1", "open"]]);
+    expect(step([onObj, sys])).toEqual(step([sys, onObj]));
+  });
+  it("ревью Б4 № 8: служебные поля узнавания записи системы на экран не уходят", () => {
+    const st = run(emptyProtocol(), { verdicts: [{ kind: "violation", cond: "R23", violator: "platform", seqs: [5] }], items, nowS: 10 });
+    expect(protocolView(st, [], items).entries[0]).not.toHaveProperty("sysSeq");
+    expect(protocolView(st, [], items).entries[0]).not.toHaveProperty("sysSeqs");
+  });
+});
+
+describe("Б4 (ревью П-6.1а № 8, вместе с GLOSSARY): «Напомнить» до порога предупреждения", () => {
+  it("напоминание раньше порога, ожидание снялось до порога — записи протокола нет (не «снято само» и не «упреждено»): предупреждение не созрело; реакция — только в журнале реакций", () => {
+    const w: WaitCandidate = { kind: "confirmation", cond: "R21", obj: "T1", confirmationId: "Q1", since: at(0) };
+    const r: Reaction = { ...reaction(5, "remind", "Q1", "R21") };
+    // до порога: ожидание есть, напоминание нажато
+    let st = run(emptyProtocol(), { waits: [w], reactions: [r], items: [item(1, 0)], nowS: 6 });
+    expect(st.entries).toEqual([]);
+    // клиент подтвердил на 10-й секунде — ожидания нет, порог (15 с) так и не наступил
+    st = run(st, { waits: [], reactions: [r], items: [item(1, 0), item(2, 10)], nowS: 20 });
+    expect(st.entries).toEqual([]);
+  });
+});
+
 describe("протокол П-NNN (П-6.1а)", () => {
   it("гарантия — сразу «остановлено гарантией», нарушение — «открыто»; решение клиента — не в протоколе, строкой журнала (В1 (а)); одна остановка — одна запись", () => {
     const vs: Verdict[] = [
