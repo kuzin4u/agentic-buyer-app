@@ -538,8 +538,71 @@ export function seenWaits(
   return [...seen].map(([k, ms]) => ({ obj: k.split("|")[0]!, sec: Math.floor(ms / 1000) }));
 }
 
-function judgeToward(e: Extract<Expect, { kind: "toward" }>, items: readonly Interpretation[], w: Window, objs: ReadonlySet<string>, now: string, waitMs: number): Judged {
+/** Начало ожидания на шине и его прямой ответ — по виду (записи начала и ответа — те же, что у `waits()` в `control.ts`, но
+ *  без него: признак ситуации не зависит от проверяемой функции пульта; ответ владельца 14.11 «3 — да», ревью П-11.5б-1
+ *  № 1). Прочие закрытия — шире, чем у `waits()`: см. `rawWaitArose` (ревью П-11.5б-4 № 3). */
+const RAW_WAIT: Readonly<Record<Exclude<WaitKind, "agent_step">, { readonly start: (x: Interpretation) => string | undefined; readonly closes: (x: Interpretation, id: string) => boolean }>> = {
+  sign: {
+    start: (x) => (x.stream === "scenario" && x.ref === "intent.awaiting_signature" ? x.ids?.mandate_id : undefined),
+    closes: (x, id) => x.source === "pao_event" && (x.ref === "mandate.signed" || x.ref === "mandate.rejected") && x.ids?.mandate_id === id,
+  },
+  consent: {
+    start: (x) => (x.stream === "scenario" && x.ref === "cart.awaiting_signature" ? x.ids?.mandate_id : undefined),
+    closes: (x, id) => x.source === "pao_event" && (x.ref === "mandate.signed" || x.ref === "mandate.rejected") && x.ids?.mandate_id === id,
+  },
+  confirmation: {
+    start: (x) => (x.source === "pao_event" && x.ref === "confirmation.required" ? x.ids?.confirmation_id : undefined),
+    closes: (x, id) => x.source === "pao_event" && x.ref !== "confirmation.required" && x.ref.startsWith("confirmation.") && x.ids?.confirmation_id === id,
+  },
+};
+
+/** Итоговые шаги сюжета, которые тоже снимают ожидание (отзыв, отказ, итог, сбой сюжета). */
+const RAW_TERMINAL_STEP = /(\.signed|\.rejected|\.revoked|\.declined|\.refused|^outcome|^failed)$/;
+
+/** Ситуация У-01…У-03 по сырой шине: начало ожидания у объекта окна, закрытие — не раньше порога (или его нет до конца окна
+ *  / «сейчас»). Признак есть — тест судится; нет — «не проверено» (П8 доп. 1).
+ *
+ *  Закрывает ожидание не только его ответ (`RAW_WAIT.closes`), но и **любое** событие Платформы или итоговый шаг сюжета по
+ *  тому же объекту — поручению, его намерению, заказам и запросам подтверждения покупки (по модели транзакций, не по
+ *  `waits()`). Это шире, чем снимает ожидание `waits()` (отзыв, итог, конфликт, отсечка по отказу — ревью П-11.5б-4 № 1):
+ *  лишнее закрытие даёт лишь «не проверено» (дефект не пойман), а ложного «нет» не даёт. */
+function rawWaitArose(
+  items: readonly Interpretation[],
+  w: Window,
+  objs: ReadonlySet<string>,
+  model: TxModel,
+  kind: Exclude<WaitKind, "agent_step">,
+  now: string,
+  waitMs = WAIT_MS,
+): boolean {
+  const list = [...items].sort((a, b) => a.seq - b.seq);
+  const after = list.find((x) => x.seq >= w.to);
+  const end = Math.min(Date.parse(now), after ? Date.parse(after.at) : Infinity);
+  const rule = RAW_WAIT[kind];
+  const idsOf = (x: Interpretation) => Object.values(x.ids ?? {}).filter((v): v is string => typeof v === "string");
+  for (const x of list) {
+    if (!inWin(w, x.seq)) continue;
+    const id = rule.start(x);
+    if (id === undefined) continue;
+    // Объект начала — транзакция или поручение модели; только объекты окна (ревью № 2).
+    const tx = model.txs.find((t) => t.seqs.includes(x.seq) || t.confirmationIds.includes(id) || t.cartMandateId === id);
+    const mand = model.mandates.find((m) => m.id === id);
+    if (!objs.has(id) && !(tx !== undefined && objs.has(tx.id)) && !(mand !== undefined && objs.has(mand.id))) continue;
+    const related = new Set<string>([id, ...idsOf(x), ...(tx ? [tx.intentId, tx.cartMandateId, ...tx.orderIds, ...tx.confirmationIds].filter((v): v is string => v !== undefined) : [])]);
+    const closesOther = (y: Interpretation) => (y.source === "pao_event" || (y.stream === "scenario" && RAW_TERMINAL_STEP.test(y.ref))) && idsOf(y).some((v) => related.has(v));
+    const close = list.find((y) => y.seq > x.seq && y !== x && (rule.closes(y, id) || closesOther(y)));
+    const until = close ? Math.min(Date.parse(close.at), end) : end;
+    if (until - Date.parse(x.at) >= waitMs) return true;
+  }
+  return false;
+}
+
+function judgeToward(e: Extract<Expect, { kind: "toward" }>, items: readonly Interpretation[], w: Window, objs: ReadonlySet<string>, model: TxModel, now: string, waitMs: number): Judged {
   const seen = seenWaits(items, w, objs, e.wait, now, waitMs);
+  // Признак ситуации — по сырой шине, не через `waits()`: на шине ожидание до порога было, а пульт его не показал — «нет»
+  // (дефект пульта не прячется под «не проверено»; ревью П-11.5б-1 № 1, решение владельца 14.11).
+  if (!seen.length && rawWaitArose(items, w, objs, model, e.wait, now, waitMs))
+    return { agree: "no", fact: join([lit(e.cond), p("на шине ожидание дошло до порога, а «Идёт к нарушению» пульт не показал", 'on the bus the wait reached the threshold, but the console did not show "Heading to a violation"')], " · ") };
   // Ожидание оператора до порога не дошло — ситуация теста не возникла: «не проверено», а не «нет» (Р-1553, П8).
   if (!seen.length) return { agree: "unchecked", fact: join([lit(e.cond), p("ожидание до порога не дошло — ситуация не возникла", "the wait did not reach the threshold — the situation did not arise")], " · ") };
   return { agree: "yes", fact: join(seen.map((s) => join([lit(e.cond), lit(s.obj), WAIT_LABEL[e.wait], secs(s.sec)], " · ")), "; ") };
@@ -692,7 +755,7 @@ export function testTable(input: TestTableInput): TestTable {
         j = judgeIncorrect(expect, mine, fired, model, driver);
         break;
       case "toward":
-        j = judgeToward(expect, items, W, new Set(ids), now, waitMs);
+        j = judgeToward(expect, items, W, new Set(ids), model, now, waitMs);
         break;
       case "prevented":
         j = judgePrevented(expect, txs, ids, mine, input.reactions ?? []);

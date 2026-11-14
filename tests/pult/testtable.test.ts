@@ -288,6 +288,28 @@ describe("П-11.5а: У-01…У-04", () => {
     expect(fast.fact.ru).toContain("ситуация не возникла");
     expect(fast.fact.en).toContain("the situation did not arise");
   });
+  it("П8 доп. 1 (ревью П-11.5б-4 № 1): ожидание законно снято не ответом — отзывом поручения, намерения или корзины — «не проверено», а не ложное «нет»", () => {
+    const ev = (seq: number, sec: number, ref: string, ids: Record<string, string>) => rec(seq, sec, ref, { stream: "monitor", source: "pao_event", ids });
+    // У-01: поручение отозвано через 3 с
+    expect(row(t([...intent(1, 0, "mnd_v"), ev(5, 4, "mandate.revoked", { mandate_id: "mnd_v" })]), "У-01").agree).toBe("unchecked");
+    // У-02: ожидание согласия корзины, отозвано поручение-намерение через 3 с
+    const consent = [
+      rec(10, 100, "run.purchase"),
+      rec(11, 101, "cart.created", { ids: { mandate_id: "crt_v", intent_id: "mnd_vi" } }),
+      rec(12, 101, "cart.awaiting_signature", { ids: { mandate_id: "crt_v" } }),
+      ev(13, 104, "mandate.revoked", { mandate_id: "mnd_vi" }),
+    ];
+    expect(row(t(consent), "У-02").agree).toBe("unchecked");
+    // У-03: открыт запрос подтверждения, корзина отозвана через 3 с
+    const conf = [
+      rec(20, 200, "run.upk"),
+      rec(21, 201, "cart.created", { ids: { mandate_id: "crt_w", intent_id: "mnd_wi" } }),
+      rec(22, 201, "order.placed", { ids: { order_id: "ord_w", mandate_id: "crt_w" } }),
+      ev(23, 202, "confirmation.required", { confirmation_id: "cnf_w", order_id: "ord_w" }),
+      ev(24, 205, "mandate.revoked", { mandate_id: "crt_w" }),
+    ];
+    expect(row(t(conf), "У-03").agree).toBe("unchecked");
+  });
   it("ревью № 3: неподписанное поручение прошлого прогона не даёт «да» новому — ситуации в этом окне нет, «не проверено»", () => {
     expect(row(t([...intent(1, 0, "mnd_old"), ...intent(10, 100, "mnd_new", 2)]), "У-01").agree).toBe("unchecked");
   });
