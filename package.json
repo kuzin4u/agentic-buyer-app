@@ -1,6 +1,6 @@
 {
   "name": "agentic-buyer-app",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Приложение агента покупателя с экранами сделки; ядро — agentic-buyer-ref",
   "type": "module",
