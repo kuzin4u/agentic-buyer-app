@@ -26,9 +26,12 @@ export const HELP_PANES: Readonly<Record<Pane, readonly Texts[]>> = {
     p("При транзакции в фокусе — её сводка: стадия, итог по событию, продавцы, число записей.", "With a transaction in focus — its summary: stage, outcome from the event, merchants, number of records."),
     p("На экране — только идентификаторы и коды; текст продавцов — как текст, без разметки.", "Only identifiers and codes are shown; merchants’ text is shown as text, without markup."),
   ],
-  // На MVP панель пуста до журнала окна А (П-6): справка не обещает того, чего нет (ревью П-9.2 № 1).
+  // Справка — о том, что в панели есть (ревью П-9.2 № 1): протокол П-NNN и журнал реакций (П-6.1а, П-8.2), «Отчёт» (П-6.2,
+  // П13). Было «пока панель пуста» — до журнала окна А; поправлено окном А по Р-1493 (П-11.5б, план прогона).
   log: [
-    p("Журнал действий и протокол прогона появятся здесь позже; пока панель пуста.", "The action log and the run protocol will appear here later; for now the panel is empty."),
+    p("Протокол П-NNN: нарушения, сработавшие гарантии и созревшие предупреждения со статусом и временем до реакции.", "Protocol П-NNN: violations, triggered guarantees and matured warnings with status and time to reaction."),
+    p("Журнал реакций: нажатия кнопок и связанные с ними записи журнала стенда.", "Reaction log: button presses and the stand log records linked to them."),
+    p("«Отчёт»: снимок таблицы 25 тестов и выгрузка акта ACC-1 — того снимка, что на экране.", "“Report”: a snapshot of the 25-test table and the ACC-1 record export — of the snapshot shown on screen."),
     p("Решения эмулятора клиента и нарушителя уже видны в «Лентах» с пометкой.", "Client emulator and violator decisions are already visible in the “Feeds”, marked."),
   ],
 };

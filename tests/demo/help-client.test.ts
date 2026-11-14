@@ -107,8 +107,13 @@ describe("окно справки на подменённом DOM (П-9.2)", () 
     expect(grid.classList.contains("max")).toBe(true);
   });
 
-  it("ревью № 1: справка «Журнала» не обещает того, чего на панели нет", () => {
-    for (const l of ["ru", "en"] as const) expect(HELP_PANES.log.map((t) => t[l]).join(" ")).toMatch(/позже|later/);
+  it("ревью № 1: справка «Журнала» говорит о том, что на панели есть — протокол, журнал реакций, «Отчёт»; «пока пуста» нет (П-11.5б)", () => {
+    const ru = HELP_PANES.log.map((t) => t.ru).join(" ");
+    const en = HELP_PANES.log.map((t) => t.en).join(" ");
+    for (const w of ["Протокол П-NNN", "Журнал реакций", "«Отчёт»"]) expect(ru).toContain(w);
+    for (const w of ["Protocol П-NNN", "Reaction log", "“Report”"]) expect(en).toContain(w);
+    expect(ru).not.toMatch(/пока панель пуста|позже/);
+    expect(en).not.toMatch(/panel is empty|later/);
   });
 
   it("en: заголовок и строки — на английском", () => {
