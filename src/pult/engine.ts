@@ -48,6 +48,10 @@ export const OBJECT_ONLY_NOTES: ReadonlySet<Note> = new Set<Note>(["preempted_by
 /** Шаги итога прогона драйвера «ПР» (П7; перечень — «Контроль», `FAULT_OUTCOMES`): по ним решается судьба пометки без
  *  объекта (№ 10). */
 const FAULT_OUTCOME_STEPS: ReadonlySet<string> = new Set(FAULT_OUTCOMES.map((o) => `fault.${o}`));
+/** Метка начала прогона драйвера нарушителя (`run.fault`, как у `faultOf` в `dashboards/control.ts`) — граница прогона для
+ *  итога пометки (Б4а). В отличие от `splitRuns`, который режет ленту по любой метке `run.*`, граница здесь — только по
+ *  `run.fault`: прогоны сюжетов пометок не содержат (ревью Б4а № 10). */
+const FAULT_RUN_STEP = "run.fault";
 export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   race_c28: p(
     "«оплачено» после отзыва, но запрос агента — до отзыва: гонка С-28, фрод или дефект; вердикт — владелец",
@@ -431,6 +435,9 @@ function txConds(
   o: EngineOptions,
   /** Записи с неточной привязкой: номер записи журнала стенда → пометка. */
   weak?: ReadonlyMap<number, WeakNote>,
+  /** У транзакции есть точно привязанная пометка «ПР» в журнале стенда — с итогом прогона или без, в окне или старше
+   *  (Б4а, повторное ревью № 10 (1); ревью Б4а № 1). */
+  markPending = false,
 ): CondResults {
   const all = [...recs, ...intentRecs].sort((a, b) => a.seq - b.seq);
   const pays = recs.filter(isAgentPay);
@@ -477,7 +484,11 @@ function txConds(
     // #issuecomment-6857335967, п. 2; Н-06). На Р-1541 не распространяется — там пометки нет.
     // Только точно привязанная пометка: неточная (`weak`, конфликт звеньев) не прячет «решение клиента» чужой транзакции
     // (ревью № 10 № 6). Известный признак отзыва при пометке уходит в «не определён» — сознательно, как велено (п. 2).
-    const marked = (log ?? []).some((e) => e.what === "MARKED" && !(weak?.has(e.seq) ?? false));
+    // Для этого запрета пометка берётся и без итога прогона, и старше окна (Р-1551 и правило окна откладывают только вердикт
+    // по самой пометке): иначе между
+    // ответом Платформы и шагом итога на миг выносилось бы «решение клиента», и протокол заводил бы по нему запись — запись
+    // акта зависела бы от того, попал ли пересчёт в долю секунды (Б4а, повторное ревью № 10 (1), вариант (а), П15).
+    const marked = markPending || (log ?? []).some((e) => e.what === "MARKED" && !(weak?.has(e.seq) ?? false));
     const why = marked
       ? codes.has("MANDATE_EXPIRED")
         ? "expired"
@@ -824,14 +835,47 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // Записи с неточной привязкой — по объекту: номер записи журнала стенда → пометка.
   const weakOf = new Map<string, Map<number, WeakNote>>();
   const systemLog: StandLogEntry[] = [];
-  const outcomes = items.filter((x) => x.stream === "scenario" && FAULT_OUTCOME_STEPS.has(x.ref) && x.test !== undefined);
-  /** Итог прогона драйвера для пометки: шаг итога того же теста не раньше пометки; часы — стенда. */
-  const outcomeOf = (e: StandLogEntry) => outcomes.find((x) => x.test === e.test && Date.parse(x.at) >= Date.parse(e.at));
+  const sortedItems = [...items].sort((a, b) => a.seq - b.seq);
+  const outcomes = sortedItems.filter((x) => x.stream === "scenario" && FAULT_OUTCOME_STEPS.has(x.ref) && x.test !== undefined);
+  const runStarts = sortedItems.filter((x) => x.stream === "scenario" && x.ref === FAULT_RUN_STEP);
+  /** Итог прогона драйвера для пометки: шаг итога того же теста не раньше пометки; часы — стенда. Граница прогона — по шагу
+   *  `run.fault` (Б4а, повторное ревью № 10 (3), вариант (а), П15): итог берётся только из прогона пометки — после последнего
+   *  шага `run.fault` того же теста не позже пометки и до следующего шага `run.fault`. Пометка прогона 2 в ту же миллисекунду,
+   *  что итог прогона 1, чужого итога не получит. Шага `run.fault` прогона пометки в окне нет — верхняя граница — первый
+   *  шаг `run.fault` после пометки (ревью Б4а № 5); шагов нет вовсе — прежняя граница по времени.
+   *  Ничья в другую сторону — пометка прогона 1 в ту же миллисекунду, что шаг `run.fault` прогона 2, — относится к прогону 2
+   *  (`<=`): по времени два случая не различить; пометка тогда ждёт итога прогона 2 (STATUS «Открыто», ревью Б4а № 3).
+   *  Шаг `run.fault` другого теста между пометкой и итогом — граница: такую пометку не судят. Сейчас недостижимо — драйвер не
+   *  запускает прогон, пока идёт прежний (`BUSY`); станут прогоны параллельными — правило пересмотреть (повторное ревью Б4а № 4). */
+  const outcomeOf = (e: StandLogEntry) => {
+    const at = Date.parse(e.at);
+    const start = [...runStarts].reverse().find((x) => x.test === e.test && Date.parse(x.at) <= at);
+    const next = start ? runStarts.find((x) => x.seq > start.seq) : runStarts.find((x) => Date.parse(x.at) > at);
+    return outcomes.find((x) => x.test === e.test && Date.parse(x.at) >= at && (!start || x.seq > start.seq) && (!next || x.seq < next.seq));
+  };
+  // Окно записей конечно (лента пульта, шина), журнал стенда — нет: пометка «ПР» старше первой записи окна не судится (Б4а,
+  // повторное ревью № 10 (4), вариант (а), П15) — так же, как поздний итог без объекта (ниже; повторное ревью П-3.2в № A).
+  // Вердикт по старой пометке перестаёт зависеть от того, остался ли в окне итог её прогона. Прочие записи журнала (сбои «П»,
+  // поздний итог у транзакции, действия кнопок) — как раньше: их судят по объектам, а запись стенда может опередить первый
+  // шаг шины (ревью Б4а № 2).
+  const windowFrom = items.length > 0 ? Math.min(...items.map((x) => Date.parse(x.at))) : undefined;
+  const inWindow = (e: StandLogEntry) => e.what !== "MARKED" || windowFrom === undefined || Date.parse(e.at) >= windowFrom;
   // Р-1551 (#issuecomment-6858980768): пометка «ПР» — заявление о нарушении, которое драйвер ещё разыгрывает; пока у её прогона
   // нет итога, она не учитывается ни у объекта, ни в «системе». Иначе в окне «пометка есть — ответа Платформы ещё нет» у
   // транзакции R17 «нарушено», и протокол заводит открытую запись рядом с «сработало» (живой тест протокола по префиксам
   // ленты). Вердикт по пометке выносится к итогу прогона — на секунды позже.
-  const entries = (o.standLog ?? []).filter((e) => e.what !== "MARKED" || e.test === undefined || outcomeOf(e) !== undefined);
+  const entries = (o.standLog ?? []).filter((e) => inWindow(e) && (e.what !== "MARKED" || e.test === undefined || outcomeOf(e) !== undefined));
+  /** Транзакции и поручения с точно привязанной пометкой «ПР» — для запрета «решения клиента» (Б4а, № 10 (1)): по всему
+   *  журналу стенда — и без итога прогона, и старше окна. Запрет ведёт только к «не определён», поэтому окно и итог его не
+   *  снимают (ревью Б4а № 1: иначе на краю окна правила (1) и (4) давали бы «решение клиента»). */
+  const markPendingOf = new Set(
+    // Пометка и без кода теста (формат журнала её допускает) — тоже: иначе она старше окна выпадала бы из запрета (повторное
+    // ревью Б4а № 1).
+    (o.standLog ?? []).filter((e) => e.what === "MARKED").flatMap((e) => {
+      const { ids, weak } = objsOfEntry(e, model);
+      return weak === undefined ? ids : [];
+    }),
+  );
   const linked = entries.map((e) => objsOfEntry(e, model));
   // Пометка «ПР» без объекта решается по итогу прогона драйвера (ответ чата #issuecomment-6857335967, п. 3 — вариант (а)
   // узко; ревью № 10 № 1, 2): первая пометка драйвера ставится по продавцу до поручения и корзины, вторая — по корзине, а между
@@ -844,8 +888,8 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     if (e.what !== "MARKED" || e.test === undefined) return true;
     const out = outcomeOf(e);
     if (!out) return false;
-    const end = Date.parse(out.at);
-    return !entries.some((x, k) => k > i && x.what === "MARKED" && x.test === e.test && Date.parse(x.at) <= end && linked[k]!.ids.length > 0);
+    // Тот же прогон — по тому же итогу (граница по `run.fault`, ревью Б4а № 4), а не по времени.
+    return !entries.some((x, k) => k > i && x.what === "MARKED" && x.test === e.test && outcomeOf(x) === out && linked[k]!.ids.length > 0);
   };
   for (const [i, e] of entries.entries()) {
     const { ids, weak } = linked[i]!;
@@ -860,7 +904,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   const objs: ObjCheck[] = [];
   for (const t of model.txs) {
     const intent = t.intentId !== undefined ? mandateById.get(t.intentId) : undefined;
-    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id)) });
+    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id), markPendingOf.has(t.id)) });
     for (const s of t.seqs) objOf.set(s, t.id);
   }
   for (const m of model.mandates) {
@@ -899,7 +943,6 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     const seenOps = new Set(items.map((x) => x.ids?.op_ref).filter((x): x is string => x !== undefined));
     // Окно записей конечно (лента пульта, шина), журнал стенда — нет: запись старше первой записи окна не судится — её
     // транзакция могла уйти из окна, «нет на шине» тогда ложно (повторное ревью П-3.2в № A).
-    const windowFrom = items.length > 0 ? Math.min(...items.map((x) => Date.parse(x.at))) : undefined;
     // Записи позднего итога без `op_ref` после срока: судить не по чему — не «ждёт» навсегда, а пометка (Р-1537; повторное
     // ревью П-3.2в № D). Статус условия — от объектов и других записей («соблюдено» или «не применяется»), не выше.
     const unlinked: number[] = [];

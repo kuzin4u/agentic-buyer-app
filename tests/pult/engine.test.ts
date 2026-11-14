@@ -486,6 +486,92 @@ describe("№ 10 (Р-1548): корзина драйвера «ПР» — тра�
     expect(r17([...items, outcome("fault.marked", "Н-07", 2_000)])).not.toBe("bad");
     expect(r17([...items, outcome("fault.marked", "Н-08", -1_000)])).not.toBe("bad");
   });
+
+  // Б4а (повторное ревью № 10 (1), (3), (4); П15 — варианты (а), (а), (а)).
+  it("Б4а (1): пометка «ПР» в транзакции без итога прогона — «решение клиента» не выносится и на миг до шага итога", () => {
+    const shape = purchase("D6c", {
+      skip: ["order", "start", "pay", "done"],
+      at: { end: () => [event("mandate.revoked", { mandate_id: "CD6c" }), call("POST /pao/v1/credentials", { mandate_id: "CD6c" }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" })] },
+    });
+    const m6 = [entry("MARKED", { mandate_id: "CD6c" }, { test: "Н-06" })];
+    // шага итога нет (`played` не вызван): прежде — «решение клиента» до итога; теперь — тот же вердикт, что с итогом (ревью Б4а № 7)
+    const pending = judgeLog(shape, m6);
+    expect(pending.vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "protection", violator: "undetermined", cause: { kind: "rule", rule: "inactive_platform_decline" } });
+    // вердикт по самой пометке до итога не выносится (Р-1551): R37 — не «нарушено»
+    expect(pending.vs.filter((v) => v.cond === "R37" && v.kind === "violation")).toEqual([]);
+    // пометка по другому поручению (не привязана) решения не прячет — прежнее правило
+    const other = [entry("MARKED", { mandate_id: "CZZ" }, { test: "Н-06" })];
+    expect(judgeLog(shape, other).vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "client_decision" });
+  });
+  it("ревью Б4а № 6: неточная пометка без итога (намерение с двумя корзинами — конфликт звеньев) «решение клиента» не прячет", () => {
+    const revoked = (n: string) =>
+      purchase(n, {
+        intentId: "IGY",
+        ...(n === "DB2" && { intent: () => [] }),
+        skip: ["order", "start", "pay", "done"],
+        at: { end: () => [event("mandate.revoked", { mandate_id: `C${n}` }), call("POST /pao/v1/credentials", { mandate_id: `C${n}` }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" })] },
+      });
+    const items = [...revoked("DB1"), ...revoked("DB2")];
+    const weak = [entry("MARKED", { mandate_id: "IGY" }, { test: "Н-06" })];
+    const r = judgeLog(items, weak).vs.filter((v) => v.cond === "R09" && v.obj === "CDB1");
+    expect(r.map((v) => v.kind)).toEqual(["client_decision"]);
+  });
+  it("ревью Б4а № 1: пометка «ПР» старше окна не судится, но «решение клиента» по-прежнему прячет (запрет — по всему журналу)", () => {
+    const shape = purchase("DB3", {
+      skip: ["order", "start", "pay", "done"],
+      at: { end: () => [event("mandate.revoked", { mandate_id: "CDB3" }), call("POST /pao/v1/credentials", { mandate_id: "CDB3" }, "agent_platform", { code: "MANDATE_REVOKED", kind: "conflict" })] },
+    });
+    const from = Math.min(...shape.map((x) => Date.parse(x.at)));
+    const old = [entry("MARKED", { mandate_id: "CDB3" }, { test: "Н-06", atMs: from - 1_000 })];
+    const r = judgeLog(played(shape, old), old);
+    expect(r.vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "protection", violator: "undetermined", cause: { kind: "rule", rule: "inactive_platform_decline" } });
+    // пометка без кода теста (формат журнала допускает) старше окна — тоже прячет (повторное ревью Б4а № 1)
+    const bare = [entry("MARKED", { mandate_id: "CDB3" }, { atMs: from - 1_000 })];
+    expect(judgeLog(shape, bare).vs.find((v) => v.cond === "R09")).toMatchObject({ kind: "protection", violator: "undetermined", cause: { kind: "rule", rule: "inactive_platform_decline" } });
+  });
+  it("ревью Б4а № 2: поздний итог по `op_ref` у транзакции старше окна — судится, как раньше (окно — только у записи без объекта)", () => {
+    const items = purchase("LB7");
+    const from = Math.min(...items.map((x) => Date.parse(x.at)));
+    const old = fault("OUTCOME_EVENT_DELAYED", { op_ref: "PLB7" }, "Н-12", from - 1_000);
+    expect(txOf(withLog(items, [old], { now: T0 + 120_000 })).R31).toMatchObject({ status: "ok", log: [old.seq] });
+  });
+  it("Б4а (3): граница прогона драйвера — по шагу `run.fault`: пометка прогона 2 в ту же миллисекунду, что итог прогона 1, чужого итога не получает", () => {
+    const items = purchase("DA3", { skip: ["order", "start", "pay", "done"] });
+    const start = (ms: number): Interpretation => ({ ...step("run.fault", {}, { stage: "service" }), test: "Н-08", at: at(ms) });
+    const mark = [entry("MARKED", { mandate_id: "CDA3" }, { test: "Н-08", atMs: T0 })];
+    const r17 = (its: Interpretation[]) => judgeLog(its, mark).ev.objs.find((o) => o.id === "CDA3")!.conds.R17.status;
+    // прогон 1 (итог в 0 мс) и прогон 2 (метка в 0 мс, пометка в 0 мс, итога ещё нет)
+    const two = [...items, start(-5_000), outcome("fault.refused", "Н-08", 0), start(0)];
+    expect(r17(two)).not.toBe("bad");
+    // итог прогона 2 пришёл — учитывается
+    expect(r17([...two, outcome("fault.marked", "Н-08", 1_000)])).toBe("bad");
+    // одна метка — итог в ту же миллисекунду свой
+    expect(r17([...items, start(-5_000), outcome("fault.marked", "Н-08", 0)])).toBe("bad");
+    // ничья в другую сторону (ревью Б4а № 3; STATUS «Открыто»): пометка в ту же миллисекунду, что метка прогона 2, —
+    // относится к прогону 2; итог прогона 1 до метки 2 ей не достаётся, итог прогона 2 — её
+    const tie = [...items, start(-5_000), start(0), outcome("fault.marked", "Н-08", 0)];
+    expect(r17(tie)).toBe("bad");
+    const tieBefore = [...items, start(-5_000), outcome("fault.marked", "Н-08", 0), start(0)];
+    expect(r17(tieBefore)).not.toBe("bad");
+    // метка прогона пометки ушла из окна, метка следующего прогона есть — итог следующего прогона пометке не достаётся (№ 5)
+    expect(r17([...items, start(2_000), outcome("fault.marked", "Н-08", 3_000)])).not.toBe("bad");
+    // метка чужого теста между пометкой и итогом — граница прогона: итог после неё не свой (№ 8)
+    // (записи создаются по порядку: номер записи шины — по порядку создания)
+    const own = start(-5_000);
+    const other: Interpretation = { ...step("run.fault", {}, { stage: "service" }), test: "Н-07", at: at(500) };
+    expect(r17([...items, own, other, outcome("fault.marked", "Н-08", 1_000)])).not.toBe("bad");
+  });
+  it("Б4а (4): пометка «ПР» старше первой записи окна не судится — итог в окне её задним числом не оживляет", () => {
+    const items = purchase("DA4", { skip: ["order", "start", "pay", "done"] });
+    const from = Math.min(...items.map((x) => Date.parse(x.at)));
+    const old = [entry("MARKED", { mandate_id: "CDA4" }, { test: "Н-08", atMs: from - 1_000 })];
+    // итог через 1 мс после пометки — и он в окне; без правила пометка дала бы R17 «нарушено»
+    const its = [...items, outcome("fault.marked", "Н-08", from - T0 - 999)];
+    expect(judgeLog(its, old).ev.objs.find((o) => o.id === "CDA4")!.conds.R17.status).not.toBe("bad");
+    // пометка в окне — судится
+    const fresh = [entry("MARKED", { mandate_id: "CDA4" }, { test: "Н-08", atMs: from + 1 })];
+    expect(judgeLog([...items, outcome("fault.marked", "Н-08", from - T0 + 2)], fresh).ev.objs.find((o) => o.id === "CDA4")!.conds.R17.status).toBe("bad");
+  });
 });
 
 describe("«упреждено реакцией» у R21 (П-8.2, У-04, Р-1531)", () => {
