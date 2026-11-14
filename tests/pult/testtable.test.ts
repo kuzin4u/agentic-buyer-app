@@ -302,14 +302,16 @@ describe("Б3: сверки таблицы с источниками (Р-1511)",
     expect(tt.totals.unchecked).toBe(tt.rows.filter((x) => x.agree === "unchecked" || x.agree === "not_counted").length);
   });
 
-  // Формулировка факта «итога по операции ещё нет» ≠ столбцу M («сверить не с чем») — меняет строку акта, Б5 (ревью Б3 № 2).
-  it("К1 PR #16 № 8: Н-12 — запись задержки без `op_ref`: вердикт — «не проверено», не «да» и не «нет»", () => {
+  // Формулировка факта — по столбцу M («сверить не с чем»), а не «итога по операции ещё нет» (ревью Б3 № 2, Б5).
+  it("К1 PR #16 № 8: Н-12 — запись задержки без `op_ref`: вердикт — «не проверено», не «да» и не «нет»; факт — «сверить не с чем»", () => {
     const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
     const model = modelOf([tx("T1", [3])]);
     const blank = log(1, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-12" });
     const r = row(table({ items, model, standLog: [blank] }), "Н-12");
     expect(r.agree).toBe("unchecked");
-    expect(r.fact.ru).toContain("итога по операции ещё нет");
+    expect(r.fact.ru).toContain("итог сверить не с чем");
+    expect(r.fact.en).toContain("nothing to match the outcome against");
+    expect(r.fact.ru).not.toContain("итога по операции ещё нет");
   });
 });
 
@@ -440,6 +442,73 @@ describe("К2: метка прогона и факт с видом вердик�
     const f = row(table({ items: n08, model: modelOf([tx("T1", [2])]), verdicts: [{ ...v, kind: "protection", protector: "undetermined" }] }), "Н-08");
     expect(f.fact.ru).toContain("«сработало»");
     expect(f.fact.ru).toContain("защитил: не определён");
+  });
+  it("Б5 (П-11.5а № 11): строка П-xx берёт последний завершённый прогон — идущий (до срока) строку не судит", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome"), rec(4, 100, "run.purchase"), rec(5, 101, "cart.created")];
+    const model = modelOf([tx("T1", [2, 3], paid(3)), tx("T2", [5])]);
+    // второй прогон идёт (сейчас — через 5 с после его последней записи): взят первый, завершённый — «да», не «нет»
+    const during = row(table({ items, model, now: at(106) }), "П-01");
+    expect(during).toMatchObject({ agree: "yes", run: "run.purchase 1/2" });
+    // срок второго прошёл — взят он: итога нет — «нет»
+    expect(row(table({ items, model, now: at(117) }), "П-01")).toMatchObject({ agree: "no", run: "run.purchase 2/2" });
+    // единственный прогон идёт — «не проверено» с причиной, а не «нет»
+    const one = row(table({ items: items.slice(3), model: modelOf([tx("T2", [5])]), now: at(106) }), "П-01");
+    expect(one).toMatchObject({ agree: "unchecked", run: "run.purchase" });
+    expect(one.fact.ru).toContain("прогон идёт");
+    expect(one.fact.en).toContain("in progress");
+  });
+  it("ревью Б5 № 2: взвод сбоя «П» и «Авто» после срока завершённого прогона (до следующей метки) к нему не относятся", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "outcome"), rec(4, 100, "run.purchase"), rec(5, 101, "cart.created")];
+    const model = modelOf([tx("T1", [2, 3], paid(3)), tx("T2", [5])]);
+    // прогон 2 — без итога, срок прошёл; взвод Н-11 — после срока, до следующей метки: строка остаётся на 2/2, «нет»
+    const armed = [...items, rec(6, 130, "stand_fault.armed", { test: "Н-11" })];
+    expect(row(table({ items: armed, model, now: at(200) }), "П-01")).toMatchObject({ agree: "no", run: "run.purchase 2/2" });
+    // взвод внутри срока — прогон 2 «грязный», взят чистый 1/2 (прежнее правило)
+    const inside = [...items, rec(6, 105, "stand_fault.armed", { test: "Н-11" })];
+    expect(row(table({ items: inside, model, now: at(200) }), "П-01")).toMatchObject({ agree: "yes", run: "run.purchase 1/2" });
+    // «Авто» включили после срока У-02 — прогон не становится «Авто» задним числом
+    const auto = [...items, rec(6, 130, "client.auto_on")];
+    expect(row(table({ items: auto, model, now: at(200) }), "У-02").auto).toBe(false);
+    expect(row(table({ items: [...items.slice(0, 4), rec(6, 100, "client.auto_on"), rec(7, 101, "cart.created")], model, now: at(200) }), "У-02")).toMatchObject({ agree: "not_counted", auto: true });
+  });
+  it("ревью Б5 № 3, 8, 9: следующая метка до срока прогон не завершает; идущий У-xx при «Авто» — «не засчитано»; нечитаемое «сейчас» — прежнее правило", () => {
+    // сюжет 1 и сразу (через 1 с) другой сюжет: purchase ещё до срока — «прогон идёт», не «нет» по неполному итогу
+    const early = [rec(1, 0, "run.purchase"), rec(2, 1, "cart.created"), rec(3, 2, "run.upk")];
+    const r = row(table({ items: early, model: modelOf([tx("T1", [2])]), now: at(5) }), "П-01");
+    expect(r.agree).toBe("unchecked");
+    expect(r.fact.ru).toContain("прогон идёт");
+    const auto = [rec(0, 0, "client.auto_on"), rec(1, 0, "run.upk"), rec(2, 1, "cart.created")];
+    expect(row(table({ items: auto, model: modelOf([tx("T1", [2])]), now: at(5) }), "У-04")).toMatchObject({ agree: "not_counted", auto: true });
+    expect(row(table({ items: early, model: modelOf([tx("T1", [2])]), now: "не время" }), "П-01").agree).toBe("no");
+  });
+  it("ревью Б5 № 4, 5: Н-12 — часть записей сбоя без `op_ref` — «не проверено», не «итог учтён»; с паспортом — «нет» с той же причиной", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
+    const model = modelOf([tx("T1", [3], { opRefs: ["op_1"], ...paid(3) })]);
+    const linked = log(1, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-12", ids: { op_ref: "op_1" } });
+    const blank = log(2, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-12" });
+    expect(row(table({ items, model, standLog: [linked] }), "Н-12").agree).toBe("yes");
+    const mixed = row(table({ items, model, standLog: [linked, blank] }), "Н-12");
+    expect(mixed.agree).toBe("unchecked");
+    expect(mixed.fact.ru).toContain("сверить не с чем");
+    const pass: Verdict = { kind: "violation", obj: "T1", cond: "R31", violator: "operator", node: "У4", seqs: [3] };
+    const withPass = row(table({ items, model, standLog: [blank], verdicts: [pass] }), "Н-12");
+    expect(withPass.agree).toBe("no");
+    expect(withPass.fact.ru).toContain("сверить не с чем");
+  });
+  it("ревью Б5 № 7: коды сбоев «П» (`FAULT_WHAT`) у тестов не пересекаются — опора привязки вердиктов `fault` по коду", () => {
+    const seen = new Map<string, string>();
+    for (const [test, codes] of Object.entries(FAULT_WHAT)) for (const c of codes) {
+      expect(seen.get(c), `${c}: ${test} и ${seen.get(c)}`).toBeUndefined();
+      seen.set(c, test);
+    }
+  });
+  it("Б5 (повторное ревью П-11.5а № 5): запись сбоя «П» с тестом другого теста к строке не относится; без теста — по коду", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
+    const model = modelOf([tx("T1", [3])]);
+    const other = log(1, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-11" });
+    expect(row(table({ items, model, standLog: [other] }), "Н-12").fact.ru).toContain("сбой не сработал");
+    const bare = log(1, 2, "OUTCOME_EVENT_DELAYED");
+    expect(row(table({ items, model, standLog: [bare] }), "Н-12").fact.ru).not.toContain("сбой не сработал");
   });
   it("en-подписи — без «ёлочек» (ревью К1а № 5, правило совместимости 3)", () => {
     const t = table({ items: [] });

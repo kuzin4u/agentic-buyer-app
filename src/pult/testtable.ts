@@ -24,7 +24,7 @@
 // реакцией» (П-8.2). «Авто» (В4): у У-01…У-04 — «не засчитано: прогон не по П5 доп. 1 п. 5», у остальных — пометка, на
 // «сходится» не влияет. Ситуация теста в прогоне не возникла — «не проверено», «нет» — только при расхождении (Р-1553, П8):
 // У-01…У-03 — ожидание оператора до порога не дошло; У-04 — нажатий оператора по объектам прогона нет.
-import { faultOf, splitRuns, type FaultOutcome, type Run } from "../dashboards/control.js";
+import { CLIENT_AUTO_OFF, CLIENT_AUTO_ON, DEFAULT_WAIT_MS, faultOf, runDeadline, splitRuns, type FaultOutcome, type Run } from "../dashboards/control.js";
 import type { Interpretation } from "../dashboards/interpret.js";
 import { NOT_REPRODUCIBLE_LABEL, STAND_TEST_TABLE } from "../dashboards/stand-tests.js";
 import type { Reaction } from "./actions.js";
@@ -400,7 +400,9 @@ function objsIn(model: TxModel, w: Window): { txs: PultTx[]; ids: string[] } {
 function standOfTest(log: readonly StandLogEntry[] | undefined, test: TestCode, w: Window, what: readonly string[]): StandLogEntry[] {
   return (log ?? []).filter((e) => {
     const at = Date.parse(e.at);
-    return at >= w.fromAt && at < w.toAt && ((e.what === "MARKED" && e.test === test) || what.includes(e.what));
+    // Сбой «П» — по коду; у записи с тестом — ещё и по тесту: общий код у двух тестов не отнесёт чужую запись к строке
+    // (повторное ревью П-11.5а № 5, Б5).
+    return at >= w.fromAt && at < w.toAt && ((e.what === "MARKED" && e.test === test) || (what.includes(e.what) && (e.test === undefined || e.test === test)));
   });
 }
 
@@ -478,9 +480,16 @@ function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly 
       const recs = fired.filter((x) => e.fired!.includes(x.what)); // не пусто: проверено выше
       const refs = recs.map((x) => x.ids.op_ref).filter((x): x is string => x !== undefined);
       const done = refs.length > 0 && refs.every((r) => model.txs.some((t) => t.opRefs.includes(r) && t.outcome !== undefined));
+      // Хотя бы одна запись сбоя без номера операции — её итог сверить не с чем (столбец M; формулировка — как у R31
+      // `late_unlinked`; ревью Б3 № 2, Б5). И в смешанном случае: записи с номером не дают «итог учтён» за запись без него
+      // (ревью Б5 № 4 — ложное «да»).
+      const unlinked = refs.length < recs.length;
+      const noMatch = p("сбой сработал, запись стенда без номера операции — итог сверить не с чем", "the fault fired, the stand record has no operation number — nothing to match the outcome against");
+      if (unlinked && pass.length === 0) return { agree: "unchecked", fact: join([noMatch, factPass], "; ") };
       if (!done && pass.length === 0) return { agree: "unchecked", fact: join([p("сбой сработал, итога по операции ещё нет", "the fault fired, no outcome for the operation yet"), factPass], "; ") };
-      const head = done ? p("сбой сработал, итог учтён", "the fault fired, outcome counted") : p("сбой сработал, итога по операции нет", "the fault fired, no outcome for the operation");
-      return { agree: done && pass.length === 0 ? "yes" : "no", fact: join([head, factPass], "; ") };
+      // Паспорта есть — «нет»; голова факта — по той же причине, что без паспортов (ревью Б5 № 5).
+      const head = unlinked ? noMatch : done ? p("сбой сработал, итог учтён", "the fault fired, outcome counted") : p("сбой сработал, итога по операции нет", "the fault fired, no outcome for the operation");
+      return { agree: done && !unlinked && pass.length === 0 ? "yes" : "no", fact: join([head, factPass], "; ") };
     }
     return { agree: pass.length === 0 ? "yes" : "no", fact: factPass };
   }
@@ -656,7 +665,45 @@ export function testTable(input: TestTableInput): TestTable {
   const armedSpans = sorted
     .filter((x) => x.stream === "scenario" && x.ref === "stand_fault.armed")
     .map((a) => ({ from: a.seq, to: sorted.find((x) => x.seq > a.seq && x.stream === "scenario" && x.ref === "stand_fault.disarmed" && x.test === a.test)?.seq ?? Infinity }));
-  const armedIn = (w: Window) => armedSpans.some((s) => s.from < w.to && s.to > w.from);
+
+  // Срок прогона сюжета (Б5; П-11.5а № 11) — как у «Контроля»: `runDeadline` с `DEFAULT_WAIT_MS`, а не порог оператора
+  // `waitMs` (ревью Б5 № 6). Шаги взвода и снятия сбоев срок не сдвигают: взвод после прогона иначе тянул бы
+  // срок за собой (ревью Б5 № 2). Срока не посчитать (время не читается) — `undefined`: прежнее правило, без отсечки.
+  const nowMs = Date.parse(now);
+  const deadlineOf = (r: Run): number | undefined => {
+    try {
+      return runDeadline(
+        r.items.filter((x) => !(x.stream === "scenario" && x.ref.startsWith("stand_fault."))),
+        r.startedAt,
+        DEFAULT_WAIT_MS,
+      );
+    } catch {
+      return undefined;
+    }
+  };
+  // Завершён — только по сроку, как в «Контроле»: ранний запуск следующего сюжета прогон не завершает (ревью Б5 № 3).
+  // Нечитаемое «сейчас» — прежнее правило (ревью Б5 № 9).
+  const finished = (r: Run) => {
+    const d = deadlineOf(r);
+    return d === undefined || !Number.isFinite(nowMs) || d <= nowMs;
+  };
+  const atSeq = (seq: number) => Date.parse(sorted.find((x) => x.seq === seq)?.at ?? "");
+  // Взвод сбоя «П» и включение «Авто» после срока завершённого прогона (до следующей метки) к нему не относятся: иначе
+  // прогон задним числом становился «грязным» (строка уходила на старый чистый прогон — ложное «да») или «Авто» (ревью Б5 № 2).
+  const afterDeadline = (r: Run, seq: number) => {
+    const d = deadlineOf(r);
+    return d !== undefined && seq > r.startSeq && atSeq(seq) > d;
+  };
+  const cleanRun = (r: Run) => {
+    const w = windows.get(r)!;
+    return !armedSpans.some((s) => s.from < w.to && s.to > w.from && !afterDeadline(r, s.from));
+  };
+  const autoOf = (r: Run) => {
+    const w = windows.get(r)!;
+    const steps = sorted.filter((x) => x.stream === "scenario" && (x.ref === CLIENT_AUTO_ON || x.ref === CLIENT_AUTO_OFF));
+    const atLabel = [...steps].reverse().find((x) => x.seq < r.startSeq)?.ref === CLIENT_AUTO_ON;
+    return atLabel || steps.some((x) => x.ref === CLIENT_AUTO_ON && x.seq > w.from && x.seq < w.to && !afterDeadline(r, x.seq));
+  };
 
   const rows = TEST_SPECS.map((spec): TestRow => {
     const expect = spec.mvp ?? spec.v10;
@@ -704,10 +751,20 @@ export function testTable(input: TestTableInput): TestTable {
       // П-xx и У-xx — «поломки все выключены» (задание, колонка D): прогон, в окне которого взведён сбой «П», не считается.
       const name = TEST_SCENARIO[spec.test as keyof typeof TEST_SCENARIO];
       const all = runs.filter((r) => r.name === name);
-      const clean = all.filter((r) => !armedIn(windows.get(r)!));
-      const r = clean[clean.length - 1];
+      const clean = all.filter(cleanRun);
+      // Берётся последний **завершённый** прогон (П-11.5а № 11, Б5): прошёл срок ожидания. Идущий прогон строку не судит —
+      // пока он идёт, строка не «нет».
+      const r = [...clean].reverse().find(finished);
+      const last = clean[clean.length - 1];
+      if (!r && last) {
+        runLabel = `run.${name}${all.length > 1 ? ` ${all.indexOf(last) + 1}/${all.length}` : ""}`;
+        const auto = autoOf(last);
+        // У-xx при «Авто» — «не засчитано» сразу: исход прогона это не изменит (П5 доп. 1 п. 5; ревью Б5 № 8).
+        if (auto && (spec.kind === "toward" || spec.kind === "prevented")) return row({ agree: "not_counted", fact: lit(runLabel) }, true, []);
+        return row({ agree: "unchecked", fact: join([lit(runLabel), p("прогон идёт — ждём срок", "the run is in progress — waiting for the deadline")], " — ") }, auto, []);
+      }
       if (r) {
-        w = windows.get(r)!;
+        w = { ...windows.get(r)!, auto: autoOf(r) };
         // Прогонов сюжета несколько — какой взят: «номер / всего», без слов (метка одна для ru- и en-акта; Б3, ревью К2 PR #16
         // № 14). `×N` остаётся только там, где ни один прогон не взят (все со сбоем «П»).
         runLabel = `run.${name}${all.length > 1 ? ` ${all.indexOf(r) + 1}/${all.length}` : ""}`;

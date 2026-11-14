@@ -70,6 +70,8 @@ export interface Acc1Row {
   readonly auto: boolean;
   /** Строка судится по прогону драйвера нарушителя «ПР» (П7 п. 4). */
   readonly violatorDriver: boolean;
+  /** У-01…У-04 сыграны автоматическим прогоном — роль оператора играл тест (ответ чата #issuecomment-6881016969, п. 2; Б5). */
+  readonly operatorByTest: boolean;
   /** Метка прогона; пусто — прогона нет. */
   readonly run: string;
 }
@@ -94,6 +96,21 @@ export const KNOWN_NOTES: Partial<Readonly<Record<TestCode, KnownNote>>> = {
 };
 
 const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "client emulator: auto");
+/** Пометка провенанса У-01…У-04 (Б5): «да» автоматического прогона — готовность пульта, не пройденный тест оператора. */
+const OPERATOR_BY_TEST_LABEL: Phrase = p(
+  "автоматический прогон: роль оператора играл тест — окончательное «да» ставит ручная приёмка владельца",
+  "automated run: the operator's role was played by a test — the final \"yes\" is given by the owner's manual acceptance",
+);
+
+/** Параметры акта. `known` — известные причины (по умолчанию `KNOWN_NOTES`; подмена — для теста границы замечаний, ревью
+ *  К8 № 1). `operatorByTest` — акт собран автоматическим прогоном 25 тестов (П-11.5б): у строк оператора (У-01…У-04) с
+ *  прогоном — пометка провенанса. Акт с экрана «Отчёт» собирается без неё: там оператор — человек. */
+export interface Acc1Opts {
+  readonly known?: Partial<Readonly<Record<TestCode, KnownNote>>>;
+  readonly operatorByTest?: boolean;
+}
+// Пометка — только у строки с прогоном: без прогона тест оператора не играл (ревью Б5 № 10).
+const isOperatorRow = (r: TestRow) => (r.kind === "toward" || r.kind === "prevented") && r.run !== undefined;
 const RECORDS_LABEL: Phrase = p("записи:", "records:");
 
 const joinP = (parts: readonly Phrase[], sep: string): Phrase => p(parts.map((x) => x.ru).join(sep), parts.map((x) => x.en).join(sep));
@@ -111,13 +128,10 @@ const recList = (rs: readonly Acc1Record[]): Phrase => joinP([RECORDS_LABEL, joi
 /** Запись относится к строке: задан тест — только к нему; иначе — по объекту прогона (ревью К2 № 3). */
 const belongs = (x: Acc1Record, r: TestRow) => (x.test !== undefined ? x.test === r.test : x.obj !== undefined && r.objs.includes(x.obj));
 
-/** Строки акта: по одной на тест, в порядке таблицы. `known` — известные причины (по умолчанию `KNOWN_NOTES`; подмена —
- *  для теста границы замечаний — ревью К8 № 1). */
-export function acc1Rows(
-  table: TestTable,
-  records: readonly Acc1Record[] = [],
-  known: Partial<Readonly<Record<TestCode, KnownNote>>> = KNOWN_NOTES,
-): Acc1Row[] {
+/** Строки акта: по одной на тест, в порядке таблицы. Параметры — `Acc1Opts` (известные причины и провенанс одним объектом:
+ *  флаг не требует передавать `KNOWN_NOTES` явно — ревью Б5 № 11). */
+export function acc1Rows(table: TestTable, records: readonly Acc1Record[] = [], opts: Acc1Opts = {}): Acc1Row[] {
+  const known = opts.known ?? KNOWN_NOTES;
   return table.rows.map((r) => {
     const kn = known[r.test];
     const mine = records.filter((x) => belongs(x, r));
@@ -133,6 +147,7 @@ export function acc1Rows(
       note: joinP(notes, "; "),
       auto: r.auto,
       violatorDriver: r.driver !== undefined,
+      operatorByTest: opts.operatorByTest === true && isOperatorRow(r),
       run: r.run ?? "",
     };
   });
@@ -151,7 +166,7 @@ export const ACC1_TITLE: Phrase = p("Акт ACC-1 — таблица тести�
 const UNLINKED_LABEL: Phrase = p("Записи без строки теста", "Records not linked to a test row");
 
 const marks = (r: Acc1Row, lang: Acc1Lang): string =>
-  [...(r.auto ? [AUTO_LABEL[lang]] : []), ...(r.violatorDriver ? [STAND_TEST_KIND_LABEL.violator[lang]] : [])].join("; ");
+  [...(r.auto ? [AUTO_LABEL[lang]] : []), ...(r.violatorDriver ? [STAND_TEST_KIND_LABEL.violator[lang]] : []), ...(r.operatorByTest ? [OPERATOR_BY_TEST_LABEL[lang]] : [])].join("; ");
 const cells = (r: Acc1Row, lang: Acc1Lang): string[] => [
   r.test,
   r.kind[lang],
@@ -226,20 +241,20 @@ const totalsLine = (t: TestTable, lang: Acc1Lang): string => {
 };
 
 /** Акт ACC-1 в Markdown: заголовок, время сборки, таблица 25 строк, записи без строки теста, итоги, примечание таблицы. */
-export function acc1Markdown(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
+export function acc1Markdown(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = [], opts: Acc1Opts = {}): string {
   const line = (xs: readonly string[]) => `| ${xs.map(acc1MdCell).join(" | ")} |`;
   const head = HEAD[lang];
   const out = [acc1MdTitle(ACC1_TITLE[lang]), "", acc1MdCell(acc1BuiltAt(table.at, lang)), "", line(head), `|${head.map(() => "---").join("|")}|`];
-  for (const r of acc1Rows(table, records)) out.push(line(cells(r, lang)));
+  for (const r of acc1Rows(table, records, opts)) out.push(line(cells(r, lang)));
   const free = acc1Unlinked(table, records);
   if (free.length) out.push("", acc1MdCell(`${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`));
   out.push("", acc1MdCell(totalsLine(table, lang)), "", acc1MdCell(TABLE_NOTE[lang]));
   return out.join("\n");
 }
 
-function csvWith(sep: "," | ";", table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[]): string {
+function csvWith(sep: "," | ";", table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[], opts: Acc1Opts): string {
   const line = (xs: readonly string[]) => xs.map(acc1CsvCell).join(sep);
-  const out = [line(HEAD[lang]), ...acc1Rows(table, records).map((r) => line(cells(r, lang)))];
+  const out = [line(HEAD[lang]), ...acc1Rows(table, records, opts).map((r) => line(cells(r, lang)))];
   const free = acc1Unlinked(table, records);
   if (free.length) out.push(line(["", "", "", "", "", `${UNLINKED_LABEL[lang]}: ${recList(free)[lang]}`, "", ""]));
   // Время сборки — последней строкой, в колонке «Замечание», по образцу записей без теста: первая строка остаётся
@@ -250,8 +265,8 @@ function csvWith(sep: "," | ";", table: TestTable, lang: Acc1Lang, records: read
 
 /** Акт ACC-1 в CSV для машинного чтения: строка заголовка, 25 строк, строка записей без теста (если есть) и строка времени
  *  сборки; разделитель — запятая, без BOM, конец строки — CRLF (RFC 4180). */
-export function acc1Csv(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
-  return csvWith(",", table, lang, records);
+export function acc1Csv(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = [], opts: Acc1Opts = {}): string {
+  return csvWith(",", table, lang, records, opts);
 }
 
 /** Знак порядка байтов UTF-8 (U+FEFF): без него Excel читает файл в кодировке системы и портит кириллицу. Кодом знака, не
@@ -260,8 +275,8 @@ export const UTF8_BOM = String.fromCharCode(0xfeff);
 
 /** Акт ACC-1 в CSV для Excel с русскими настройками (К3, решение владельца 13.11): UTF-8 с BOM, разделитель «;» (так Excel
  *  с русскими настройками делит колонки), остальное — как в `acc1Csv`. Отдавать файлом в UTF-8. */
-export function acc1CsvExcel(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = []): string {
-  return UTF8_BOM + csvWith(";", table, lang, records);
+export function acc1CsvExcel(table: TestTable, lang: Acc1Lang, records: readonly Acc1Record[] = [], opts: Acc1Opts = {}): string {
+  return UTF8_BOM + csvWith(";", table, lang, records, opts);
 }
 
 /** Выгрузки акта и подписи кнопок для экрана «Отчёт» (кнопки — окно А, П-6.2). */

@@ -76,6 +76,30 @@ describe("К2: строки акта ACC-1", () => {
     expect(row(rs, "Н-07").agree).toBe("no");
     expect(row(rs, "П-03")).toMatchObject({ agree: "unchecked", run: "" });
   });
+  it("Б5 (ответ чата #issuecomment-6881016969, п. 2): акт автоматического прогона — у У-01…У-04 пометка «роль оператора играл тест» (ru/en), у остальных нет; акт с экрана — без неё", () => {
+    const run = (agree: TestRow["agree"]): Partial<TestRow> => ({ agree, run: "run.purchase" });
+    const t = withRows({ "У-01": run("yes"), "У-02": run("yes"), "У-03": run("yes"), "У-04": run("unchecked"), "П-01": run("yes") });
+    const rs = acc1Rows(t, [], { operatorByTest: true });
+    const op = rs.filter((r) => r.operatorByTest).map((r) => r.test);
+    expect(op).toEqual(["У-01", "У-02", "У-03", "У-04"]);
+    // без прогона — тест оператора не играл: пометки нет (ревью Б5 № 10); замечания по умолчанию — `KNOWN_NOTES` (№ 11)
+    const noRun = acc1Rows(withRows({ "У-02": { agree: "unchecked" } }), [], { operatorByTest: true });
+    expect(row(noRun, "У-02").operatorByTest).toBe(false);
+    expect(row(noRun, "Н-02").note.ru).toBe(KNOWN_NOTES["Н-02"]!.note.ru);
+    // «сходится» не меняется (инвариант 2): пометка — провенанс, не вердикт
+    expect(row(rs, "У-01").agree).toBe("yes");
+    expect(acc1Rows(t).some((r) => r.operatorByTest)).toBe(false);
+    for (const lang of ["ru", "en"] as const) {
+      const md = acc1Markdown(t, lang, [], { operatorByTest: true });
+      const line = (test: string) => md.split("\n").find((l) => l.startsWith(`| ${test} |`))!;
+      expect(line("У-02")).toContain(lang === "ru" ? "роль оператора играл тест" : "played by a test");
+      expect(line("П-01")).not.toContain(lang === "ru" ? "роль оператора" : "played by a test");
+      expect(acc1Markdown(t, lang)).not.toContain(lang === "ru" ? "роль оператора" : "played by a test");
+      const csv = parseCsv(acc1Csv(t, lang, [], { operatorByTest: true }));
+      expect(csv.find((c) => c[0] === "У-03")![6]).toContain(lang === "ru" ? "окончательное «да»" : 'final "yes"');
+      expect(acc1CsvExcel(t, lang, [], { operatorByTest: true })).toContain(lang === "ru" ? "роль оператора играл тест" : "played by a test");
+    }
+  });
   it("инвариант 2: акт не пересчитывает «сходится» — «да» без единого вердикта остаётся «да», «нет» при любом факте остаётся «нет»", () => {
     const rs = acc1Rows(withRows({ "Н-01": { agree: "yes", fact: lit("ожидаемого паспорта нет") }, "П-01": { agree: "no", fact: lit("паспортов нет") } }));
     expect(row(rs, "Н-01").agree).toBe("yes");
@@ -112,13 +136,13 @@ describe("К2: строки акта ACC-1", () => {
       { id: "П-001", obj: "T1", status: "closed", at: AT },
       { id: "П-002", obj: "T1", status: "open", at: AT },
     ];
-    const n = row(acc1Rows(withRows({ "П-01": { objs: ["T1"] } }), recs, stub), "П-01").note.ru;
+    const n = row(acc1Rows(withRows({ "П-01": { objs: ["T1"] } }), recs, { known: stub }), "П-01").note.ru;
     expect(n.split("; ")).toEqual(["причина", `записи: П-001 (${AT}) — закрыто · П-002 (${AT}) — открыто`]);
   });
   it("запись системы (`obj: \"\"`) в строку теста не попадает — уходит в «Записи без строки теста» (ревью № 7)", () => {
     const t = withRows({ "П-01": { objs: ["T1"] } });
     const sys: Acc1Record = { id: "П-004", obj: "", status: "open", at: AT };
-    expect(acc1Rows(t, [sys], {}).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
+    expect(acc1Rows(t, [sys], { known: {} }).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
     expect(acc1Unlinked(t, [sys])).toEqual([sys]);
   });
   it("подписи — у каждого статуса движка и каждого вида реакции, ru и en, и это подписи панели «Журнал» (один источник)", () => {
@@ -150,7 +174,7 @@ describe("К2: строки акта ACC-1", () => {
   it("записи без строки теста не теряются — отдельной строкой в Markdown и CSV (ревью К2 № 3)", () => {
     const recs: Acc1Record[] = [{ id: "П-009", obj: "SYS", status: "open", at: AT }];
     expect(acc1Unlinked(base, recs)).toEqual(recs);
-    expect(acc1Rows(base, recs, {}).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
+    expect(acc1Rows(base, recs, { known: {} }).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
     expect(acc1Markdown(base, "ru", recs)).toContain("Записи без строки теста<span>:</span> записи<span>:</span> П-009 (2026-11-13T12<span>:</span>00<span>:</span>05.000Z) — открыто");
     const csv = parseCsv(acc1Csv(base, "en", recs));
     expect(csv).toHaveLength(28);
