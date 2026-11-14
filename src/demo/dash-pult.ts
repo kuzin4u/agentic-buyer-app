@@ -1,0 +1,129 @@
+// Страница пульта DEMO-2 (П-1.1, модель пульта 1.23): каркас — четыре панели в сетке 2×2 или вкладками, разворот
+// панели, переключатель «Пульт · Экран · Монитор». Разметка без данных шины — панели наполняет скрипт
+// `public/pult/pult.js` через createElement и textContent (инвариант 4, П2 п. 2). Язык ru/en, бренд из конфигурации
+// (правило совместимости 3, инвариант 7). Скрипты окна Б (П-9.4, Р-1523 В16 (а)): «Ленты» `feeds.js` (П-5.2) — после
+// `pult.js`, с подписями на языке страницы сразу (без них до первого сообщения ленты видны были бы ключи); справка `help.js`
+// (П-9.2) с переключателем клавиш (WCAG 2.1.4) и кнопкой «?»; клавиши `keys.js` (П-9.1) — последними, после `pult.js`: видят,
+// отменил ли `pult.js` или окно справки событие (Esc).
+import type { Brand } from "../brand.js";
+import type { WireLang } from "../dashboards/wire.js";
+import { ACC1_EXPORT_LABEL, ACC1_EXPORTS, ACC1_TITLE } from "../pult/acc1.js";
+import { BOARD_COLUMNS } from "../pult/board.js";
+import { rulesForPage } from "../pult/conditions.js";
+import { feedsLabels } from "../pult/feeds.js";
+import { helpForPage } from "../pult/help.js";
+import { PANES, PULT, type Pane } from "../pult/phrases.js";
+import type { Rule89 } from "../pult/rules89.js";
+import { escapeHtml, jsonForScript } from "./html.js";
+import { OPTIONS_BY_TEST, STAND_FAULT_TESTS } from "./stand-faults.js";
+import { switcherHtml } from "./switcher.js";
+
+/** Блок «Поломки» и строка эмулятора клиента (видимая часть П-11.2 / П-11.4; Р-1482, Р-1514) — только в режиме сбоев:
+ *  без `DEMO_FAULTS=1` блока в разметке нет вовсе (маршрутов `/stand-fault/`, `/client/auto/` тогда тоже нет — 404). Тесты
+ *  «П» — перечень стенда `STAND_FAULT_TESTS`; вызов маршрутов и состояние «Авто» — `pult.js`. */
+function faultsHtml(s: (k: keyof typeof PULT) => string): string {
+  // Витрина транзакции в фокусе — только тестам, которые принимают продавца (`OPTIONS_BY_TEST`; иное стенд отклонит BAD_OPTION).
+  const shop = (t: (typeof STAND_FAULT_TESTS)[number]) => (OPTIONS_BY_TEST[t].includes("merchant_id") ? ` data-fault-shop="1"` : "");
+  const rows = STAND_FAULT_TESTS.map(
+    (t) =>
+      `<li><span class="ft">${escapeHtml(t)}</span> <button type="button" data-fault="${escapeHtml(t)}" data-fault-op="arm"${shop(t)}>${s("faults.arm")}</button> <button type="button" data-fault="${escapeHtml(t)}" data-fault-op="disarm">${s("faults.disarm")}</button> <span class="muted fault-result" data-fault-result="${escapeHtml(t)}" role="status"></span></li>`,
+  ).join("");
+  return `<section class="faults" id="pult-faults" aria-labelledby="h-faults">
+  <h2 id="h-faults">${s("faults.title")}</h2> <span class="hint">${s("faults.note")}</span>
+  <p class="auto-line">${s("auto.title")}: <strong id="client-auto" role="status">${s("auto.unknown")}</strong> <button type="button" data-auto="on">${s("auto.set_on")}</button> <button type="button" data-auto="off">${s("auto.set_off")}</button></p>
+  <ul class="fault-list">${rows}</ul>
+</section>`;
+}
+
+function paneHtml(pane: Pane, lang: WireLang): string {
+  // Ключи панели — шаблонные типы `pane.${Pane}`: новая панель без подписей не соберётся (повторное ревью П-1.1 № 4).
+  const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
+  const title = s(`pane.${pane}` as const);
+  const hint = s(`pane.${pane}.hint` as const);
+  // Виды панели «Ход» (модель 1.23 `PROC_MODES`): на MVP — «Ход по стадиям» и «График» (П-2.2); остальные — после MVP.
+  const modes =
+    pane === "proc"
+      ? `<span class="pmodes" role="group" aria-label="${s("mode.label")}"><button type="button" data-mode="board" aria-pressed="true">${s("mode.board")}</button> <button type="button" data-mode="graph" aria-pressed="false">${s("mode.graph")}</button></span>`
+      : "";
+  // Разрезы панели «Ход» (П-2.3, модель 1.23 `buildFilters`): стадия, продавец, тип записи, поручения без покупки.
+  // Клиент на стенде один (эмулятор банка, П2) — разреза по клиенту нет.
+  const cols = BOARD_COLUMNS.map((c) => `<option value="${c}">${s(`col.${c}` as const)}</option>`).join("");
+  const kinds = (["norm", "conflict", "error", "fraud"] as const)
+    .map((k) => `<button type="button" data-cut-kind="${k}" aria-pressed="true">${s(`kind.${k}` as const)}</button>`)
+    .join(" ");
+  const cuts =
+    pane === "proc"
+      ? `<div class="cuts" id="cuts" role="group" aria-label="${s("cut.label")}"><label>${s("cut.stage")} <select id="cut-stage"><option value="">${s("cut.all")}</option>${cols}</select></label> <label>${s("cut.merchant")} <select id="cut-merchant"><option value="">${s("cut.all")}</option></select></label> <span class="cut-kinds">${s("cut.kind")}: ${kinds}</span> <label><input type="checkbox" id="cut-mandates" checked> ${s("cut.mandates")}</label> <button type="button" id="cut-reset">${s("cut.reset")}</button> <span class="muted" id="cut-hidden"></span></div>`
+      : "";
+  return `<section class="pane" id="p-${pane}" data-pane="${pane}" aria-labelledby="h-${pane}">
+    <div class="ph"><h2 id="h-${pane}">${title}</h2><span class="hint">${hint}</span>${modes}<button type="button" class="icon" data-max="${pane}" aria-describedby="h-${pane}">${s("pane.maximize")}</button></div>
+    ${cuts}
+    <div class="pb" id="b-${pane}"><p class="empty">${s(`empty.${pane}` as const)}</p></div>
+  </section>`;
+}
+
+/** `faults` — режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» под шапкой. `rules` — справочник 89
+ *  правил для «Условий» (П-4.2); подмена — только для теста экранирования. */
+export function pultPage(lang: WireLang, brand: Brand, hasLogo: boolean, o: { faults?: boolean; rules?: readonly Rule89[]; actions?: boolean; actionsMode?: boolean; holdSec?: number; clientAuto?: boolean } = {}): string {
+  const s = (k: keyof typeof PULT) => escapeHtml(PULT[k][lang]);
+  const other: WireLang = lang === "ru" ? "en" : "ru";
+  const labels = Object.fromEntries(Object.entries(PULT).map(([k, v]) => [k, v[lang]]));
+  // Справка (П-9.2) — на языке страницы; окно рисует `help.js`.
+  const help = helpForPage(lang);
+  const tabs = PANES.map(
+    // Вкладки — кнопки-переключатели с aria-pressed, а не роли tab/tabpanel без стрелок (ревью П-1.1 № 3).
+    (p) => `<button type="button" data-tab="${p}" aria-controls="p-${p}" aria-pressed="false">${s(`pane.${p}` as const)}</button>`,
+  ).join("");
+  return `<!doctype html>
+<html lang="${lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${s("title")} — ${escapeHtml(brand.name)}</title>
+<link rel="stylesheet" href="/brand.css">
+<link rel="stylesheet" href="/pult/pult.css">
+</head>
+<body>
+<header>
+  ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
+  <div class="brand-name">${escapeHtml(brand.name)}</div>
+  <h1>${s("title")}</h1>
+  <nav>${switcherHtml("pult", lang)} <span class="lang-switch">${s("lang")}: <strong>${lang}</strong> · <a href="/pult?lang=${other}">${other}</a></span></nav>
+</header>
+<div class="bar">
+  ${o.faults ? `<p class="faults-mode"><strong>${s("mode.faults")}</strong> — ${s("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+  ${o.actionsMode ? `<p class="faults-mode"><strong>${s("mode.actions")}</strong> — ${s("mode.actions_note")}</p>` : ""}
+  <p class="status"><span id="conn" class="conn conn-wait" role="status"><span id="status-icon" class="conn-icon" aria-hidden="true">◌</span> <span id="status">${s("status.connecting")}</span></span></p>
+  <span class="layout">${s("layout.label")}:<button type="button" data-layout="grid" aria-pressed="true">${s("layout.grid")}</button> <button type="button" data-layout="tabs" aria-pressed="false">${s("layout.tabs")}</button></span>
+  <button type="button" class="help-btn" data-help aria-controls="pult-help-dialog">${escapeHtml(help.labels["help.open"] ?? "")}</button>
+</div>
+<main>
+  <p class="subtitle">${s("subtitle")}</p>
+  <nav class="focusbar" id="focusbar" tabindex="-1" aria-label="${s("focus.label")}"><span class="fl-l">${s("focus.label")}:</span> <span id="crumbs"></span> <button type="button" id="focus-up" hidden>${s("focus.up")}</button> <span class="hint">${s("focus.hint")}</span></nav>
+  ${o.faults ? faultsHtml(s) : ""}
+  <div class="tabbar" id="tabbar" role="group" aria-label="${s("layout.tabs")}" hidden>${tabs}</div>
+  <div class="grid" id="grid">
+  ${PANES.map((p) => paneHtml(p, lang)).join("\n  ")}
+  </div>
+</main>
+<script id="i18n" type="application/json">${jsonForScript({
+    lang,
+    labels,
+    panes: PANES,
+    actions: o.actions === true,
+    faults: o.faults === true,
+    ...(o.faults === true && o.clientAuto !== undefined && { clientAuto: o.clientAuto }),
+    // «Отчёт» (П-6.2): заголовок акта и выгрузки — тексты окна Б как есть.
+    acc1: { title: ACC1_TITLE[lang], exports: ACC1_EXPORTS.map((f) => ({ format: f, label: ACC1_EXPORT_LABEL[f][lang] })) },
+  })}</script>
+<script id="rules89" type="application/json">${jsonForScript(rulesForPage(lang, o.rules))}</script>
+<script src="/pult/focus.js"></script>
+<script src="/pult/pult.js"></script>
+<script id="feeds-i18n" type="application/json">${jsonForScript(feedsLabels(lang))}</script>
+<script src="/pult/feeds.js"></script>
+<script id="pult-help" type="application/json">${jsonForScript(help)}</script>
+<script src="/pult/help.js"></script>
+<script src="/pult/keys.js"></script>
+</body>
+</html>`;
+}

@@ -5,7 +5,7 @@ import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
 import { parseWireItem, type WireItem } from "../../src/dashboards/wire.js";
 import type { Demo } from "../../src/demo/run.js";
 
-export type ScenarioNo = 1 | 2 | 3 | 4 | 5;
+export type ScenarioNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,12 +48,15 @@ export function driver(demo: Demo) {
     }
   }
 
-  async function purchase(name: "purchase" | "limit" | "upk", from: number): Promise<void> {
-    if (name !== "upk") ok(await post(name), name);
+  /** Покупка до решения клиента по корзине в банке: подпись или (сюжет 6) отказ — решение «отклонить» тем же маршрутом. */
+  async function purchase(name: "purchase" | "limit" | "upk" | "reject" | "unconfirmed", from: number): Promise<void> {
+    // Сюжеты 4 и 7 начинаются своим поручением — кнопка уже нажата в intent().
+    if (name !== "upk" && name !== "unconfirmed") ok(await post(name), name);
     await until(from, "cart.card");
     ok(await post("cart/accept"), "cart/accept");
     const cw = await until(from, "cart.awaiting_signature");
-    if ((await demo.stand.stand.issuer.sign(String(cw.params.mandate_id))).statusCode !== 200) throw new Error("подпись корзины");
+    const decision = name === "reject" ? { decision: "REJECT" as const } : {};
+    if ((await demo.stand.stand.issuer.sign(String(cw.params.mandate_id), decision)).statusCode !== 200) throw new Error("решение по корзине");
   }
 
   /** Записи шины с seq > from, разобранные форматом линии; ждёт, пока шина затихнет (фоновые проходы стенда). Считается
@@ -82,18 +85,69 @@ export function driver(demo: Demo) {
       await purchase(no === 2 ? "purchase" : "limit", n);
       await until(n, no === 2 ? "outcome" : "limit.declined");
       if (no === 3) await until(n, "bank.limit_reset");
-    } else if (no === 4) {
-      await intent("upk");
-      await purchase("upk", n);
+    } else if (no === 4 || no === 7) {
+      // 4 — человек подтверждает на странице УПК; 7 — отклоняет (тем же кодом из «SMS банка»).
+      await intent(no === 4 ? "upk" : "unconfirmed");
+      await purchase(no === 4 ? "upk" : "unconfirmed", n);
       const req = await until(n, "upk.required");
       const sms = await until(n, "upk.sms");
       const answer = await fetch(String(req.params.upk_url), {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ decision: "APPROVE", instrument: "CARD", code: String(sms.params.code) }).toString(),
+        body: new URLSearchParams({ decision: no === 4 ? "APPROVE" : "REJECT", instrument: "CARD", code: String(sms.params.code) }).toString(),
       });
       if (answer.status !== 200) throw new Error(`страница УПК: ${answer.status}`);
-      await until(n, "outcome");
+      await until(n, no === 4 ? "outcome" : "upk.declined");
+    } else if (no === 8) {
+      // Своё поручение на одного продавца; человек соглашается с карточкой — корзины агент не запрашивает.
+      await intent("scope");
+      await until(n, "cart.card");
+      ok(await post("cart/accept"), "cart/accept");
+      // Отказ ядра — scope.refused; иначе сюжет сам останавливается шагом — понятная причина вместо таймаута (ревью П-11.1в № 3).
+      const end = Date.now() + 60_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["scope.refused", "scope.not_refused", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 8");
+        await pause(50);
+      }
+      if (last.step !== "scope.refused") throw new Error(`сюжет 8: ${last.step} ${JSON.stringify(last.params)} — выбор демо-правила у продавца поручения или сбой`);
+    } else if (no === 9) {
+      // Поручение сюжета 1; человек соглашается с карточкой — до запроса корзины оператор Системы приостанавливает агента.
+      await intent();
+      ok(await post("suspended"), "suspended");
+      await until(n, "cart.card");
+      ok(await post("cart/accept"), "cart/accept");
+      // Конец сюжета — возобновление агента или шаг сбоя: понятная причина вместо таймаута.
+      const end = Date.now() + 60_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["suspend.resumed", "suspend.resume_failed", "operator.reinstate_failed", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 9");
+        await pause(50);
+      }
+      if (last.step !== "suspend.resumed") throw new Error(`сюжет 9: ${last.step} ${JSON.stringify(last.params)}`);
+      // События статуса агента агент читает лентой после возобновления — они могут отстать от шага сюжета.
+      const evEnd = Date.now() + 30_000;
+      while (!demo.bus.history().some((i) => i.stream === "monitor" && i.event.seq > n && i.event.what === "agent.reinstated")) {
+        if (Date.now() > evEnd) throw new Error("не дождались события agent.reinstated");
+        await pause(50);
+      }
+    } else if (no === 10) {
+      // Своё поручение с коротким сроком (startDemo({ expirySec })); подпись — до конца срока, затем сюжет ждёт сам.
+      await intent("expired");
+      const end = Date.now() + 120_000;
+      let last: ScenarioLine | undefined;
+      while (!(last = steps().find((x) => x.seq > n && ["expiry.refused", "failed"].includes(x.step)))) {
+        if (Date.now() > end) throw new Error("не дождались конца сюжета 10");
+        await pause(100);
+      }
+      if (last.step !== "expiry.refused") throw new Error(`сюжет 10: ${last.step} ${JSON.stringify(last.params)}`);
+    } else if (no === 6) {
+      await intent();
+      await purchase("reject", n);
+      await until(n, "cart.rejected");
+      // Событие Платформы об отказе приходит лентой ПАО и может отстать от шага сюжета (как mandate.signed в сюжете 1).
+      const cw = await until(n, "cart.awaiting_signature");
+      await untilEvent(n, "mandate.rejected", String(cw.params.mandate_id));
     } else {
       const id = await intent();
       ok(await post("revoke"), "revoke");

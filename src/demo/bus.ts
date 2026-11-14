@@ -10,12 +10,17 @@
 // Инвариант 2: класс — подпись для человека, а не решение. Шина ничего не проверяет и не меняет: она только читает.
 // Сумма — из записи подтверждения стенда (П6, чтение) или из операции, которую вернуло ядро после события (К2.1), в
 // минимальных единицах и с валютой.
-// Четвёртый поток (К2.1) — шаги сюжетов демо-стенда: код шага и параметры, текст — по словарю на странице.
-import type { StandCall } from "agentic-ps-platform/stand";
+// Потоки шины — `monitor` (обращения и события), `console` (журнал агента), `scenario` (шаги сюжетов демо-стенда, К2.1: код
+// шага и параметры, текст — по словарю на странице) и `stand` (журнал сбоев и действий стенда, только при режиме сбоев,
+// П-11.2а: в `/events` — только по заголовку `STAND_LOG_HEADER`, `x-stand-log: 1`).
+import type { DemoLogEntry, StandCall } from "agentic-ps-platform/stand";
 import type { JournalEntry } from "agentic-buyer-ref/src/agent/journal/index.js";
 import type { FeedItem } from "agentic-buyer-ref/src/agent/ports/events.js";
 import type { Money } from "agentic-buyer-ref/src/shared/domain.js";
-import { moneyView, type MoneyView } from "./money.js";
+import { moneyView, timeView, type MoneyView, type TimeView } from "./money.js";
+
+/** Параметры шагов сюжета — моменты времени (ISO 8601 от сюжета): в ленту — текстом по языку и машинным значением. */
+const TIME_PARAMS: ReadonlySet<string> = new Set(["valid_to"]);
 import type { ScenarioStep } from "./scenarios.js";
 
 export const MONITOR_CLASSES = ["mandate", "check", "credential", "payment", "outcome", "decline", "other"] as const;
@@ -50,7 +55,7 @@ export interface ScenarioLine {
   readonly seq: number;
   readonly at: string;
   readonly step: string;
-  readonly params: Readonly<Record<string, string | number | MoneyView>>;
+  readonly params: Readonly<Record<string, string | number | MoneyView | TimeView>>;
 }
 
 export interface MonitorEvent {
@@ -86,15 +91,36 @@ export interface ConsoleLine {
 
 const CONSOLE_FIELDS = ["reason", "detail", "ref", "mandate", "merchant", "method", "result", "status", "check"] as const;
 
+/** Запись журнала сбоев и действий стенда (`stand.demo.log()`) — форма `StandLogEntry` движка пульта (`src/pult/standlog.ts`):
+ *  только перечисленные поля; `review` записи «Передать на разбор» не переносится. */
+export type StandEntry = Pick<DemoLogEntry, "seq" | "at" | "kind" | "test" | "what" | "ids">;
+
+/** Идентификаторы записи стенда, которые идут на шину (РП75 п. 4) — закрытый перечень: новое поле стенда на шину и в `/events`
+ *  не попадает (инвариант 1; ревью П-11.2а № 2). Равенство с линией (`WIRE_STAND_ID_KEYS`) и пультом — тест. */
+export const STAND_ENTRY_ID_KEYS = ["mandate_id", "confirmation_id", "op_ref", "merchant_id", "shop_id", "order_id", "order_ref"] as const;
+
+/** Строка потока `stand` (П-11.2а, Р-1514): `seq` — номер шины, общий счёт с остальными потоками; `entry` — запись стенда. */
+export interface StandLine {
+  readonly seq: number;
+  readonly at: string;
+  readonly entry: StandEntry;
+}
+
 export type BusItem =
   | { readonly stream: "monitor"; readonly event: MonitorEvent }
   | { readonly stream: "console"; readonly line: ConsoleLine }
-  | { readonly stream: "scenario"; readonly line: ScenarioLine };
+  | { readonly stream: "scenario"; readonly line: ScenarioLine }
+  | { readonly stream: "stand"; readonly line: StandLine };
 
 const seqOf = (i: BusItem): number => (i.stream === "monitor" ? i.event.seq : i.line.seq);
 
 /** Обращение без тела: форма журнала стенда, общая для ПАО и витрин. kid — только как признак подписи, в ленту не идёт. */
-export type CallRecord = Pick<StandCall, "method" | "path" | "status" | "code" | "source" | "kid">;
+export type CallRecord = Pick<StandCall, "method" | "path" | "status" | "code" | "source" | "kid" | "idempotency_key">;
+/** Параметр шага драйвера нарушителя «ПР» (П7) с ключом идемпотентности его будущего запроса реквизита. */
+export const CREDENTIAL_KEY = "credential_key";
+const CREDENTIAL_CALL = "POST /pao/v1/credentials";
+/** Сколько ключей привязки помнить (прогон драйвера — один-два ключа). */
+const CREDENTIAL_KEYS_KEPT = 1000;
 
 /** Код отказа — только машинный код (`MANDATE_REVOKED`). Иное (текст продавца) не выводится (инварианты 1, 4). */
 const CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -250,9 +276,11 @@ export interface BusSources {
   /** keyid принадлежит нашему агенту. */
   isAgentKid(kid: string): boolean;
   /** Запись подтверждения стенда только для чтения — источник суммы. */
-  confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string } | undefined>;
+  confirmation(id: string): Promise<{ amount: number; currency: string; order_ref: string; mandate_id?: string } | undefined>;
   /** Сумма (у ядра), причина отказа (ответ ADP) и чей предел (уведомление банку) по операции; нет — событие без них. */
-  operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string } | undefined>;
+  operation?(opRef: string): Promise<{ amount?: Money; declineReason?: string; limitSource?: string; orderRef?: string } | undefined>;
+  /** Журнал сбоев и действий стенда (`stand.demo.log()`) — только при режиме сбоев; нет — потока `stand` на шине нет. */
+  standLog?(): readonly DemoLogEntry[];
   now(): Date;
 }
 
@@ -274,18 +302,21 @@ const openKey = (method: string, template: string, status: number | string) => `
 export class MonitorBus {
   readonly #src: BusSources;
   /** История — по потокам отдельно: шумная консоль не вытесняет события монитора (ревью К1.3 № 13). */
-  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [], scenario: [] };
+  readonly #history: Record<BusItem["stream"], BusItem[]> = { monitor: [], console: [], scenario: [], stand: [] };
   readonly #subs = new Set<(i: BusItem) => void>();
   readonly #limit: number;
   #seq = 0;
   #calls = 0;
   #merchantCalls = 0;
   #journal = 0;
+  #standLog = 0;
   /** Обращения агента к открытым адресам по журналу (pao.call), ещё не сопоставленные с журналом стенда. Живут
    *  OPEN_MATCH_POLLS опросов: устаревшая запись чужой запрос агенту не припишет (ревью К2.1 № 2). */
   #openByAgent: { key: string; polls: number }[] = [];
   /** Неподписанные обращения к открытым адресам, ждущие записи журнала агента. */
   #openPending: OpenPending[] = [];
+  /** Ключ идемпотентности запроса реквизита драйвера «ПР» → поручение корзины (расхождение № 10). */
+  readonly #credentialKeys = new Map<string, string>();
   #timer: NodeJS.Timeout | undefined;
   #offFeed: (() => void) | undefined;
 
@@ -339,8 +370,12 @@ export class MonitorBus {
     const calls = this.#src.calls();
     for (; this.#calls < calls.length; this.#calls++) {
       const c = calls[this.#calls]!;
-      const k = classifyCall(c, "pao");
-      if (!k) continue;
+      const k0 = classifyCall(c, "pao");
+      if (!k0) continue;
+      // Запрос реквизита: поручения в пути нет, тело стенд не отдаёт — `mandate_id` по ключу идемпотентности из шага драйвера
+      // «ПР» (расхождение № 10, Р-1548): ответ Платформы попадает в транзакцию корзины. Ключа нет — как раньше, без поручения.
+      const bound = k0.what === CREDENTIAL_CALL && c.idempotency_key !== undefined ? this.#credentialKeys.get(c.idempotency_key) : undefined;
+      const k = bound !== undefined ? { ...k0, ids: { ...k0.ids, mandate_id: bound } } : k0;
       if (c.source !== "network") this.#monitor({ ...k, source: "stand" });
       else if (this.#byAgent(c)) this.#monitor({ ...k, source: "agent_platform" });
       else if (c.path.startsWith(OPEN_PREFIX) && c.kid === undefined) {
@@ -354,6 +389,20 @@ export class MonitorBus {
       const c = mc[this.#merchantCalls]!;
       const k = classifyCall(c, "merchants");
       if (k) this.#monitor({ ...k, source: this.#byAgent(c) ? "agent_merchant" : "network_merchant" });
+    }
+    // Журнал стенда — после обращений: сбой, сработавший в обращении, встаёт ниже его строки (порядок возникновения, З4).
+    // Чтение по индексу, как у журналов выше: допущение — стенд журнал не обрезает (v0.48.0 — только дописывает).
+    const log = this.#src.standLog?.() ?? [];
+    for (; this.#standLog < log.length; this.#standLog++) {
+      const e = log[this.#standLog]!;
+      const ids: Record<string, string> = {};
+      // Пустая строка — не идентификатор: на линии запись придёт без поля, а не будет отброшена целиком (повторное ревью № 3).
+      for (const k of STAND_ENTRY_ID_KEYS) {
+        const v = e.ids[k];
+        if (typeof v === "string" && v !== "") ids[k] = v;
+      }
+      const entry: StandEntry = { seq: e.seq, at: e.at, kind: e.kind, ...(e.test !== undefined && { test: e.test }), what: e.what, ids };
+      this.#push({ stream: "stand", line: { seq: ++this.#seq, at: e.at, entry } });
     }
     if (age) this.#openByAgent = this.#openByAgent.filter((o) => ++o.polls < OPEN_MATCH_POLLS);
   }
@@ -371,9 +420,25 @@ export class MonitorBus {
     // Порядок — по времени возникновения (Р-1364): журналы агента и стенда читаются опросом, поэтому до номера шага
     // дочитываются записи, которые уже произошли. Иначе шаг сюжета встаёт выше записей, которые он пересказывает (З4).
     this.#read(false);
-    const params: Record<string, string | number | MoneyView> = {};
+    const params: Record<string, string | number | MoneyView | TimeView> = {};
     for (const [k, v] of Object.entries(s.params)) {
-      if (typeof v === "string" || typeof v === "number") params[k] = v;
+      // Ключ идемпотентности будущего запроса реквизита драйвера «ПР» — только для привязки (расхождение № 10), в ленту не идёт.
+      if (k === CREDENTIAL_KEY) {
+        // Только шаги подготовки драйвера; карта — с пределом (ревью № 10 № 7).
+        if (s.step.startsWith("fault.note.") && typeof v === "string" && typeof s.params.mandate_id === "string") {
+          this.#credentialKeys.set(v, s.params.mandate_id);
+          if (this.#credentialKeys.size > CREDENTIAL_KEYS_KEPT) this.#credentialKeys.delete(this.#credentialKeys.keys().next().value!);
+        }
+        continue;
+      }
+      if (TIME_PARAMS.has(k) && typeof v === "string") {
+        // Момент — текст на обоих языках и машинное значение (П-11.1д-а); не по форме — шаг без него.
+        try {
+          params[k] = timeView(v);
+        } catch {
+          // время не по форме — шаг без него
+        }
+      } else if (typeof v === "string" || typeof v === "number") params[k] = v;
       else {
         try {
           params[k] = moneyView({ minor: v.amount, currency: v.currency });
@@ -410,8 +475,16 @@ export class MonitorBus {
       try {
         const rec = await this.#src.confirmation(rest.ids.confirmation_id);
         if (rec) {
-          // Из записи П6 — только сумма, валюта и номер заказа; остальные поля записи не читаются.
-          ids = { ...ids, order_id: rec.order_ref };
+          // Из записи П6 — только сумма, валюта, номер заказа и поручение корзины; остальные поля записи не читаются.
+          // Поручение корзины (П-11.5в) — связка «подтверждение → корзина» для модели транзакций, как `order_id` (П-1.2,
+          // Р-1442): `confirmation.expired` / `rejected` по ПАО несут только `confirmation_id`, без него транзакция — «связь не
+          // подтверждена» и итога «истёк» нет (ревью П-2.1 № 12, П-8.1). Уточняет Р-1460: связь подтверждения с корзиной —
+          // `mandate_id` события **или записи подтверждения Платформы** (данные Платформы, не витрины); номер заказа витрины
+          // связью по-прежнему не считается. Своё поле события важнее записи; по ПАО 1.4.0 своего поручения у событий
+          // подтверждения нет — при подъёме тега сверить, не разойдутся ли они (тогда — не дописывать). Источник — запись
+          // стенда (П6, чтение): в песочнице ACC-2 связь нужна полем события ПАО или чтением подтверждения через порт.
+          const cart = typeof rec.mandate_id === "string" && rec.mandate_id !== "" && ids.mandate_id === undefined ? { mandate_id: rec.mandate_id } : {};
+          ids = { ...ids, order_id: rec.order_ref, ...cart };
           amount = moneyView({ minor: rec.amount, currency: rec.currency });
         }
       } catch {
@@ -425,6 +498,9 @@ export class MonitorBus {
         if (info?.amount) amount = moneyView({ minor: info.amount.amount, currency: info.amount.currency });
         if (info?.declineReason && rest.code === undefined) rest = { ...rest, ...safeCode(info.declineReason) };
         if (info?.limitSource && CODE.test(info.limitSource)) rest = { ...rest, codeDetail: info.limitSource };
+        // Номер заказа операции — как order_ref у confirmation.*: связка «операция → заказ» для модели транзакций пульта
+        // (П-1.2, Р-1442). Только идентификатор; поля реквизита в операции ядра нет (инвариант 1).
+        if (info?.orderRef) ids = { ...ids, order_id: info.orderRef };
       } catch {
         amount = undefined;
       }
@@ -445,7 +521,7 @@ export class MonitorBus {
 
   /** История всех потоков по порядку seq. */
   history(): readonly BusItem[] {
-    return [...this.#history.monitor, ...this.#history.console, ...this.#history.scenario].sort((a, b) => seqOf(a) - seqOf(b));
+    return [...this.#history.monitor, ...this.#history.console, ...this.#history.scenario, ...this.#history.stand].sort((a, b) => seqOf(a) - seqOf(b));
   }
 
   subscribe(fn: (i: BusItem) => void): () => void {

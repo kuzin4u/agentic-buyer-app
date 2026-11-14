@@ -9,17 +9,25 @@ import { extname, resolve, sep } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
 import { createInterpretFeed, type FeedEvent, type InterpretFeed } from "../dashboards/feed.js";
 import type { Role } from "../dashboards/interpret.js";
-import { CONTROL, SCREEN } from "../dashboards/phrases.js";
 import { localStandSource } from "../dashboards/source.js";
-import { INSTANCE_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
-import type { MonitorBus } from "./bus.js";
+import { INSTANCE_HEADER, STAND_LOG_HEADER, type DiagSnapshot } from "../dashboards/wire.js";
+import type { BusItem, MonitorBus } from "./bus.js";
+import { isStandFaultTest, type StandFaultResult, type StandFaultTest } from "./stand-faults.js";
 import { createControlFeed, type ControlFeed, type ControlFeedEvent } from "../dashboards/control-feed.js";
 import { interpretPage } from "./dash.js";
 import { controlPage } from "./dash-control.js";
-import { MESSAGES, langOf, t, type Lang } from "./i18n.js";
+import { pultPage } from "./dash-pult.js";
+import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
+import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
+import type { PultActions } from "../pult/actions.js";
+import { pultAct } from "./pult-act.js";
+import { reportResponse } from "./pult-report.js";
+import { switcherHtml } from "./switcher.js";
+import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
 import { formatMoney } from "./money.js";
 import { PLATFORM_VERSION } from "./platform.js";
+import { isFaultTest, type FaultStart, type FaultTest } from "./fault-tests.js";
 import type { IntentCard, ScenarioName, ScenarioStart } from "./scenarios.js";
 import type { DemoUrls } from "./stand.js";
 
@@ -37,6 +45,15 @@ export function loadBrand(path: string): { brand: Brand; logoFile: string | null
   return { brand, logoFile };
 }
 
+/** Сюжет 6–10 на мониторе: имя кнопки и карточка своего поручения (Т3а: видна до нажатия кнопки). */
+export interface MoreScenario {
+  readonly name: ScenarioName;
+  readonly card?: IntentCard;
+}
+
+/** Сюжеты 1–5 — кнопки разметкой страницы ниже; 6–10 — из `moreScenarios`. */
+const BASE_SCENARIOS: readonly ScenarioName[] = ["intent", "purchase", "limit", "upk", "revoke"];
+
 export interface MonitorServerOptions {
   bus: MonitorBus;
   urls: DemoUrls;
@@ -50,8 +67,36 @@ export interface MonitorServerOptions {
   intentCard?: IntentCard;
   /** Карточка поручения сюжета 4 — у кнопки 4. */
   intentCardUpk?: IntentCard;
+  /** Сюжеты 6–10 для тестов пульта (П-11.1, Р-1457): кнопка, пояснение и карточка поручения, если у сюжета своё поручение.
+   *  Тексты — `scenario.<имя>`, `scenario.<имя>_note`, `card.intent_<имя>.title` словаря. Маршрут `/scenario/<имя>` — только
+   *  для сюжетов 1–5 и этих. */
+  moreScenarios?: readonly MoreScenario[];
   /** Новая одноразовая ссылка входа на экран мандатов банка стенда (полный адрес). Нет — ссылка ведёт на экран без входа. */
   bankLogin?: () => string;
+  /** Режим сбоев стенда (`DEMO_FAULTS=1`, П-1.3): строка «режим сбоев: вкл.» на мониторе и пульте. */
+  faults?: boolean;
+  /** Кнопки реакции пульта (П-8.1, Р-1526 В2) — порт к действиям стенда; только в режиме показа или сбоев: маршрут
+   *  `POST /pult/act/<действие>`. Нет — маршрута нет (404), кнопок на пульте нет. */
+  pultActions?: PultActions;
+  /** Режим показа людям (`DEMO_ACTIONS=1`): строка «режим показа: вкл.» на мониторе и пульте. */
+  actionsMode?: boolean;
+  /** Срок удержания заказа и запроса подтверждения стенда, с (`stand.params.order_hold_sec`) — в строке режима сбоев. */
+  holdSec?: number;
+  /** Драйвер нарушителя «ПР» (П7) — только при режиме сбоев: маршрут `POST /fault/<Н-xx>`. Нет — маршрута нет (404). */
+  faulty?: {
+    start(test: FaultTest, o?: { humanArm?: { readonly shop_id?: string; readonly merchant_id?: string } }): FaultStart;
+    abort(): { ok: true } | { ok: false; code: "NOT_AWAITING" };
+  };
+  /** Эмулятор клиента «Решения людей: Авто» (П5, доп. 1) — только при режиме сбоев: маршрут `POST /client/auto/on|off`
+   *  (Р-1499). Нет — маршрута нет (404). Сервер только передаёт команду: за клиента он ничего не делает. */
+  clientEmulator?: { setAuto(on: boolean): boolean; readonly auto?: boolean };
+  /** Взвод и снятие сбоев стенда «П» человеком (П-11.2б) — только при режиме сбоев: маршрут
+   *  `POST /stand-fault/<Н-xx>/arm|disarm`. Нет — маршрута нет (404). */
+  standFaults?: {
+    arm(test: StandFaultTest, q: URLSearchParams): StandFaultResult;
+    disarm(test: StandFaultTest): StandFaultResult;
+    armedTarget(test: StandFaultTest): { readonly shop_id?: string; readonly merchant_id?: string } | undefined;
+  };
   /** Снимок реестров диагностики для дашбордов DEMO-2 (`GET /api/diag`, Р-1273 п. 3). Нет — 404. */
   diag?: DiagSnapshot;
   /** Экран «Интерпретация» DEMO-2 (К1.4): лента строится из шины этого же сервера через адаптер источника `localStandSource`
@@ -81,12 +126,34 @@ function intentCardHtml(lang: Lang, card: IntentCard, id: string, titleKey: Para
     <dt>${e(titleKey)}</dt>
     <dd>${e("card.subject")}: ${escapeHtml(card.subject)}</dd>
     <dd>${e("card.limit")}: ${escapeHtml(formatMoney({ minor: card.limit.amount, currency: card.limit.currency }, lang))}</dd>
-    <dd>${e("card.valid_days")}: ${card.validDays}</dd>
-    <dd>${e("card.merchants")}: ${card.merchants}</dd>
+    ${
+      // Срок в секундах — у поручения сюжета 10 «срок поручения истёк» (П-11.1д); иначе — в днях.
+      card.validSec !== undefined ? `<dd>${e("card.valid_sec")}: ${card.validSec}</dd>` : `<dd>${e("card.valid_days")}: ${card.validDays}</dd>`
+    }
+    ${
+      // Область продавцов — ключевое условие поручения (Т3а): у поручения не на всех продавцов — кто именно (данные витрин
+      // стенда, экранируются; ревью П-11.1в № 4).
+      card.scopeLabels
+        ? `<dd>${e("card.scope")}: ${escapeHtml(card.scopeLabels.join(", "))}</dd>`
+        : `<dd>${e("card.merchants")}: ${card.merchants}</dd>`
+    }
     <dd>${e("card.single_use")}</dd>
   </dl>`;
 }
 
+/** Кнопка сюжета 6–10 с пояснением; карточка поручения — до кнопки. Ключи словаря — по имени сюжета: компилятор их не
+ *  проверяет, проверяет тест (`tests/demo/more-scenarios.test.ts`); имя — из перечня кода, в разметке всё равно
+ *  экранируется (ревью П-11.1а № 6). */
+function moreScenarioHtml(lang: Lang, s: MoreScenario): string {
+  const e = (k: string) => escapeHtml(t(lang, k as MessageKey));
+  const name = escapeHtml(s.name);
+  const card = s.card ? intentCardHtml(lang, s.card, `intent-card-${name}`, `card.intent_${s.name}.title` as MessageKey) : "";
+  return `${card}<button type="button" data-scenario="${name}">${e(`scenario.${s.name}`)}</button>
+  <p class="hint">${e(`scenario.${s.name}_note`)}</p>`;
+}
+
+/** Страница монитора. «Витрины продавцов» — страница для человека на языке монитора (`/shops?lang=…`, Платформа v0.47.0,
+ *  З12, передача #10), а не JSON агента `/v1/shops`. */
 function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolean): string {
   const e = (k: Parameters<typeof t>[1]) => escapeHtml(t(lang, k));
   const emu = `<span class="badge emu">${e("badge.emulator")}</span>`;
@@ -111,14 +178,16 @@ function page(lang: Lang, o: MonitorServerOptions, brand: Brand, hasLogo: boolea
   ${hasLogo ? `<img class="logo" src="/brand/logo" alt="${escapeHtml(brand.name)}">` : ""}
   <div class="brand-name">${escapeHtml(brand.name)} ${emu}</div>
   <h1>${e("page.title")}</h1>
-  <nav class="lang">${o.dashboards ? `<a href="/dash/interpret?lang=${lang}">${escapeHtml(SCREEN.title[lang])}</a> · <a href="/dash/control?lang=${lang}">${escapeHtml(CONTROL.title[lang])}</a> · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
+  <nav class="lang">${o.dashboards ? `${switcherHtml("monitor", lang)} · ` : ""}${e("page.lang")}: <strong>${lang}</strong> · <a href="/?lang=${other}">${other}</a></nav>
 </header>
 <p class="subtitle">${e("page.subtitle")}</p>
+${o.faults ? `<p class="faults-mode" role="status"><strong>${e("mode.faults")}</strong> — ${e("mode.faults_note").replace("{sec}", String(o.holdSec ?? "?"))}</p>` : ""}
+${o.actionsMode ? `<p class="faults-mode" role="status"><strong>${e("mode.actions")}</strong> — ${e("mode.actions_note")}</p>` : ""}
 <ul class="links">
   <li>${e("link.agent")}: <code>${escapeHtml(o.agentCode)}</code> ${real}</li>
   ${link(o.bankLogin ? "/bank-login" : o.urls.bankApp, e("link.bank"), emu)}
   <li><span class="link-off" aria-describedby="upk-note">${e("link.upk")}</span> ${emu} <span class="hint" id="upk-note">${e("link.upk_note")}</span></li>
-  ${link(`${o.urls.merchants}/v1/shops`, e("link.merchants"), emu)}
+  ${link(`${o.urls.merchants}/shops?lang=${lang}`, e("link.merchants"), emu)}
 </ul>
 ${
   o.scenarios
@@ -136,6 +205,7 @@ ${
   <p class="hint">${e("scenario.upk_note")}</p>
   <button type="button" data-scenario="revoke">${e("scenario.revoke")}</button>
   <p class="hint">${e("scenario.revoke_note")}</p>
+  ${(o.moreScenarios ?? []).map((s) => moreScenarioHtml(lang, s)).join("\n  ")}
   <div id="upk-panel" class="card" hidden>
     <dl>
       <dt>${e("upk.panel.title")} <span class="badge emu">${e("badge.emulator")}</span></dt>
@@ -187,6 +257,15 @@ ${
 </html>`;
 }
 
+/** Запись в поток SSE — только в открытый: событие в окне между `r.end()` при закрытии сервера и закрытием сокета не
+ *  пишется (иначе ERR_STREAM_WRITE_AFTER_END без обработчика роняет процесс; повторное ревью К1.4б № 1, П-1.3). Все ленты
+ *  сервера пишут только через неё. Вернуть — записано ли. */
+export function sseWrite(res: Pick<ServerResponse, "write" | "writableEnded" | "destroyed">, data: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  return true;
+}
+
 function brandCss(b: Brand): string {
   // Значения цветов уже проверены parseBrand (#RRGGBB) — подстановка в CSS безопасна.
   return `:root{--brand-primary:${b.colors.primary};--brand-on-primary:${b.colors.onPrimary};--brand-accent:${b.colors.accent}}\n`;
@@ -205,18 +284,30 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   const dashJs = o.dashboards ? PUBLIC("dash/interpret.js") : "";
   const dashCss = o.dashboards ? PUBLIC("dash/dash.css") : "";
   const controlJs = o.dashboards ? PUBLIC("dash/control.js") : "";
+  const pultJs = o.dashboards ? PUBLIC("pult/pult.js") : "";
+  const pultFocusJs = o.dashboards ? PUBLIC("pult/focus.js") : "";
+  const pultFeedsJs = o.dashboards ? PUBLIC("pult/feeds.js") : "";
+  const pultKeysJs = o.dashboards ? PUBLIC("pult/keys.js") : "";
+  const pultHelpJs = o.dashboards ? PUBLIC("pult/help.js") : "";
+  const pultCss = o.dashboards ? PUBLIC("pult/pult.css") : "";
+  const scenarioNames: ReadonlySet<string> = new Set([...BASE_SCENARIOS, ...(o.moreScenarios ?? []).map((s) => s.name)]);
   /** Лента «Интерпретации» — создаётся после запуска сервера (адаптеру нужен его адрес). */
   let feed: InterpretFeed | undefined;
   /** Лента «Контроля» поверх ленты «Интерпретации» (К2.3б). */
   let control: (ControlFeed & { recompute(): void }) | undefined;
+  /** Лента пульта поверх ленты «Интерпретации» (П-2.1): модель транзакций и доска. */
+  let pult: PultFeed | undefined;
+  /** «Ленты» пульта (П-5.2) поверх ленты «Интерпретации»: своя лента `/pult/feeds`, логику ленты пульта не трогает. */
+  let feeds: FeedsFeed | undefined;
 
-  const send = (res: ServerResponse, status: number, type: string, body: string | Buffer) => {
+  const send = (res: ServerResponse, status: number, type: string, body: string | Buffer, extra: Readonly<Record<string, string>> = {}) => {
     res.writeHead(status, {
       "content-type": type,
       "content-security-policy": CSP,
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cache-control": "no-store",
+      ...extra,
     });
     res.end(body);
   };
@@ -238,18 +329,93 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
     }
     const lang = langOf(u.searchParams.get("lang"), fallback);
     // Запуск сюжета — только со страницы монитора: Origin — адрес самого монитора (чужая страница кнопку не нажмёт).
-    const scenario = /^\/scenario\/(intent|purchase|limit|upk|revoke|cart\/accept|cart\/decline|abort)$/.exec(u.pathname);
-    if (req.method === "POST" && scenario && o.scenarios) {
+    // Имя сюжета — только из перечня (1–5 и `moreScenarios`): иное имя маршрутом сюжетов не считается.
+    const scenario = /^\/scenario\/([a-z_]+|cart\/accept|cart\/decline)$/.exec(u.pathname);
+    const known = scenario !== null && (scenario[1]!.startsWith("cart/") || scenario[1] === "abort" || scenarioNames.has(scenario[1]!));
+    if (req.method === "POST" && scenario && known && o.scenarios) {
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
       const what = scenario[1]!;
       // Ответ на карточку корзины — действие человека на этой странице (Р-1248 п. 1); сюжет его только ждёт.
+      // «Прервать» — и сюжет, и нарушение «ПР» (драйвер ждёт клиента до 180 с; решение владельца 3, чат 11.11): сюжета нет —
+      // прерывается нарушение.
+      const abortBoth = (): ScenarioStart => {
+        const s = o.scenarios!.abort();
+        if (s.ok || !o.faulty) return s;
+        const f = o.faulty.abort();
+        return f.ok ? f : s;
+      };
       const r =
         what === "abort"
-          ? o.scenarios.abort()
+          ? abortBoth()
           : what.startsWith("cart/")
             ? o.scenarios.answerCart(what === "cart/accept")
             : o.scenarios.start(what as ScenarioName);
       return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
+    // Нарушение «ПР» (П7, Р-1482): только POST, только при драйвере (режим сбоев), только со страниц этого сервера (Origin),
+    // имя теста — только из перечня драйвера. Без драйвера маршрута нет — ответ 404, как у любого неизвестного адреса.
+    // Без драйвера — 404 на любой метод (П7 п. 2): маршрута нет, а не «метод не тот».
+    if (!o.faulty && u.pathname.startsWith("/fault/")) return send(res, 404, plain, t(lang, "http.not_found"));
+    if (req.method === "POST" && o.faulty && u.pathname.startsWith("/fault/")) {
+      let test: string;
+      try {
+        test = decodeURIComponent(u.pathname.slice("/fault/".length));
+      } catch {
+        return send(res, 400, plain, t(lang, "http.bad_request"));
+      }
+      if (isFaultTest(test)) {
+        if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+        // Куда сбой этого теста взвёл человек (П-11.2г, Р-1520): драйвер идёт только по взводу на витрину нарушителя.
+        const humanArm = isStandFaultTest(test) ? o.standFaults?.armedTarget(test) : undefined;
+        const r = o.faulty.start(test, humanArm ? { humanArm } : {});
+        return send(res, r.ok ? 202 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+      }
+      // Имя вне перечня «ПР» (сбои стенда «П», иное) — маршрута нет.
+      return send(res, 404, plain, t(lang, "http.not_found"));
+    }
+    // Сбой стенда «П» человеком (П-11.2б, В10): только POST, только при режиме сбоев, только со страниц этого сервера (Origin);
+    // тест — только из перечня «П», настройки — параметрами адреса из перечня теста. Всё прочее под `/stand-fault/` — 404; без
+    // режима сбоев — 404 на любой путь, до разбора (как `/fault/`). Путь сверяется сырым — раскодируется только сегмент теста,
+    // `%2F` разделителем не становится (ревью П-11.2б № 3).
+    if (u.pathname.startsWith("/stand-fault/")) {
+      if (!o.standFaults) return send(res, 404, plain, t(lang, "http.not_found"));
+      const m = /^\/stand-fault\/([^/]+)\/(arm|disarm)$/.exec(u.pathname);
+      let test: string | undefined;
+      try {
+        test = m ? decodeURIComponent(m[1]!) : undefined;
+      } catch {
+        test = undefined;
+      }
+      if (req.method !== "POST" || !m || test === undefined || !isStandFaultTest(test)) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const r = m[2] === "arm" ? o.standFaults.arm(test, u.searchParams) : o.standFaults.disarm(test);
+      return send(res, r.ok ? 200 : r.code === "BAD_OPTION" ? 400 : 409, "application/json; charset=utf-8", JSON.stringify(r));
+    }
+    // «Решения людей: Авто» (П5 п. 4, доп. 1; Р-1499): только POST, только при эмуляторе (его создаёт лишь сборка `run.ts` при
+    // режиме сбоев), только со страниц этого сервера (Origin), без тела. Всё прочее под `/client/` — 404 на любой метод, и при
+    // эмуляторе тоже: маршрута нет, а не «метод не тот» (намеренное отличие от `/fault/`, где иной метод получает 405). После
+    // закрытия эмулятора (окно до закрытия сервера) ответ — `{auto: false}`.
+    if (u.pathname.startsWith("/client/")) {
+      const auto = /^\/client\/auto\/(on|off)$/.exec(u.pathname);
+      if (req.method !== "POST" || !o.clientEmulator || !auto) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      return send(res, 200, "application/json; charset=utf-8", JSON.stringify({ auto: o.clientEmulator.setAuto(auto[1] === "on") }));
+    }
+    // Кнопки реакции пульта (П-8.1, Р-1526): только POST, только при действиях стенда (режим показа или сбоев), только со
+    // страниц этого сервера (Origin); параметры — номера объекта адресом. Без действий — 404 на любой путь под `/pult/act/`.
+    // Разбор и вызов порта — `pult-act.ts`; ответ стенда — как есть.
+    if (u.pathname.startsWith("/pult/act/")) {
+      if (req.method !== "POST" || !o.pultActions || !pult) return send(res, 404, plain, t(lang, "http.not_found"));
+      if (!origins.has(req.headers.origin ?? "")) return send(res, 403, plain, t(lang, "http.forbidden"));
+      const now = o.dashboards?.now ?? (() => new Date());
+      // Сбой обработки — 500 с телом, а не повисший запрос и не необработанный отказ, который уронил бы процесс стенда.
+      // Сбой и самой отправки ответа (клиент закрыл соединение) — тоже сюда (ревью П-8.1 № 7).
+      void pultAct(u.pathname.slice("/pult/act/".length), u.searchParams, o.pultActions, pult, now)
+        .then((r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)))
+        .catch(() => {
+          if (!res.headersSent) send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "ACTION_FAILED" }));
+        });
+      return;
     }
     // Вердикт владельца (К2.3б) — только со страниц этого сервера (Origin), как кнопки сюжетов; тело — {key, decision}.
     if (req.method === "POST" && u.pathname === "/dash/control/verdict" && control) {
@@ -315,8 +481,76 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          res.write(`data: ${JSON.stringify({ type: "runs", epoch: c.epoch(), runs: c.runs() })}\n\n`);
-          const off = c.subscribe((e: ControlFeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sseWrite(res, { type: "runs", epoch: c.epoch(), runs: c.runs() });
+          const off = c.subscribe((e: ControlFeedEvent) => void sseWrite(res, e));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
+        case "/pult":
+          return send(res, 200, "text/html; charset=utf-8", pultPage(lang, brand, logo !== null, { faults: o.faults === true, actions: o.pultActions !== undefined, actionsMode: o.actionsMode === true, ...(o.holdSec !== undefined && { holdSec: o.holdSec }), ...(o.clientEmulator?.auto !== undefined && { clientAuto: o.clientEmulator.auto }) }));
+        case "/pult/pult.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultJs);
+        case "/pult/focus.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultFocusJs);
+        case "/pult/feeds.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultFeedsJs);
+        case "/pult/keys.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultKeysJs);
+        case "/pult/help.js":
+          return send(res, 200, "text/javascript; charset=utf-8", pultHelpJs);
+        case "/pult/feeds": {
+          // «Ленты» (П-5.2, Р-1523 В17 (а)): подписи на языке страницы, текущий вид, затем новые виды. Только чтение; запись —
+          // только в открытый поток (sseWrite). Журнала стенда и полей вне интерпретаций здесь нет.
+          const fd = feeds!;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          sseWrite(res, { type: "hello", labels: feedsLabels(lang) });
+          sseWrite(res, { type: "feeds", view: fd.view() });
+          const off = fd.subscribe((e: FeedsEvent) => void sseWrite(res, e));
+          sse.add(res);
+          req.on("close", () => {
+            off();
+            sse.delete(res);
+          });
+          return;
+        }
+        case "/pult/pult.css":
+          return send(res, 200, "text/css; charset=utf-8", pultCss);
+        case "/pult/report": {
+          // «Отчёт» (П-6.2, Р-1552): снимок по запросу; выгрузки акта ACC-1 окна Б — файлом. Только чтение.
+          if (!pult) return send(res, 404, plain, t(lang, "http.not_found"));
+          let r;
+          try {
+            r = reportResponse(pult.report(), u.searchParams.get("format"), lang);
+          } catch {
+            return send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "REPORT_FAILED" }));
+          }
+          // Заголовки — общие `send` (CSP, nosniff, no-store); у выгрузки ещё вложение файлом (ревью П-6.2 № 3).
+          return send(res, r.status, r.type, r.body, r.filename === undefined ? {} : { "content-disposition": `attachment; filename="${r.filename}"` });
+        }
+        case "/pult/events": {
+          // Состояние шины и доска «Ход по стадиям» (П-2.1). Запись — только в открытый поток (sseWrite).
+          const f = feed;
+          const p = pult!;
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            connection: "keep-alive",
+          });
+          // Режим эмулятора клиента — у источника при каждом подключении (ревью кирпича 2 № 11, П5 п. 3): после перезапуска
+          // стенда при открытом пульте новый эмулятор во «Вручную» без шага режима, и страница узнаёт это при переподключении.
+          sseWrite(res, { type: "hello", status: f.status(), faults: o.faults === true, ...(o.clientEmulator?.auto !== undefined && { clientAuto: o.clientEmulator.auto }) });
+          sseWrite(res, { type: "board", board: p.board() });
+          const off = p.subscribe((e: PultFeedEvent) => void sseWrite(res, e));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -332,8 +566,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
             "x-content-type-options": "nosniff",
             connection: "keep-alive",
           });
-          res.write(`data: ${JSON.stringify({ type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() })}\n\n`);
-          const off = f.subscribe((e: FeedEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+          sseWrite(res, { type: "snapshot", items: f.list(), status: f.status(), diag: f.diag() });
+          // Журнал стенда (`stand`, П-11.2а) экрану «Интерпретация» не нужен — он для движка пульта.
+          const off = f.subscribe((e: FeedEvent) => void (e.type !== "stand" && sseWrite(res, e)));
           sse.add(res);
           req.on("close", () => {
             off();
@@ -366,8 +601,12 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           connection: "keep-alive",
           [INSTANCE_HEADER]: instance,
         });
-        for (const item of o.bus.history()) res.write(`data: ${JSON.stringify(item)}\n\n`);
-        const off = o.bus.subscribe((item) => res.write(`data: ${JSON.stringify(item)}\n\n`));
+        // Журнал стенда (поток `stand`, П-11.2а) — только по заголовку STAND_LOG_HEADER (источник дашбордов): страница монитора
+        // его не просит и неизвестный поток не рисует строкой консоли (ревью П-11.2а № 1).
+        const withStand = req.headers[STAND_LOG_HEADER] === "1";
+        const pass = (item: BusItem) => withStand || item.stream !== "stand";
+        for (const item of o.bus.history()) if (pass(item)) sseWrite(res, item);
+        const off = o.bus.subscribe((item) => void (pass(item) && sseWrite(res, item)));
         sse.add(res);
         req.on("close", () => {
           off();
@@ -395,6 +634,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       ...(o.dashboards.training && { training: o.dashboards.training }),
     });
     control = createControlFeed(feed, { now: o.dashboards.now ?? (() => new Date()) });
+    // Журнал стенда — движку пульта только в режиме сбоев (Р-1514; П-8.2, Р-1531): без флага журнал недоступен.
+    pult = createPultFeed(feed, { now: o.dashboards.now ?? (() => new Date()), ...(o.faults === true && { standLog: true }) });
+    feeds = createFeedsFeed(feed);
   }
   return {
     url,
@@ -405,6 +647,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       // время дописать конец потоков SSE после r.end(). Лента закрывается первой и не ждёт этот сервер: её адаптер рвёт
       // чтение /events сам (reader.cancel, К1.4г) — иначе на Node 20 и 22 закрытие ждало бы само себя.
       control?.close();
+      pult?.close();
+      feeds?.close();
       await feed?.close().catch(() => undefined);
       await new Promise<void>((ok) => {
         for (const r of sse) r.end();

@@ -4,6 +4,7 @@
 // код агента и Платформы не импортируется (Р-1246 п. 3). Фразы — данные для `textContent` (инвариант 4).
 // Таблицы читаются только по собственным ключам (`own`): имя из записи — данные, не ключ прототипа (ревью К1.3 Б1).
 import type { DiagAction, DiagComponent, DiagEntryWire, DiagRegistryId, DiagSnapshot, DiagSource, DiagTexts, WireItem, WireLang, WireMoney, WireMonitorEvent } from "./wire.js";
+import { WIRE_ID_KEYS } from "./wire.js";
 import { CODE_WORDS, PHRASES, type Phrase } from "./phrases.js";
 
 export const STAGES = ["mandate", "search", "cart", "payment", "confirmation", "outcome", "revoke", "service"] as const;
@@ -64,7 +65,27 @@ export interface Interpretation {
    *  стенда (эмулятор банка — действия клиента), `network_*` — без подписи агента, `pao_event` — событие Платформы.
    *  Участник (`actor`) ставится по маршруту; кто на самом деле прислал запрос клиента — только отсюда (ревью К2.1 № 1). */
   readonly source?: WireMonitorEvent["source"];
+  /** Идентификаторы записи (П-1.2): по ним пульт собирает транзакцию. Нет идентификаторов — поля нет. */
+  readonly ids?: TxIds;
+  /** Код теста задания (`Н-NN`) у шага сюжета — из поля шага `test` (драйвер нарушителя «ПР»: `run.fault`, `fault.*`), не из
+   *  текста фразы; другая форма не берётся (П-4.1а). */
+  readonly test?: string;
+  /** Код из поля шага `code` целиком, у шага с кодом теста (`test`): составной — через запятую (`PREP_FAILED,NO_RESPONSE`);
+   *  каждая часть — по форме кода (П-4.1а, ревью № 2: в `who.code` — только первая часть). */
+  readonly testCode?: string;
+  /** Срок поручения (ISO) — только у шага `intent.created`, из поля `valid_to` (данные поручения ядра, П-11.5б окна Б);
+   *  по нему пульт различает «вне пределов» и «срок» у отказа `MANDATE_OUT_OF_SCOPE` (П-5.1а, Р-1524, Р-1525, Р-1536).
+   *  Другие шаги (`expiry.wait` — рассказ сюжета) признаком не служат. */
+  readonly validTo?: string;
+  /** Метод обращения агента к Платформе — только у записи журнала агента `pao.call` (поле `method`, по форме): по нему пульт
+   *  отличает изменяющее обращение от чтения в порядке журнала агента (Р-1541). */
+  readonly method?: string;
 }
+
+/** Ключи идентификаторов транзакции: ids линии и `intent_id` — поручение-намерение корзины (шаги `cart.created`, `cart.card`
+ *  (Р-1506), `scope.refused`). */
+export const TX_ID_KEYS = [...WIRE_ID_KEYS, "intent_id"] as const;
+export type TxIds = Partial<Record<(typeof TX_ID_KEYS)[number], string>>;
 
 export interface InterpretEnv {
   readonly snapshot: DiagSnapshot;
@@ -85,6 +106,8 @@ export const LOCAL_STAND_EMULATED: readonly Role[] = ["bank", "merchant"];
 const own = <T>(map: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 const CODE_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** Код теста задания: кириллическая «Н», дефис, две цифры (Н-01…Н-12; П-4.1а). */
+const TEST_RE = /^Н-\d{2}$/;
 
 // --- Правила квалификации по коду ---
 
@@ -104,7 +127,11 @@ const IMPERSONATION = new Set(["SIGNATURE_INVALID", "AGENT_UNKNOWN", "KEY_UNKNOW
 /** Коды передачи решения человеку (инвариант 3): это норма, не отказ. */
 export const TO_HUMAN_CODES = new Set(["CONFIRMATION_REQUIRED", "CONFIRMATION_PENDING"]);
 /** Коды сюжета демо-стенда (не реестров): агент не остановился после отзыва — ошибка агента (ревью К1.3 № 7). */
-const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = { REVOKED_NOT_ENFORCED: ["agent"] };
+const SCENARIO_FAILURES: Readonly<Record<string, readonly DiagSource[]>> = {
+  REVOKED_NOT_ENFORCED: ["agent"],
+  // Сюжет 10: ядро дошло до выдачи по истёкшему поручению (ревью П-11.1д № 2).
+  EXPIRED_NOT_ENFORCED: ["agent"],
+};
 
 /** Кто отказал: Платформа, продавец или сам агент (журнал агента). */
 export type Origin = "platform" | "merchant" | "agent";
@@ -266,6 +293,9 @@ const EVENTS: Readonly<Record<string, MonitorRule>> = {
   "operation.declined": { stage: "outcome", actor: "platform", level: "key" },
   "operation.settled": { stage: "outcome", actor: "platform", level: "key" },
   "operation.refunded": { stage: "outcome", actor: "platform", level: "key" },
+  // Статус допуска агента (РП54, сюжет 9): служебная стадия — не стадия покупки.
+  "agent.suspended": { stage: "service", actor: "platform", level: "key" },
+  "agent.reinstated": { stage: "service", actor: "platform", level: "key" },
 };
 
 /** Событие ленты ПАО — отказ (норма у остальных); код — если пришёл. */
@@ -340,9 +370,25 @@ const STEP_STAGE: Readonly<Record<string, Stage>> = {
   upk: "confirmation",
   notice: "confirmation",
   revoke: "revoke",
+  reject: "cart",
+  unconfirmed: "confirmation",
+  scope: "cart",
+  // Сюжет 9: действия оператора Системы и возобновление агента — служебная стадия; остановка покупки — по state ядра.
+  operator: "service",
+  suspend: "service",
+  // Сюжет 10: ожидание срока поручения — стадия поручения; остановка — по state ядра.
+  expiry: "mandate",
+  // Драйвер нарушителя «ПР» (П7): служебная стадия — нарушение не стадия покупки эталонного агента.
+  fault: "service",
+  // Эмулятор клиента «Авто» (П5, доп. 1): пометка действия за клиента; сам факт (подпись, решение) — запись стенда.
+  client: "service",
+  // Сбой стенда «П», взведённый человеком (П-11.2б): настройка стенда, не стадия покупки.
+  stand_fault: "service",
   failed: "outcome",
   aborted: "service",
 };
+/** Префикс шагов подготовки драйвера нарушителя «ПР» (П7). */
+const FAULT_NOTE = "fault.note.";
 const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "intent.signed": "client",
   "cart.agreed": "client",
@@ -356,6 +402,14 @@ const STEP_ACTOR: Readonly<Record<string, Role>> = {
   "limit.declined": "platform",
   outcome: "platform",
   "revoke.ask": "client",
+  "reject.ask": "client",
+  "reject.signed": "client",
+  "unconfirmed.ask": "client",
+  // Оператор Системы — сторона Платформы (эмулятор стенда).
+  "operator.suspended": "platform",
+  "operator.reinstated": "platform",
+  "operator.reinstate_failed": "platform",
+  "suspend.by_platform": "platform",
 };
 const STEP_SITUATION: Readonly<Record<string, string>> = {
   "intent.created": "С-01",
@@ -375,10 +429,24 @@ const STEP_SITUATION: Readonly<Record<string, string>> = {
   "revoke.refused": "С-28",
 };
 
+/** Шаги остановки покупки ядром: стадия — по стадии конвейера (state), STOPPED — «Итог», а не стадия, где шаг возник
+ *  (ревью П-11.1б № 3: остановленная покупка не остаётся в «Подтверждении» или «Корзине»). */
+/** Шаги остановки сюжета. Второй потребитель — R26 пульта (`src/pult/engine.ts`, Р-1537): шаг, добавленный сюда не как
+ *  остановка, изменит и R26. */
+export const STOP_STEPS: ReadonlySet<string> = new Set(["failed", "cart.rejected", "upk.declined", "scope.refused", "suspend.stopped", "expiry.refused"]);
+
 function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env: InterpretEnv): Interpretation {
   const l = item.line;
   const head = l.step.split(".")[0]!;
-  const actor = own(STEP_ACTOR, l.step) ?? "agent";
+  // Шаги эмулятора клиента «Авто» (П5, доп. 1) — действия за клиента: участник — клиент, всегда эмулированный. Код в таком шаге
+  // (отказ банка или сбой самого эмулятора — CLIENT_CALL_FAILED, CART_ANSWER_FAILED, NOT_AWAITING) — не ошибка агента и
+  // квалификации не получает. Признак — имя шага: параметр `source: "client-emulator"` есть на шине, но линия дашбордов его не
+  // несёт (WIRE_SCENARIO_PARAMS), поэтому префикс `client.` закреплён за эмулятором — шагов сюжета с ним нет.
+  const byEmulator = head === "client";
+  // Сбой стенда «П» человеком (П-11.2б) — не действие агента: участник — Платформа (эмулятор), потому что стенд сам называет
+  // сбои своего перечня «сбоем Платформы» (РП75 п. 3, `dist/stand/demo.js`); образец — шаги оператора Системы `operator.*`.
+  const byStand = head === "stand_fault";
+  const actor = byEmulator ? "client" : byStand ? "platform" : own(STEP_ACTOR, l.step) ?? "agent";
   const p = own(PHRASES.scenario, l.step);
   const phrase = p ? fill(p, l.params) : fallback("Шаг сюжета", "Scenario step", l.step);
   let kind: Kind = "norm";
@@ -387,14 +455,27 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   // Коды шага: отказ, который агент получил от Платформы или поймал сам (сюжет пересказывает ядро агента), и сигналы A5.
   const codes = [l.params.code, l.params.codes].filter((c): c is string => typeof c === "string").flatMap((c) => c.split(","));
   const code = codes.find((c) => CODE_RE.test(c) && !TO_HUMAN_CODES.has(c));
-  if (code !== undefined) {
-    const q = qualifyCode(env, code, { origin: l.step === "limit.declined" ? "platform" : "agent", sender: "agent" });
+  if (code !== undefined && !byEmulator) {
+    // Отказ Платформы (лимит) и сбой эмулятора оператора Системы (сюжет 9) — не агента (ревью П-11.1г № 8).
+    const platform = l.step === "limit.declined" || head === "operator";
+    const q = qualifyCode(env, code, { origin: platform ? "platform" : "agent", sender: platform ? "platform" : "agent" });
     kind = q.kind;
     who = q.who;
     situation = q.situation ?? situation;
   }
+  // Действие эмулятора не прошло — «конфликт» без нарушителя (вердикта «агент» нет), чтобы сбой не выглядел нормой (ревью
+  // П-11.4б № 6). Паспорт 1 («Конфликтов нет») такой прогон не примет; в паспортах 2–10 — только косвенно, по недостающим
+  // шагам: общий запрет «действие эмулятора не прошло» — П-11.5 окна А.
+  if (byEmulator && l.step.endsWith("_failed")) kind = "conflict";
   const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
+  const test = typeof l.params.test === "string" && TEST_RE.test(l.params.test) ? l.params.test : undefined;
+  const testCode = test !== undefined && typeof l.params.code === "string" && l.params.code.split(",").every((c) => CODE_RE.test(c)) ? l.params.code : undefined;
+  const vt = l.step === "intent.created" ? l.params.valid_to : undefined;
+  const validTo = typeof vt === "object" && vt !== null && "iso" in vt && typeof vt.iso === "string" && Number.isFinite(Date.parse(vt.iso)) ? new Date(vt.iso).toISOString() : undefined;
   return {
+    ...(test !== undefined && { test }),
+    ...(testCode !== undefined && { testCode }),
+    ...(validTo !== undefined && { validTo }),
     seq: l.seq,
     at: l.at,
     stream: "scenario",
@@ -402,9 +483,16 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
     ...(raw !== undefined && CODE_RE.test(raw) && { status: raw }),
     level: "key",
     // Шаг «сюжет не дошёл до конца» — на стадии, где остановился конвейер (state), иначе «Итог» (повторное ревью № 16).
-    stage: (l.step === "failed" && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ?? own(STEP_STAGE, head) ?? "service",
+    stage:
+      (STOP_STEPS.has(l.step) && typeof l.params.state === "string" ? own(PURCHASE_STAGE, l.params.state) : undefined) ??
+      // Шаги подготовки драйвера «ПР» `fault.note.<объект>_…` — стадия по первому слову, если оно есть в `STEP_STAGE` (корзина,
+      // поручение, заказ, отзыв: `revoke_ask` — «отзыв»); корзина драйвера — транзакция (расхождение № 10, Р-1548); прочие шаги
+      // драйвера — служебные. На вердикты стадия не влияет.
+      (head === "fault" && l.step.startsWith(FAULT_NOTE) ? own(STEP_STAGE, l.step.slice(FAULT_NOTE.length).split("_")[0]!) : undefined) ??
+      own(STEP_STAGE, head) ??
+      "service",
     actor,
-    emulated: env.emulated.includes(actor),
+    emulated: byEmulator || byStand || env.emulated.includes(actor),
     kind,
     phrase,
     ...(who && { who }),
@@ -477,13 +565,39 @@ function interpretConsole(item: Extract<WireItem, { stream: "console" }>, env: I
     phrase,
     ...(who && { who }),
     ...(situation !== undefined && { situation }),
+    ...(l.kind === "pao.call" && typeof l.method === "string" && PAO_METHOD_RE.test(l.method) && { method: l.method }),
   };
 }
 
+/** Метод обращения к ПАО в записи `pao.call` журнала агента — по форме (`POST /pao/v1/credentials`); иное не берётся. */
+const PAO_METHOD_RE = /^(GET|POST|PUT|PATCH|DELETE) \/pao\/v1\/[A-Za-z0-9_/{}.-]{1,120}$/;
+
 /** Запись линии → интерпретация. Не бросает на записи, прошедшей `parseWireItem`: незнакомая — нейтральная фраза с её именем. */
 export function interpret(item: WireItem, env: InterpretEnv): Interpretation {
-  const r = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  const base = item.stream === "monitor" ? interpretMonitor(item, env) : item.stream === "scenario" ? interpretScenario(item, env) : interpretConsole(item, env);
+  const ids = idsOf(item);
+  const r = Object.keys(ids).length > 0 ? { ...base, ids } : base;
   return isTraining(r, merchantOf(item), env) ? { ...r, training: true } : r;
+}
+
+/** Идентификаторы записи — для модели транзакций пульта (П-1.2, Р-1442): транзакция собирается по ним, а не по времени
+ *  (Р-1396 п. 2). Обращение и событие — ids линии; шаг сюжета — параметры-идентификаторы (`intent_id` — поручение-намерение
+ *  у шагов `cart.created`, `cart.card` и `scope.refused`); журнал агента — поручение, витрина и операция (`operation.status`). Только идентификаторы. */
+function idsOf(item: WireItem): TxIds {
+  if (item.stream === "monitor") return { ...item.event.ids };
+  const out: Record<string, string> = {};
+  if (item.stream === "scenario") {
+    for (const k of TX_ID_KEYS) {
+      const v = item.line.params[k];
+      if (typeof v === "string" && v !== "") out[k] = v;
+    }
+    return out;
+  }
+  const l = item.line;
+  if (l.mandate) out.mandate_id = l.mandate;
+  if (l.merchant) out.merchant_id = l.merchant;
+  if (l.kind === "operation.status" && l.ref) out.op_ref = l.ref;
+  return out;
 }
 
 /** Продавец записи: идентификатор из обращения или события, из журнала агента, из шага сюжета. */

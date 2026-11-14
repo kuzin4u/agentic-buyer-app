@@ -1,0 +1,184 @@
+/* Пульт DEMO-2 (П-1.1, модель пульта 1.23): сетка 2×2, вкладки, разворот панели. Цвета бренда — переменные из
+   /brand.css (инвариант 7); цвет не единственный носитель смысла — у состояния есть значок и текст (З7). */
+:root {
+  --ink: #15233a;
+  --muted: #4a5a70;
+  --line: #cdd6df;
+  --bg: #e9eef2;
+  --surface: #ffffff;
+  --alert: #b5322a;
+  --ok: #2e7d4f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); font-variant-numeric: tabular-nums; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; background: var(--brand-primary); color: var(--brand-on-primary); }
+header h1 { margin: 0; font-size: 18px; min-width: 0; overflow-wrap: anywhere; }
+/* Шапка переносится; переключатель языка не сжимается (как З11), переключатель вида переносится по словам — на 360 px
+   строка «Пульт · Экран: Интерпретация, Контроль · Монитор» шире шапки (ревью П-1.1 № 1). */
+header nav { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }
+header .lang-switch { flex-shrink: 0; white-space: nowrap; }
+header .view-switch { min-width: 0; overflow-wrap: anywhere; }
+header a { color: var(--brand-on-primary); }
+.logo { height: 28px; }
+.brand-name { font-weight: 600; }
+.bar { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.bar .status { margin: 0; }
+/* Режим сбоев (П-1.3): заметно, но не цветом одним — текст «режим сбоев: вкл.» жирным. */
+.faults-mode { margin: 0; padding: 2px 8px; border: 2px solid var(--alert); border-radius: 6px; color: var(--alert); }
+.layout button, .tabbar button, .pane .icon { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 2px 9px; font: inherit; color: inherit; cursor: pointer; }
+.layout button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: 2px; }
+main { padding: 10px 16px 24px; }
+.subtitle, .status, .empty, .hint { color: var(--muted); }
+.subtitle { margin: 0 0 8px; }
+
+/* Фокус (П-1.4): крошки «Система → Транзакция»; текущая — заливкой и aria-current. */
+.focusbar { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 6px 12px; margin: 0 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 13px; }
+.focusbar .fl-l { font-weight: 600; }
+.focusbar .crumb, .focusbar #focus-up { border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; background: var(--surface); font: inherit; color: inherit; cursor: pointer; }
+.focusbar .crumb.cur { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+/* Длинный номер транзакции — многоточием, полный — в title (ревью П-1.4 № 8). */
+.focusbar .crumb { display: inline-block; vertical-align: middle; max-width: 28em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Текущая крошка — span, не кнопка (П-2.1а): без указателя «щёлкнуть»; многоточие — через inline-block (ревью П-2.1а № 3). */
+.focusbar .crumb.cur { cursor: default; }
+.focusbar .hint { font-size: 12px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(300px, 44vh) minmax(300px, 44vh); gap: 12px; }
+.grid.max { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+.grid.max .pane:not(.is-max) { display: none; }
+.grid.max .pane.is-max { min-height: 78vh; }
+.grid.tabs { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+.grid.tabs .pane { display: none; }
+.grid.tabs .pane.is-tab { display: flex; min-height: 74vh; }
+.tabbar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tabbar[hidden] { display: none; }
+.tabbar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+
+.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.pane > .ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.pane > .ph h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.pane > .ph .hint { font-size: 12px; }
+.pane > .ph .icon { margin-left: auto; font-size: 12px; color: var(--muted); }
+.pane > .pb { overflow: auto; flex: 1 1 auto; min-height: 0; padding: 0 12px; }
+
+/* Доска «Ход по стадиям» (П-2.1, модель 1.23 v1.20): восемь колонок, карточки — кнопки (фокус с клавиатуры). Тип записи —
+   полосой слева и текстом в карточке, не одним цветом. */
+.note { margin: 8px 0 4px; font-size: 12px; color: var(--muted); }
+.muted { color: var(--muted); }
+.bjumps { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 0; font-size: 12px; }
+.bj { border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; background: var(--bg); }
+.board { display: grid; grid-template-columns: repeat(8, minmax(110px, 1fr)); gap: 6px; padding: 6px 0; overflow-x: auto; }
+.bcol { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-height: 90px; min-width: 0; }
+.bcol.fin { opacity: .9; }
+.bcol-h { margin: 0 0 4px; padding: 2px 4px 4px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 600; }
+.bcard { display: block; width: 100%; text-align: left; border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: 6px; padding: 3px 5px; margin: 0 0 4px; background: var(--surface); font: inherit; font-size: 11.5px; color: inherit; cursor: pointer; }
+.bcard.warn { border-left-color: #a86b0c; }
+.bcard.bad { border-left-color: var(--alert); }
+.bcard.cur { outline: 2px solid var(--brand-accent); }
+.bc-id { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.bc-o { font-weight: 600; }
+.bc-w { color: var(--alert); font-weight: 600; }
+.bc-p, .bc-ops { color: var(--muted); font-size: 10.5px; }
+.gflag { display: block; white-space: normal; color: var(--alert); font-weight: 600; font-size: 10.5px; }
+.bc-t, .bc-k { color: var(--muted); }
+.bc-e { color: var(--muted); font-size: 10.5px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Разрезы панели «Ход» (П-2.3). */
+.cuts { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; }
+.cuts select { font: inherit; padding: 1px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; }
+.cuts button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 0 8px; font: inherit; color: inherit; cursor: pointer; }
+.cuts button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+/* Виды панели «Ход» (П-2.2): «Ход по стадиям» | «График». */
+.pmodes { display: inline-flex; gap: 4px; }
+.pmodes button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 8px; font: inherit; font-size: 12px; color: inherit; cursor: pointer; }
+.pmodes button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+/* «График» (П-2.2, модель 1.23 renderGraph): стадии — цветом и подписью в легенде и подсказке отрезка. */
+:root { --st-mandate: #5b7bb0; --st-select: #3e8e8a; --st-cart: #7c9a3a; --st-confirmation: #b07a2e; --st-pay: #9a5b9e; --st-result: #2e7d4f; --st-post: #8a97a8; --st-done: #aeb8c4; }
+.glegend { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 0; font-size: 11.5px; }
+.gl::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--st-done); }
+.gl.col-mandate::before, .seg.col-mandate { background: var(--st-mandate); }
+.gl.col-select::before, .seg.col-select { background: var(--st-select); }
+.gl.col-cart::before, .seg.col-cart { background: var(--st-cart); }
+.gl.col-confirmation::before, .seg.col-confirmation { background: var(--st-confirmation); }
+.gl.col-pay::before, .seg.col-pay { background: var(--st-pay); }
+.gl.col-result::before, .seg.col-result { background: var(--st-result); }
+.gl.col-post::before, .seg.col-post { background: var(--st-post); }
+.gl.col-done::before, .seg.col-done { background: var(--st-done); }
+.graph { display: grid; gap: 2px; padding: 4px 0; min-width: 0; }
+.gaxis { display: flex; justify-content: space-between; margin-left: 11em; font-size: 11px; color: var(--muted); }
+.grow { display: grid; grid-template-columns: 10.5em minmax(0, 1fr); gap: 6px; align-items: center; width: 100%; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 3px 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.grow.cur { background: var(--bg); outline: 2px solid var(--brand-accent); }
+.gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.gtrack { position: relative; height: 18px; background: var(--bg); border-radius: 2px; }
+.seg { position: absolute; top: 3px; height: 12px; border-radius: 2px; }
+.gmark { position: absolute; top: 0; width: 2px; height: 18px; background: var(--ink); }
+.gmark.k-error, .gmark.k-fraud { background: var(--alert); width: 3px; }
+.gnow { position: absolute; top: 0; right: 0; width: 2px; height: 18px; background: var(--brand-accent); }
+/* «Условия» (П-4.2): цвета зон и статусов — только переменными (ревью П-2.1 № 11); смысл несёт текст статуса, цвет — в
+   помощь. «Внимание» у сектора — значок, цвет сектора от него не меняется (уточнение 3 к плану П-4.2). */
+:root { --warn: #a86b0c; --z-red: var(--alert); --z-orange: #c9761a; --z-yellow: #b79a1e; --z-bg: #8a97a8; }
+.cv-bar, .c89bar { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; font-size: 12px; }
+.cv-bar button, .c89bar button, .sect, .tl-go, .cg-h { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font: inherit; color: inherit; cursor: pointer; }
+.cv-bar button[aria-pressed="true"], .c89bar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.c89bar input { flex: 1 1 220px; min-width: 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+.tile { border: 1px solid var(--line); border-left: 6px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; background: var(--bg); }
+.tile.st-bad { border-left-color: var(--alert); }
+.tile.st-fired { border-left-color: var(--warn); }
+.tile.st-ok { border-left-color: var(--ok); }
+.tl-s { font-weight: 600; margin: 2px 0; }
+.tile.st-bad .tl-s { color: var(--alert); }
+.tl-n { color: var(--warn); font-size: 11.5px; }
+.tl-r { font-size: 11px; }
+.tl-go:disabled { cursor: default; color: var(--muted); }
+.sects { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.sect { display: flex; gap: 4px; align-items: center; border-radius: 999px; }
+.sect .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); display: inline-block; }
+.sect.st-bad .dot { background: var(--alert); }
+.sect.st-fired .dot { background: var(--warn); }
+.sect.st-ok .dot { background: var(--ok); }
+.sect-att { font-weight: 600; }
+.cgroup { border-bottom: 1px solid var(--line); padding: 3px 0; }
+.cg-h { border: 0; padding: 2px 0; font-weight: 600; text-align: left; width: 100%; background: none; }
+.r89 { display: grid; grid-template-columns: minmax(6em, max-content) 3em 7em minmax(0, 1fr); gap: 6px; align-items: baseline; width: 100%; border: 0; border-top: 1px dashed var(--line); border-left: 4px solid var(--z-bg); background: none; padding: 3px 4px; font: inherit; font-size: 12px; color: inherit; text-align: left; cursor: pointer; }
+.r89.z-red { border-left-color: var(--z-red); }
+.r89.z-orange { border-left-color: var(--z-orange); }
+.r89.z-yellow { border-left-color: var(--z-yellow); }
+.r89.open { background: var(--bg); }
+.s89 { font-weight: 600; font-size: 11px; color: var(--muted); }
+.s89.st-bad { color: var(--alert); }
+.s89.st-fired { color: var(--warn); }
+.s89.st-ok { color: var(--ok); }
+.cid { font-weight: 600; }
+.zb { font-size: 11px; color: var(--muted); }
+.chip.z-red { border-color: var(--z-red); }
+.chip.z-orange { border-color: var(--z-orange); }
+.chip.z-yellow { border-color: var(--z-yellow); }
+.c89card { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 2px 0 6px 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); font-size: 12px; }
+.c89card dt { color: var(--muted); }
+.c89card dd { margin: 0; overflow-wrap: anywhere; }
+/* «Причины» (П-5.1): блок транзакции, разбор вердикта, цепочка событий — цвета переменными. */
+.cblock { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; padding: 6px 8px; background: var(--bg); }
+.cb-h { display: block; width: 100%; border: 0; background: none; padding: 2px 0; font: inherit; font-weight: 600; color: inherit; text-align: left; cursor: pointer; }
+.cause { border-top: 1px dashed var(--line); padding: 4px 0; font-size: 12px; }
+.cause.k-violation .ca-h { color: var(--alert); font-weight: 600; }
+.cause.k-protection .ca-h { color: var(--warn); font-weight: 600; }
+.ca-d { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 4px 0 0 12px; }
+.ca-d dt { color: var(--muted); }
+.ca-d dd { margin: 0; overflow-wrap: anywhere; }
+.chain { font-size: 11.5px; }
+.ch-r, .ha-r { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; border-top: 1px dashed var(--line); }
+.ch-r.k-error, .ch-r.k-fraud { color: var(--alert); }
+.ch-r.k-conflict { color: var(--warn); }
+.tm, .ch-a { color: var(--muted); }
+.conn-icon { font-weight: 700; }
+.conn-ok .conn-icon { color: var(--ok); }
+.conn-wait .conn-icon { color: var(--muted); }
+.conn-lost { color: var(--alert); }
+/* П12: пометка паузы — своим цветом, не наследует «связь потеряна» (повторное ревью Х1 № 11). */
+.conn .conn-paused { color: var(--muted); font-weight: 600; }
+
+/* Ширина телефона: панели одна под другой, без горизонтальной прокрутки страницы. */
+@media (max-width: 960px) {
+  .grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+  .grid .pane { min-height: 50vh; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
