@@ -286,6 +286,8 @@ export const PULT = {
   "report.export": p("Выгрузка", "Export"),
   "report.tests": p("тестов", "tests"),
   "report.no_answer": p("сервер стенда не ответил", "the stand server did not answer"),
+  // Б2 (П13; ответ чата #issuecomment-6881016969): ссылки снимка, которого уже нет, сняты; подсказка — собрать заново.
+  "report.rebuild": p("снимок устарел — соберите отчёт заново", "the snapshot is out of date — build the report again"),
   "report.unlinked": p("записей протокола без строки теста", "protocol records without a test row"),
   "report.auto": p("«Авто»", "“Auto”"),
   "report.violator": p("«ПР»", "“ПР”"),
@@ -310,6 +312,8 @@ export const PULT = {
   "faults.armed": p("ответ стенда: взведено", "stand answer: armed"),
   "faults.disarmed": p("ответ стенда: снято", "stand answer: disarmed"),
   "faults.refused": p("отказано", "refused"),
+  // Б2 (видимая часть № 13): ответ «сделано» о другом тесте — не «стенд не ответил».
+  "faults.other_test": p("ответ стенда о другом тесте", "the stand answered about another test"),
   "faults.shop_ambiguous": p(
     "витрина транзакции в фокусе не определена (карточки нет или продавцов несколько) — запрос не отправлен",
     "the focused transaction's shop is not certain (no card or several sellers) — no request sent",
@@ -318,6 +322,8 @@ export const PULT = {
   "auto.on": p("авто", "auto"),
   "auto.off": p("вручную", "manual"),
   "auto.unknown": p("нет данных", "unknown"),
+  // Б2 (видимая часть № 12): отказ переключателя «Авто» виден, а не молча.
+  "auto.refused": p("переключение отказано", "switch refused"),
   "auto.set_on": p("включить «Авто»", "switch to Auto"),
   "auto.set_off": p("перейти на «Вручную»", "switch to manual"),
 } as const;

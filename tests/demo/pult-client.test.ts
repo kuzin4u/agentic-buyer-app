@@ -1353,11 +1353,12 @@ describe("«Поломки» и «Авто» на пульте (видимая �
     pending[0]!.resolve({ ok: true, test: "Н-12", options: {} });
     await tick();
     expect(result(env, "Н-12")).toBe(ru("faults.disarmed"));
-    // Ответ «ok» о другом тесте — не «сделано».
+    // Ответ «ok» о другом тесте — не «сделано» и не «стенд не ответил»: своя фраза (Б2, видимая часть № 13).
     faultBtn(env, "Н-11", "arm").click();
     pending[2]!.resolve({ ok: true, test: "Н-02", options: {} });
     await tick();
-    expect(result(env, "Н-11")).toBe(ru("act.failed"));
+    expect(result(env, "Н-11")).toBe(`${ru("faults.other_test")} · Н-02`);
+    expect(result(env, "Н-11")).not.toContain(ru("act.failed"));
     // Транзакция в фокусе с двумя продавцами или без карточки — запрос не уходит, человеку сказано почему.
     env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [{ ...card("T2", "pay"), merchantIds: ["m-a", "m-b"] }], jumps: [] } });
     env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T2" } }));
@@ -1367,6 +1368,18 @@ describe("«Поломки» и «Авто» на пульте (видимая �
     expect(pending).toHaveLength(3);
     expect(result(env, "Н-05")).toBe(ru("faults.shop_ambiguous"));
     expect(result(env, "Н-03")).toBe(ru("faults.shop_ambiguous"));
+    // Б2 (видимая часть № 14): нажатие при неопределённой витрине — последнее; запоздалый ответ прежнего его не перекрывает
+    env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [{ ...card("T3", "pay"), merchantIds: ["m-a"] }, { ...card("T4", "pay"), merchantIds: ["m-a", "m-b"] }], jumps: [] } });
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T3" } }));
+    faultBtn(env, "Н-05", "arm").click(); // одна витрина — запрос уходит (pending[3])
+    expect(pending).toHaveLength(4);
+    env.document.dispatchEvent(new FakeEvent("pult:select", { detail: { tx: "T4" } }));
+    faultBtn(env, "Н-05", "arm").click(); // две витрины — запроса нет
+    expect(pending).toHaveLength(4);
+    expect(result(env, "Н-05")).toBe(ru("faults.shop_ambiguous"));
+    pending[3]!.resolve({ ok: true, test: "Н-05", options: { merchant_id: "m-a" } });
+    await tick();
+    expect(result(env, "Н-05")).toBe(ru("faults.shop_ambiguous"));
   });
 
   it("строка «Авто»: начальный режим — с сервера (эмулятор), затем по доске; доска без шага режима известный режим не сбрасывает; переключатель — POST, ответ как есть", async () => {
@@ -1396,9 +1409,41 @@ describe("«Поломки» и «Авто» на пульте (видимая �
     es.send({ type: "hello", status: "live", faults: true, clientAuto: false });
     es.send({ type: "board", board: { now: NOW, cards: [], jumps: [] } });
     expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
-    // `hello` без режима (эмулятора нет) известный режим не трогает.
+    // `hello` без режима (эмулятора нет) — «нет данных», а не прежний режим (Б2, узкое ревью № 16: прежнее «авто» оставалось).
     es.send({ type: "hello", status: "live", faults: true });
+    expect($(env, "client-auto").textContent).toBe(ru("auto.unknown"));
+  });
+
+  it("Б2 (узкое ревью № 15): первая доска после `hello` посчитана до него — её прежний режим свежий режим `hello` не перекрывает; следующая — по доске", () => {
+    const env = start({ faults: true, clientAuto: false });
+    const es = env.sources[0]!;
+    es.send({ type: "hello", status: "live", faults: true, clientAuto: true });
+    es.send({ type: "board", board: { now: NOW, cards: [], jumps: [], clientAuto: false } });
+    expect($(env, "client-auto").textContent).toBe(ru("auto.on"));
+    es.send({ type: "board", board: { now: NOW, cards: [], jumps: [], clientAuto: false } });
     expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
+  });
+
+  it("Б2 (видимая часть № 12): переключатель «Авто» — отказ (403, ответ без режима) виден словами; ответ только на последнее нажатие", async () => {
+    const env = start({ faults: true, clientAuto: false });
+    const pending: { url: string; resolve: (b: unknown) => void }[] = [];
+    env.window.fetch = (url: string) =>
+      new Promise((ok) => pending.push({ url, resolve: (b) => ok({ status: (b as { status?: number })?.status ?? 200, json: () => ((b as { text?: true })?.text ? Promise.reject(new Error("не JSON")) : Promise.resolve(b)) }) }));
+    const auto = (v: "on" | "off") => $(env, "pult-faults").querySelector(`button[data-auto='${v}']`)!.click();
+    auto("on");
+    auto("off");
+    // ответ на первое нажатие пришёл последним — не показывается
+    pending[1]!.resolve({ auto: false });
+    await tick();
+    pending[0]!.resolve({ auto: true });
+    await tick();
+    expect($(env, "client-auto").textContent).toBe(ru("auto.off"));
+    // отказ 403 простым текстом
+    auto("on");
+    pending[2]!.resolve({ status: 403, text: true });
+    await tick();
+    expect($(env, "client-auto").textContent).toContain(ru("auto.refused"));
+    expect($(env, "client-auto").textContent).toContain("HTTP 403");
   });
 });
 
@@ -1444,6 +1489,97 @@ describe("панель «Журнал» (П-6.1а)", () => {
       box.querySelectorAll("button[data-proto-filter]").find((b) => b.dataset.protoFilter === "")!.click();
       expect(box.querySelectorAll(".proto-row")).toHaveLength(3);
     }
+  });
+
+  it("Б2 (П13; ответ чата #issuecomment-6881016969, п. 2): сборка не удалась после показанного снимка — ссылок нет, «соберите заново»; щелчок по ссылке — 409 (собран новый, в т. ч. в другой вкладке) — то же; ru/en", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      const env = start({ lang });
+      const body = { builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
+      let next: () => Promise<unknown> = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      const calls: string[] = [];
+      env.window.fetch = (url: string) => {
+        calls.push(url);
+        return next();
+      };
+      env.sources[0]!.send(boardMsg([]));
+      const box = $(env, "b-log");
+      const build = () => box.querySelectorAll("button[data-report]")[0]!.click();
+      build();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
+      // повторная сборка не удалась (сервер мог успеть собрать новый снимок) — ссылки прежнего сняты, подсказка
+      next = () => Promise.reject(new Error("обрыв"));
+      build();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(box.querySelectorAll("a"), lang).toEqual([]);
+      expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
+      // удачная сборка — ссылки снова
+      next = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      build();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
+      expect(box.textContent, lang).not.toContain(PULT["report.rebuild"][lang]);
+      // щелчок по ссылке: сервер — 409 SNAPSHOT_GONE — подсказка на экране, а не загрузка JSON
+      next = () => Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
+      const link = box.querySelectorAll("a[data-export]")[0]!;
+      const href = link.getAttribute("href")!;
+      const click = new FakeEvent("click", { bubbles: true });
+      link.dispatchEvent(click);
+      expect(click.defaultPrevented, lang).toBe(true);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(calls.at(-1), lang).toBe(href);
+      expect(box.querySelectorAll("a"), lang).toEqual([]);
+      expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
+      expect(box.textContent, lang).toContain("SNAPSHOT_GONE");
+    }
+  });
+
+  it("Б2 (ревью Б2 № 1, 2, 5, 6): удачная выгрузка — файл через Blob с именем из ответа, адрес отзывается не сразу; ответ по заменённому снимку подсказку не ставит; на паузе — без запроса", async () => {
+    const env = start();
+    const body = { builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
+    const calls: string[] = [];
+    let next: () => Promise<unknown> = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+    env.window.fetch = (url: string) => {
+      calls.push(url);
+      return next();
+    };
+    const revoked: string[] = [];
+    env.window.URL = { createObjectURL: () => "blob:acc1", revokeObjectURL: (u: string) => revoked.push(u) };
+    const clicked: { href: string | null; download: string | null }[] = [];
+    env.document.body.addEventListener("click", (ev: FakeEvent) => {
+      const t = ev.target as FakeElement;
+      if (t.tagName === "A" && (t.getAttribute("href") ?? "").startsWith("blob:")) clicked.push({ href: t.getAttribute("href"), download: t.getAttribute("download") });
+    });
+    env.sources[0]!.send(boardMsg([]));
+    const box = $(env, "b-log");
+    box.querySelectorAll("button[data-report]")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    next = () => Promise.resolve({ ok: true, blob: () => Promise.resolve("акт"), headers: { get: () => 'attachment; filename="acc1-2026-11-14T20-00-ru.md"' } });
+    box.querySelectorAll("a[data-export]")[0]!.click();
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(clicked).toEqual([{ href: "blob:acc1", download: "acc1-2026-11-14T20-00-ru.md" }]);
+    expect(revoked).toEqual([]); // не сразу после click
+    // ответ 409 по ссылке пришёл, когда уже собран новый снимок — подсказку не ставит
+    let late!: (v: unknown) => void;
+    next = () => new Promise((ok) => (late = ok));
+    box.querySelectorAll("a[data-export]")[0]!.click();
+    const fresh = { ...body, builtAt: "2026-11-14T20:05:00.000Z" };
+    const after = () => Promise.resolve({ ok: true, json: () => Promise.resolve(fresh) });
+    const pendingFetch = next;
+    next = after;
+    void pendingFetch;
+    box.querySelectorAll("button[data-report]")[0]!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    late({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(box.querySelectorAll("a[data-export]").length).toBe(3);
+    expect(box.textContent).not.toContain(PULT["report.rebuild"].ru);
+    // на паузе — без запроса (ссылок нет, но и прямой вызов не шлёт)
+    const before = calls.length;
+    env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+    expect(box.querySelectorAll("a[data-export]")).toEqual([]);
+    expect(calls.length).toBe(before);
   });
 
   it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки ссылками на файл; отказ — с кодом; ru/en", async () => {

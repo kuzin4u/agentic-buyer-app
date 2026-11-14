@@ -2,7 +2,7 @@
 // ленты. Панели наполняют следующие кирпичи (П-1.2 и дальше). Данные выводятся только через createElement и
 // textContent (инвариант 4): разметка из строк не собирается. Выбор раскладки помнит браузер (localStorage) — только
 // удобство зрителя: без хранилища пульт работает так же.
-/* global document, window, Element, EventSource, CustomEvent, localStorage, setInterval, URLSearchParams */
+/* global document, window, Element, EventSource, CustomEvent, localStorage, setInterval, setTimeout, URLSearchParams */
 "use strict";
 
 (function () {
@@ -1275,7 +1275,8 @@
   // ---- «Отчёт» (П-6.2, Р-1552): снимок по кнопке — таблица 25 тестов и акт ACC-1 окна Б; выгрузки — файлом с сервера ----
   // Считает сервер (`GET /pult/report`); экран только показывает, с временем сборки. Тексты акта и выгрузок — окна Б.
   const ACC1 = cfg.acc1 && typeof cfg.acc1 === "object" ? cfg.acc1 : { title: "", exports: [] };
-  const report = { pending: false, failed: "", data: null };
+  /** `stale` — показанный снимок уже не выгружается (сборка не удалась после него или сервер ответил 409; Б2). */
+  const report = { pending: false, failed: "", data: null, stale: false };
   function renderReport(wrap) {
     wrap.appendChild(el("h3", ACC1.title, "ctl-h"));
     const build = el("button", label("report.build"), "report-build");
@@ -1308,9 +1309,10 @@
     if (typeof d.unlinked === "number" && d.unlinked > 0) wrap.appendChild(el("p", label("report.unlinked") + ": " + d.unlinked, "muted"));
     // П13 (Р-1558): выгрузка — показанный снимок (`at` = его время сборки), сервер нового не собирает. На паузе ссылки
     // неактивны (дополнение к П12: ссылка тоже отправляет запрос) — текстом без адреса, с пояснением.
+    // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — ссылок нет, подсказка «соберите заново».
     const ex = el("p", label("report.export") + ": ", "report-export");
     for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
-      if (paused || typeof d.builtAt !== "string") {
+      if (paused || report.stale || typeof d.builtAt !== "string") {
         const off = el("span", e.label, "muted");
         off.setAttribute("aria-disabled", "true");
         ex.appendChild(off);
@@ -1318,12 +1320,59 @@
         const a = el("a", e.label);
         a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.builtAt) }).toString());
         a.setAttribute("download", "");
+        a.dataset.export = "1";
         ex.appendChild(a);
       }
       ex.appendChild(el("span", " "));
     }
     if (paused) ex.appendChild(el("span", label("act.paused"), "muted"));
+    else if (report.stale) ex.appendChild(el("span", label("report.rebuild"), "muted"));
     wrap.appendChild(ex);
+  }
+  /** Выгрузка через `fetch` (Б2; ответ чата #issuecomment-6881016969): отказ (409 — собран новый снимок, в том числе в другой
+   *  вкладке) — подсказка на экране, а не ошибка загрузки браузера или файл с JSON вместо акта. Удалась — файл как есть. */
+  function downloadExport(href) {
+    const f = window.fetch;
+    // На паузе — без запроса (П12 п. 5, ревью Б2 № 5); только свой адрес выгрузки (ревью Б2 № 6).
+    if (typeof f !== "function" || paused || typeof href !== "string" || href.indexOf("/pult/report?") !== 0) return;
+    // Снимок, к которому относится ссылка: ответ по уже заменённому снимку подсказку не ставит (ревью Б2 № 2).
+    const shownAt = report.data ? report.data.builtAt : undefined;
+    f(href)
+      .then((r) => {
+        if (!r.ok) {
+          return r
+            .json()
+            .catch(() => ({}))
+            .then((body) => {
+              if (!report.data || report.data.builtAt !== shownAt) return;
+              report.failed = body && typeof body.error === "string" ? body.error : "HTTP " + r.status;
+              report.stale = true;
+              renderLog();
+            });
+        }
+        const save = window.URL && typeof window.URL.createObjectURL === "function" && typeof r.blob === "function";
+        if (!save) return void (window.location.href = href);
+        return r.blob().then((blob) => {
+          const u = window.URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          const cd = r.headers && typeof r.headers.get === "function" ? r.headers.get("content-disposition") : null;
+          const m = cd ? /filename="([^"]+)"/.exec(cd) : null;
+          a.setAttribute("href", u);
+          a.setAttribute("download", m ? m[1] : "acc1");
+          document.body.appendChild(a);
+          a.click();
+          if (a.parentNode) a.parentNode.removeChild(a);
+          // Отзыв адреса — позже: браузер читает Blob после `click`, отзыв сразу — «файл не найден» в Firefox и Safari
+          // (ревью Б2 № 1).
+          setTimeout(() => window.URL.revokeObjectURL(u), 60_000);
+        });
+      })
+      .catch(() => {
+        if (!report.data || report.data.builtAt !== shownAt) return;
+        report.failed = label("report.no_answer");
+        report.stale = true;
+        renderLog();
+      });
   }
   function buildReport() {
     const f = window.fetch;
@@ -1335,13 +1384,20 @@
       .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
       .then(({ ok, body }) => {
         report.pending = false;
-        if (ok && body && Array.isArray(body.rows)) report.data = body;
-        else report.failed = body && typeof body.error === "string" ? body.error : "HTTP";
+        if (ok && body && Array.isArray(body.rows)) {
+          report.data = body;
+          report.stale = false;
+        } else {
+          report.failed = body && typeof body.error === "string" ? body.error : "HTTP";
+          // Сервер мог успеть собрать новый снимок — ссылки прежнего снимка сняты (ответ чата, п. 2).
+          report.stale = report.data !== null;
+        }
         renderLog();
       })
       .catch(() => {
         report.pending = false;
         report.failed = label("report.no_answer");
+        report.stale = report.data !== null;
         renderLog();
       });
   }
@@ -1349,6 +1405,11 @@
     logBox.addEventListener("click", (ev) => {
       const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
       if (rb) return buildReport();
+      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
+      if (ea) {
+        ev.preventDefault();
+        return downloadExport(ea.getAttribute("href"));
+      }
       const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
       if (!b) return;
       logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";
@@ -1387,13 +1448,32 @@
     if (autoBox) autoBox.textContent = label(autoKnown === true ? "auto.on" : autoKnown === false ? "auto.off" : "auto.unknown");
   }
   const lastPress = {};
+  // Б2 (видимая часть № 12): у переключателя «Авто» — тот же счётчик нажатий, ответ — только на последнее; отказ — виден.
+  let autoPress = 0;
+  // Б2 (узкое ревью № 11, № 15): после `hello` первая доска могла быть посчитана до него (пауза пересчёта 200 мс) — её режим
+  // «Авто» прежний и свежий режим из `hello` не перекрывает.
+  let autoFromHello = false;
   if (faultsBox) {
     showAuto(undefined);
     faultsBox.addEventListener("click", (ev) => {
       const b = ev.target instanceof Element ? ev.target.closest("button") : null;
       if (!b || paused || b.hasAttribute("disabled")) return;
       if (b.dataset.auto === "on" || b.dataset.auto === "off") {
-        post("/client/auto/" + b.dataset.auto, (body) => showAuto(body && typeof body.auto === "boolean" ? body.auto : undefined));
+        const n = ++autoPress;
+        post("/client/auto/" + b.dataset.auto, (body) => {
+          if (n !== autoPress || !autoBox) return;
+          if (body && typeof body.auto === "boolean") return showAuto(body.auto);
+          // Нет ответа (сеть) — не «отказано»: «стенд не ответил» (ревью Б2 № 4).
+          if (body === null) {
+            showAuto(undefined);
+            autoBox.textContent += " · " + label("act.failed");
+            return;
+          }
+          // Отказ (403, 404 простым текстом, ответ без режима) — словами, режим — прежний (не «нет данных» молча).
+          const why = body && typeof body.httpStatus === "number" && body.httpStatus > 0 ? " · HTTP " + body.httpStatus : body && typeof body.code === "string" ? " · " + body.code : "";
+          showAuto(undefined);
+          autoBox.textContent += " · " + label("auto.refused") + why;
+        });
         return;
       }
       const test = b.dataset.fault;
@@ -1401,13 +1481,14 @@
       if (!test || (op !== "arm" && op !== "disarm")) return;
       const out = faultsBox.querySelector("[data-fault-result='" + test + "']");
       const m = op === "arm" && b.dataset.faultShop === "1" ? focusMerchant() : "";
+      // Ответ показывается только на последнее нажатие по тесту (ревью № 2) — и нажатие при неопределённой витрине
+      // последнее: запоздалый ответ прежнего нажатия его не перекрывает (видимая часть № 14).
+      const n = (lastPress[test] || 0) + 1;
+      lastPress[test] = n;
       if (m === null) {
         if (out) out.textContent = label("faults.shop_ambiguous");
         return;
       }
-      // Ответ показывается только на последнее нажатие по тесту (ревью № 2).
-      const n = (lastPress[test] || 0) + 1;
-      lastPress[test] = n;
       const q = m ? "?" + new URLSearchParams({ merchant_id: m }).toString() : "";
       if (out) out.textContent = label("act.sending");
       post("/stand-fault/" + encodeURIComponent(test) + "/" + op + q, (body) => {
@@ -1417,7 +1498,8 @@
           const o = body.options && typeof body.options === "object" ? body.options : {};
           const where = [o.shop_id, o.merchant_id].filter((x) => typeof x === "string").join(" · ");
           out.textContent = label(op === "arm" ? "faults.armed" : "faults.disarmed") + (where ? " · " + where : "");
-        } else if (body && typeof body.code === "string") out.textContent = label("faults.refused") + " · " + body.code;
+        } else if (body && body.ok === true) out.textContent = label("faults.other_test") + (typeof body.test === "string" ? " · " + body.test : "");
+        else if (body && typeof body.code === "string") out.textContent = label("faults.refused") + " · " + body.code;
         else if (body && typeof body.httpStatus === "number" && body.httpStatus > 0) out.textContent = label("faults.refused") + " · HTTP " + body.httpStatus;
         else out.textContent = label("act.failed");
       });
@@ -1438,7 +1520,9 @@
     renderCtl();
     renderInt();
     renderLog();
-    showAuto(board.clientAuto);
+    // Первая доска после `hello` — режим «Авто» из `hello` главнее (узкое ревью № 15); дальше — по доскам, как раньше.
+    if (autoFromHello) autoFromHello = false;
+    else showAuto(board.clientAuto);
   }
   // Пометка паузы — внутри строки статуса (`role="status"`): видна при любой вкладке и раскладке (П12).
   const pauseNote = el("span", " · " + label("status.paused"), "conn-paused");
@@ -1492,7 +1576,17 @@
     }
     if (e.type === "hello" || e.type === "status") setStatus(e.status);
     // Подключение (и переподключение EventSource после перезапуска стенда) — режим «Авто» заново у источника (ревью № 11).
-    if (e.type === "hello" && faultsBox && typeof e.clientAuto === "boolean") showAuto(e.clientAuto);
+    if (e.type === "hello" && faultsBox) {
+      if (typeof e.clientAuto === "boolean") {
+        showAuto(e.clientAuto);
+        autoFromHello = true;
+      } else {
+        // `hello` без режима (узкое ревью № 16): прежний «авто» не остаётся — «нет данных».
+        autoKnown = undefined;
+        showAuto(undefined);
+        autoFromHello = false;
+      }
+    }
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
       if (paused) {
         pendingBoard = e.board;
