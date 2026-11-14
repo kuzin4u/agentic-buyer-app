@@ -624,6 +624,18 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     expect(r2.note).toBeUndefined();
   });
 
+  it("Х2 (повторное ревью П-4.2 № 1, Р-1509): две записи SECOND_CREDENTIAL_ISSUED — одна у покупки, другая без объекта: плитка У2 — и транзакция, и «система»", () => {
+    const items = purchase("S1");
+    const model = buildTxModel(items);
+    const tx = model.txs.find((t) => t.cartMandateId === "CS1")!;
+    const own = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CS1", merchant_id: "MER-1", order_ref: "OS1" }, "Н-02");
+    const stray = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "C-чужая", merchant_id: "MER-1", order_ref: "O-чужой" }, "Н-02");
+    const both = conditionsView(withLog(items, [own, stray])).nodes.find((n) => n.id === "У2")!;
+    expect(both).toMatchObject({ status: "bad", objs: [tx.id], system: true });
+    // только запись у покупки — «системы» нет
+    expect(conditionsView(withLog(items, [own])).nodes.find((n) => n.id === "У2")).toMatchObject({ status: "bad", objs: [tx.id], system: false });
+  });
+
   it("Р-1540 (ревью № 3 (а)): кандидатов по поручению несколько и номер заказа чужой — пометка прежняя, «две покупки» (`link_conflict`), не `order_mismatch`", () => {
     // одно намерение IK — две покупки под ним; запись — по намерению, номер заказа не их
     const items = [...purchase("K1", { intentId: "IK" }), ...purchase("K2", { intentId: "IK", intent: () => [] })];
@@ -676,6 +688,16 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     expect(going.log).toContain(blank.seq);
     expect(going.note).toBeUndefined();
     expect([NOTE_LABEL.late_unlinked.ru, NOTE_LABEL.late_unlinked.en].every((s) => s !== "")).toBe(true);
+    // Х2 (ревью Х2 № 3): своя часть системы — только записи, поднявшие условие до итога. Поздний итог без op_ref статус не
+    // поднимает — в `systemOwn` его нет, хотя он в доказательствах; потерянный итог без объекта — есть.
+    expect(withLog(done9, [blank], { now: T0 + LATE_MS + 1 }).systemOwn?.R31).toBeUndefined();
+    expect(withLog(pending, [blank], { now: T0 + LATE_MS + 1 }).systemOwn?.R31).toBeUndefined();
+    expect(withLog(pending, [late8], { now: T0 + LATE_MS + 1 }).systemOwn?.R31).toEqual([late8.seq]);
+    // две записи без объекта: просроченная — «нарушено», свежая — «ждёт»; итог «нарушено» — своя часть только первая
+    const fresh = fault("OUTCOME_EVENT_DELAYED", { op_ref: "PL8b" }, "Н-12", T0 + LATE_MS);
+    const two = withLog(pending, [late8, fresh], { now: T0 + LATE_MS + 1 });
+    expect(two.system.R31.status).toBe("bad");
+    expect(two.systemOwn?.R31).toEqual([late8.seq]);
     // Долгий прогон (повторное ревью № A): запись стенда старше первой записи в окне — её покупка ушла из окна, «нет на
     // шине» ложно: не судится.
     const old = fault("OUTCOME_EVENT_DELAYED", { op_ref: "PGONE" }, "Н-12", Date.parse(pending[0]!.at) - 1);

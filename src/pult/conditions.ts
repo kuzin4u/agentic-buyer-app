@@ -90,7 +90,10 @@ export function conditionsView(view: EngineView, rules: readonly Rule89[] = RULE
       const at = view.objs.filter((o) => o.conds[c].status === status);
       // Пометки одной покупки («упреждено реакцией») плитку узла не помечают (ревью П-8.2 № 4).
       for (const o of at) if (o.conds[c].note && !OBJECT_ONLY_NOTES.has(o.conds[c].note!)) notes.add(o.conds[c].note!);
-      if (BAD_LIKE.has(status) && at.length === 0) system = true;
+      // И при объекте в том же статусе — если движок назвал свою часть системы: запись журнала без объекта подняла условие
+      // до этого статуса (повторное ревью П-4.2 № 1, Р-1509; Х2, ревью № 3 — признак считает движок, экран показывает).
+      const sysOwn = (view.systemOwn?.[c]?.length ?? 0) > 0;
+      if (BAD_LIKE.has(status) && (at.length === 0 || sysOwn)) system = true;
     }
     return { id, status, objs, system, notes: [...notes] };
   });

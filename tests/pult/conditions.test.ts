@@ -65,6 +65,16 @@ describe("«Условия» пульта (П-4.2): conditionsView", () => {
     expect(c.nodes.find((n) => n.id === "У2")).toMatchObject({ status: "bad", objs: ["T2"], system: true });
   });
 
+  it("Х2 (ревью Х2 № 3): «система» при объекте в том же статусе — только по `systemOwn` движка, не по доказательствам сводного условия", () => {
+    // У4 — R31: у покупки «нарушено», в доказательствах сводного — запись без объекта (поздний итог без op_ref), но статус она
+    // не поднимала — «системы» нет
+    const v = view({ R31: "bad" }, [{ id: "CL8", s: { R31: "bad" } }]);
+    const withLogOnly: EngineView = { ...v, system: { ...v.system, R31: { status: "bad", seqs: [], log: [7, 99] } }, objs: [{ ...v.objs[0]!, conds: { ...v.objs[0]!.conds, R31: { status: "bad", seqs: [], log: [7] } } }] };
+    expect(conditionsView(withLogOnly).nodes.find((n) => n.id === "У4")).toMatchObject({ status: "bad", objs: ["CL8"], system: false });
+    // движок назвал свою часть — «система» видна рядом с покупкой
+    expect(conditionsView({ ...withLogOnly, systemOwn: { R31: [99] } }).nodes.find((n) => n.id === "У4")).toMatchObject({ status: "bad", objs: ["CL8"], system: true });
+  });
+
   it("уточнение 2: «конфликт звеньев» у статуса плитки — пометкой, а не простым «ждёт»; пометка другого статуса в плитку не попадает", () => {
     const c = conditionsView(view({ R46: ["wait", "link_conflict"], R25: "ok" }, [{ id: "TK", s: { R46: ["wait", "link_conflict"] } }]));
     expect(c.nodes.find((n) => n.id === "У2")).toMatchObject({ status: "wait", notes: ["link_conflict"], objs: [], system: false });

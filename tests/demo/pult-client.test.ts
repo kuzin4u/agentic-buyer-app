@@ -710,6 +710,17 @@ describe("«Причины» пульта (П-5.1)", () => {
   ];
   const msg = (causes: unknown) => ({ type: "board", board: { now: NOW, cards: [card("T2", "done")], jumps: [], control: CTL, causes } });
 
+  it("Х2 (ревью П-5.1 № 14): перестройка «Причин» возвращает фокус клавиатуры на кнопку того же блока", () => {
+    const env = start();
+    env.sources[0]!.send(msg(CAUSES));
+    const head = $(env, "b-int").querySelector("button[data-int-tx]") as FakeElement;
+    head.focus();
+    env.sources[0]!.send(msg(CAUSES));
+    const again = $(env, "b-int").querySelector("button[data-int-tx]")!;
+    expect(again).not.toBe(head);
+    expect(env.document.activeElement).toBe(again);
+  });
+
   it("система — блоки без разбора; щелчок — фокус; в фокусе — что случилось, где, правило, почему, последствия, что делать, гарантии, цепочка «из N»; данные — текстом", () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });
@@ -806,6 +817,87 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
     expect(res).toContain(`${ru("act.refused")} · 409 · MANDATE_NOT_ACTIVE`);
     expect(res).not.toContain(ru("act.done"));
+  });
+
+  describe("Х2 (ревью П-4.2 № 3): «Контроль» в документ — только при изменившейся разметке", () => {
+    /** Жест в порядке браузера: нажатие → (доска) → отпускание → щелчок. */
+    const gesture = (env: PageEnv, b: FakeElement, between: () => void) => {
+      b.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true }));
+      between();
+      b.dispatchEvent(new FakeEvent("pointerup", { bubbles: true }));
+      b.click();
+    };
+
+    it("та же доска между нажатием и щелчком — узел прежний, запрос уходит", () => {
+      const env = start({ actions: true });
+      const calls = withFetch(env);
+      env.sources[0]!.send(msg);
+      const stop = btn(env, "stop")[0]!;
+      gesture(env, stop, () => {
+        env.sources[0]!.send(msg);
+        expect(btn(env, "stop")[0]).toBe(stop);
+      });
+      expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+    });
+
+    it("бегущие секунды прошли, доска та же — узел прежний (секунды — вне сравнения, перечень CTL_TICKING)", () => {
+      const now = vi.spyOn(Date, "now");
+      try {
+        now.mockReturnValue(3_000_000);
+        const env = start({ actions: true });
+        const calls = withFetch(env);
+        env.sources[0]!.send(msg);
+        const stop = btn(env, "stop")[0]!;
+        const s0 = $(env, "b-ctl").querySelectorAll(".wait-s").map((x) => x.textContent);
+        now.mockReturnValue(3_003_000);
+        gesture(env, stop, () => {
+          // таймер переписал секунды (73 с вместо 70), затем пришла та же доска — разметка без секунд та же
+          for (const f of env.intervals) f();
+          expect($(env, "b-ctl").querySelectorAll(".wait-s").map((x) => x.textContent)).not.toEqual(s0);
+          env.sources[0]!.send(msg);
+          expect(btn(env, "stop")[0]).toBe(stop);
+        });
+        expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it("доска с конфликтом звеньев между нажатием и щелчком — узел заменён, прежняя кнопка запрос не шлёт (Р-1542)", () => {
+      const env = start({ actions: true });
+      const calls = withFetch(env);
+      env.sources[0]!.send(msg);
+      const stop = btn(env, "stop")[0]!;
+      gesture(env, stop, () => env.sources[0]!.send({ ...msg, board: { ...msg.board, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", linkConflict: true }] } }));
+      expect(btn(env, "stop")).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
+    it("повторное ревью Х2 № 1: меняется только атрибут (корзина в `data-params` «Остановить»), текст тот же — узел заменён, прежняя кнопка не шлёт", () => {
+      const env = start({ actions: true });
+      const calls = withFetch(env);
+      env.sources[0]!.send(msg);
+      const stop = btn(env, "stop")[0]!;
+      const before = $(env, "b-ctl").textContent;
+      const other = { ...msg, board: { ...msg.board, cards: [{ ...card("CT1", "confirmation"), intentId: "IT1", cartMandateId: "CT1-b" }] } };
+      gesture(env, stop, () => env.sources[0]!.send(other));
+      expect($(env, "b-ctl").textContent).toBe(before);
+      expect(btn(env, "stop")[0]).not.toBe(stop);
+      expect(btn(env, "stop")[0]!.dataset.params).toBe("cart=CT1-b");
+      expect(calls).toEqual([]);
+    });
+
+    it("одно поле внутри «Контроля» (условие строки ожидания) изменилось — узлы заменены; неизменная шапка не мешает", () => {
+      const env = start({ actions: true });
+      const calls = withFetch(env);
+      env.sources[0]!.send(msg);
+      const remind = btn(env, "remind")[0]!;
+      const other = { ...ctl, waits: [ctl.waits[0]!, { ...ctl.waits[1]!, confirmationId: "Q2" }] };
+      gesture(env, remind, () => env.sources[0]!.send({ ...msg, board: { ...msg.board, control: other } }));
+      expect(btn(env, "remind")[0]).not.toBe(remind);
+      expect(btn(env, "remind").map((b) => b.dataset.params)).toEqual(["confirmation=Q2"]);
+      expect(calls).toEqual([]);
+    });
   });
 
   const pauseOf = (env: PageEnv) => (paused: boolean) => env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused } }));

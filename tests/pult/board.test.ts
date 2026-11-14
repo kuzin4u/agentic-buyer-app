@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { FeedEvent, InterpretFeed } from "../../src/dashboards/feed.js";
 import type { Interpretation, TxIds } from "../../src/dashboards/interpret.js";
 import { boardView, BOARD_COLUMNS } from "../../src/pult/board.js";
+import { conditionsView } from "../../src/pult/conditions.js";
 import { evaluate, HIDDEN_RECORD } from "../../src/pult/engine.js";
 import { createControlFeed } from "../../src/dashboards/control-feed.js";
 import { clientAutoOf, createPultFeed, type PultFeedEvent } from "../../src/pult/feed.js";
@@ -285,6 +286,38 @@ describe("лента пульта (П-2.1)", () => {
     for (const l of ls) l({ type: "stand", line: line(2) });
     await tick();
     expect(seen.at(-1)).toEqual([log[0]!.entry, log[1]!.entry]);
+  });
+
+  it("Х2 (ревью П-4.2 № 10; перенос из Х3 — #issuecomment-6878939708): ошибка «Условий» — прежние «Условия», а паспорта, «Причины» и протокол — свежие", async () => {
+    const f = fakeFeed();
+    let broken = false;
+    const p = createPultFeed(f.feed, {
+      now: () => new Date("2026-11-12T12:00:00Z"),
+      debounceMs: 0,
+      conditionsView: (ev) => {
+        if (broken) throw new Error("сбой плитки");
+        return conditionsView(ev);
+      },
+    });
+    f.push(step("cart.created", { mandate_id: "CK6", intent_id: "IK6" }, { stage: "cart" }));
+    await tick();
+    const condBefore = p.board().conditions;
+    expect(condBefore && Object.keys(condBefore.rules)).toHaveLength(89);
+    const controlBefore = p.board().control;
+    const causesBefore = p.board().causes;
+    broken = true;
+    const order = step("order.placed", { order_id: "OK6", mandate_id: "CK6" }, { stage: "payment" });
+    const req = event("confirmation.required", { confirmation_id: "QK6", order_id: "OK6" }, { stage: "confirmation" });
+    f.push(order, req);
+    await tick();
+    expect(p.board().conditions).toBe(condBefore);
+    // «Причины» — свежие (внешний блок отказа оставил бы прежние: это и отличает вложенный блок)
+    expect(p.board().causes).toBeDefined();
+    expect(p.board().causes).not.toBe(causesBefore);
+    // движок отработал: «Контроль» — свежий объект с новым ожиданием, а не прежний
+    expect(p.board().control).not.toBe(controlBefore);
+    expect(p.board().control.waits).toEqual([{ kind: "confirmation", cond: "R21", obj: "CK6", confirmationId: "QK6", since: req.at }]);
+    p.close();
   });
 
   it("ревью П-4.1 № 5, № 16: ошибка в движке условий доску не гасит; прежние — только паспорта и число с паспортом, ожидания и «В работе сейчас» — свежие", async () => {

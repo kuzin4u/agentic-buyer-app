@@ -483,6 +483,40 @@
   const txt = (t) => (t && typeof t === "object" ? t[lang === "en" ? "en" : "ru"] || t.ru || "" : "");
   const subj = (s) => label("subj." + s);
   let ctlDueKey = "";
+  // Х2 (ревью П-4.2 № 3; ответ чата #issuecomment-6878753358): «Контроль» строится заново на каждой доске, но в документ
+  // попадает, только если его разметка отличается от показанной. Доска, пришедшая между нажатием и отпусканием, не уносит
+  // кнопку из-под курсора, если «Контроль» не изменился; изменился — кнопки новые, а прежняя (вне документа) запрос не шлёт.
+  // Флага удержания нет — залипать нечему (отклонено: удержание `ctlHeld` — залипание давало действие по невидимой доске).
+  let ctlShown = "";
+  /** Бегущие значения «Контроля»: класс элемента → текст на «сейчас». Это **единственный** перечень: по нему таймер раз в
+   *  секунду переписывает текст (`setInterval` ниже), и только эти элементы не входят в сравнение разметки (`markupKey`).
+   *  Новый бегущий элемент — строка здесь; осмысленный элемент сюда не попадает (его изменение было бы пропущено, и кнопка
+   *  ушла бы по устаревшей доске). Функции — по `since` элемента. */
+  const CTL_TICKING = {
+    "wait-s": (since) => waitSeconds(since) + " " + label("card.sec"),
+    "active-t": (since) => stageText(since),
+  };
+  /** Переписать бегущие значения показанного «Контроля» на «сейчас» — таймером и при пропущенной перестройке. */
+  function tickCtl() {
+    if (!ctlBox) return;
+    for (const [cls, text] of Object.entries(CTL_TICKING)) for (const s of ctlBox.querySelectorAll("." + cls)) s.textContent = text(s.dataset.since);
+  }
+  /** Разметка поддерева без бегущих значений: тег, атрибуты по имени, текст. Одна функция и для документа, и для
+   *  подменённого DOM в тестах: у узлов браузера — `childNodes` с текстовыми узлами, у подменённого — свой текст и `children`. */
+  function markupKey(n) {
+    if (n.nodeType === 3) return JSON.stringify(n.nodeValue);
+    const cls = typeof n.className === "string" ? n.className.split(/\s+/) : [];
+    const attrs = [];
+    for (const a of n.attributes || []) attrs.push(JSON.stringify(Array.isArray(a) ? a : [a.name, a.value]));
+    attrs.sort();
+    const head = "<" + (n.tagName || "") + " " + attrs.join(" ") + ">";
+    if (cls.some((c) => Object.prototype.hasOwnProperty.call(CTL_TICKING, c))) return head + "~";
+    if (n.childNodes) return head + Array.from(n.childNodes).map(markupKey).join("") + "</>";
+    const kids = Array.from(n.children || []);
+    const all = n.textContent || "";
+    const own = all.slice(0, all.length - kids.map((k) => k.textContent || "").join("").length);
+    return head + JSON.stringify(own) + kids.map(markupKey).join("") + "</>";
+  }
   const dueWaits = () => {
     const c = board && board.control;
     if (!c || !Array.isArray(c.waits)) return [];
@@ -705,6 +739,13 @@
     ctlDueKey = dueKey(due);
     if (view === "all") renderAll(wrap, board.conditions);
     else renderPrio(wrap, due);
+    // Х2: разметка та же — показанное тело остаётся (узлы, кнопки, фокус), секунды ведёт таймер.
+    const key = view + "|" + markupKey(wrap);
+    if (key === ctlShown && ctlBody.firstChild) {
+      tickCtl();
+      return;
+    }
+    ctlShown = key;
     while (ctlBody.firstChild) ctlBody.removeChild(ctlBody.firstChild);
     ctlBody.appendChild(wrap);
     if (keepKey) {
@@ -718,8 +759,9 @@
   }
 
   if (ctlBox) {
-    // Переходы «Условий». «К нарушению» — фокус на транзакцию (`pult:select`), и по нажатию мыши: тело могло перестроиться
-    // до отпускания (как у карточки доски); повторный выбор той же транзакции — без перерисовки (П-1.4 № 2).
+    // Переходы «Условий». «К нарушению» — фокус на транзакцию (`pult:select`), и по нажатию мыши: «Контроль» с изменившейся
+    // разметкой мог перестроиться до отпускания (как у карточки доски); повторный выбор той же транзакции — без перерисовки
+    // (П-1.4 № 2).
     ctlBox.addEventListener("pointerdown", (ev) => {
       const b = ev.target instanceof Element ? ev.target.closest("[data-go]") : null;
       if (b) document.dispatchEvent(new CustomEvent("pult:select", { detail: { tx: b.dataset.go } }));
@@ -957,7 +999,7 @@
       const row = el("div", undefined, "wait-row");
       row.dataset.wait = w.kind;
       row.appendChild(el("span", (w.cond ? w.cond + " · " : "") + label("ctl.wait." + w.kind) + " · " + w.obj + (w.confirmationId ? " · " + w.confirmationId : "") + " · "));
-      const s = el("span", waitSeconds(w.since) + " " + label("card.sec"), "wait-s");
+      const s = el("span", CTL_TICKING["wait-s"](w.since), "wait-s");
       s.dataset.since = w.since;
       row.appendChild(s);
       // «Возможно, чужая операция» — предположение, не нарушение: реакции нет (условие Р-1478). Реакция «Напомнить
@@ -981,7 +1023,7 @@
     for (const a of c.active || []) {
       const row = el("div", a.id + " · " + label("col." + a.column) + " · ", "active-row");
       // Время в стадии тикает раз в секунду, как на карточках доски (ревью П-4.1 № 8).
-      const t = el("span", stageText(a.since), "active-t");
+      const t = el("span", CTL_TICKING["active-t"](a.since), "active-t");
       t.dataset.since = a.since;
       row.appendChild(t);
       if (ACTIONS) txButtons(row, a.id);
@@ -1100,6 +1142,9 @@
   function renderInt() {
     if (!intBox || !board) return;
     const list = Array.isArray(board.causes) ? board.causes : [];
+    // Фокус клавиатуры на кнопке блока возвращается после перестройки, как у карточки доски (Х2, ревью П-5.1 № 14).
+    const active = document.activeElement;
+    const keep = active && intBody.contains(active) && active.dataset ? active.dataset.intTx : undefined;
     const wrap = document.createDocumentFragment();
     const tx = focus && focus.level === "tx" ? focus.tx : null;
     wrap.appendChild(el("p", label(tx ? "int.note.tx" : "int.note.system"), "note"));
@@ -1112,6 +1157,14 @@
     else for (const c of list) wrap.appendChild(txBlock(c, false));
     while (intBody.firstChild) intBody.removeChild(intBody.firstChild);
     intBody.appendChild(wrap);
+    if (keep !== undefined) {
+      for (const b of intBody.querySelectorAll("button[data-int-tx]")) {
+        if (b.dataset.intTx === keep) {
+          b.focus();
+          break;
+        }
+      }
+    }
   }
   if (intBox) {
     // Щелчок по заголовку блока — фокус на транзакцию (как карточка доски).
@@ -1131,10 +1184,8 @@
     if (!board || paused) return;
     // «Контроль»: набор строк «Идёт к нарушению» сменился (порог пройден) — перестроить; иначе — только секунды.
     if (dueKey(dueWaits()) !== ctlDueKey) renderCtl();
-    else if (ctlBox) {
-      for (const s of ctlBox.querySelectorAll(".wait-s")) s.textContent = waitSeconds(s.dataset.since) + " " + label("card.sec");
-      for (const t of ctlBox.querySelectorAll(".active-t")) t.textContent = stageText(t.dataset.since);
-    }
+    // Бегущие значения — только по перечню CTL_TICKING (он же исключён из сравнения разметки, Х2).
+    else tickCtl();
     if (state.mode === "graph") {
       layoutGraph();
       return;

@@ -228,6 +228,9 @@ export interface EngineView {
   readonly objs: readonly ObjCheck[];
   /** Сводно по системе: худший статус по объектам; R41 — по всем записям, включая записи вне транзакций. */
   readonly system: CondResults;
+  /** Своя часть системы: записи журнала стенда без объекта, поднявшие условие до его итогового статуса (номера записей).
+   *  Нет ключа условия — своей части нет (Х2). */
+  readonly systemOwn?: Partial<Record<CheckableCondition, readonly number[]>>;
   readonly guarantees: readonly GuaranteeHit[];
 }
 
@@ -289,7 +292,7 @@ type WeakNote = "link_conflict" | "order_mismatch";
 /** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. Неточная привязка записи
  *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4; Р-1540 — своей
  *  пометкой, если номер заказа записи не совпадает с покупкой). */
-function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, e: StandLogEntry, weak?: WeakNote): void {
+function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, e: StandLogEntry, weak?: WeakNote): CondStatus {
   const cur = out[c] ?? r("na");
   // Н-08 при отказе Платформы MANDATE_SCOPE на шине: защита сработала — статус остаётся «сработало», пометка хранится
   // вместе с причиной по шине (решение владельца по П-3.3, 1).
@@ -305,6 +308,10 @@ function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: Checkabl
   // «сработавшем» MANDATE_SCOPE — нарушил агент; без пометки — П-06, нарушения нет).
   else if (st === cur.status)
     out[c] = r(cur.status, cur.seqs, cur.note ?? weak, [...(cur.log ?? []), e.seq], cause?.kind === "mark" ? cause : (cur.cause ?? cause));
+  // Фактический статус записи (неточная привязка — не выше «ждёт»; «сработало» по Н-08 при отказе — только у объекта: у
+  // сводки системы причины по шине нет): по нему сводка системы решает, подняла ли запись условие до его итога
+  // (`systemOwn`, Х2).
+  return st;
 }
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
@@ -863,6 +870,8 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   }
   const logOn = o.standLog !== undefined;
   const system: Partial<Record<CheckableCondition, CondResult>> = {};
+  /** Записи журнала без объекта и их фактический статус по условию — для `systemOwn` (Х2). */
+  const sysRaised: [CheckableCondition, number, CondStatus][] = [];
   for (const c of CHECKABLE_CONDITIONS) {
     const res = objs.map((x) => x.conds[c]);
     const stand = STAND_LOG.includes(c) && !logOn;
@@ -895,7 +904,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     // ревью П-3.2в № D). Статус условия — от объектов и других записей («соблюдено» или «не применяется»), не выше.
     const unlinked: number[] = [];
     for (const e of systemLog) {
-      for (const [c, st] of effectsOf(e)) raise(system, c, st, e);
+      for (const [c, st] of effectsOf(e)) sysRaised.push([c, e.seq, raise(system, c, st, e)]);
       if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
       const p = e.ids.op_ref;
       const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
@@ -904,7 +913,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
         continue;
       }
       const lost = p !== undefined && overdue && !seenOps.has(p);
-      raise(system, "R31", lost ? "bad" : "wait", e);
+      sysRaised.push(["R31", e.seq, raise(system, "R31", lost ? "bad" : "wait", e)]);
       // Причина R31 «нарушено» — потерянный итог (пульт), а не сам сбой задержки стенда.
       if (lost && system.R31!.status === "bad") system.R31 = { ...system.R31!, cause: { kind: "rule", rule: "late_lost" } };
     }
@@ -916,7 +925,11 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // (ревью П-5.1 № 2).
   const viaTx = new Map(model.mandates.filter((m) => m.txIds.length === 1).map((m) => [m.id, m.txIds[0]!] as const));
   const guaranteeObj = new Map([...objOf].map(([s, o]) => [s, viaTx.get(o) ?? o] as const));
-  return { objs, system: system as CondResults, guarantees: guaranteesOf(items, guaranteeObj) };
+  // Своя часть системы (Х2; повторное ревью П-4.2 № 1, Р-1509; ревью Х2 № 3): записи журнала без объекта, которые подняли
+  // условие до его итогового статуса. Поздние итоги без `op_ref` (Р-1537) статус не поднимают и сюда не входят.
+  const systemOwn: Partial<Record<CheckableCondition, number[]>> = {};
+  for (const [c, seq, st] of sysRaised) if (st === system[c]!.status) (systemOwn[c] ??= []).push(seq);
+  return { objs, system: system as CondResults, systemOwn, guarantees: guaranteesOf(items, guaranteeObj) };
 }
 
 /** Статус правила справочника по статусам его проверяемых условий; без проверяемых — «на стенде не проверяется», а

@@ -107,6 +107,8 @@ export interface PultFeedOptions {
   readonly waitMs?: number;
   /** Движок условий — подмена только для теста отказа (ревью П-4.1 № 5). По умолчанию `evaluate`. */
   readonly evaluate?: typeof evaluate;
+  /** «Условия» — подмена только для теста отказа (Х2, ревью П-4.2 № 10). По умолчанию `conditionsView`. */
+  readonly conditionsView?: typeof conditionsView;
   /** Своё окно записей пульта. По умолчанию 20 000: окно ленты интерпретатора (2 000) на прогоне 25 тестов П-11 вытесняет
    *  начало покупки, и оплаченная карточка откатывалась бы из «Завершены» (ревью П-2.1 № 3, Р-1460). Хранение итога
    *  транзакции независимо от окна — после MVP. */
@@ -223,7 +225,13 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       lastEv = ev;
       const vs = verdicts(ev, model, items);
       control = controlView(model, items, vs, active, o.waitMs);
-      conditions = conditionsView(ev);
+      // «Условия» — во вложенном блоке (Х2, ревью П-4.2 № 10 и повторное № 4): их ошибка оставляет прежние «Условия», а
+      // паспорта, «Причины» и протокол — свежие; иначе сбой одной плитки на сборке акта сорвал бы прогон.
+      try {
+        conditions = (o.conditionsView ?? conditionsView)(ev);
+      } catch {
+        conditions = state.conditions;
+      }
       causes = causesView(model, items, vs, control.waits);
       // Записи — ссылкой на окно ленты (без копии на каждый пересчёт): протокол берёт из них только время доказательств по seq.
       protoIn = { verdicts: vs, waits: control.waits, waitMs: control.waitMs, now, model, items, ev };
