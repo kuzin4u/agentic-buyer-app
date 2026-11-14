@@ -1,7 +1,7 @@
 // П-6.2 (Р-1552): «Отчёт» пульта — ответ маршрута `GET /pult/report` по снимку ленты (форматы, файлы выгрузки, отказы) и
 // живая контрольная точка ROADMAP: на сюжетах 1–5 отчёт сходится с «Контролем» К2.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { reportResponse, REPORT_FORMATS } from "../../src/demo/pult-report.js";
+import { reportResponse, REPORT_FORMATS, routeReport } from "../../src/demo/pult-report.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { acc1BuiltAt, ACC1_EXPORTS, acc1Markdown, acc1MdCell, ACC1_TITLE, UTF8_BOM } from "../../src/pult/acc1.js";
 import type { PultReport } from "../../src/pult/feed.js";
@@ -47,6 +47,51 @@ describe("«Отчёт»: ответ маршрута по снимку (П-6.2)
     const xl = reportResponse(rep, "csv_excel", "ru");
     expect(xl.filename).toBe("acc1-2026-11-13T20-55-ru-excel.csv");
     expect(xl.body.startsWith(UTF8_BOM)).toBe(true);
+  });
+});
+
+describe("П13 (Р-1558): выгрузка отдаёт показанный снимок, а не собирает новый", () => {
+  /** Лента с часами: каждый `report()` — новый снимок со своим временем; `reportAt` — как у настоящей ленты. */
+  const feedOf = () => {
+    let n = 0;
+    let last: PultReport | undefined;
+    return {
+      report: () => {
+        const builtAt = new Date(Date.UTC(2026, 10, 14, 16, 40, n++)).toISOString();
+        last = { builtAt, table: testTable({ items: [], model: buildTxModel([]), verdicts: [], now: builtAt }), records: [] };
+        return last;
+      },
+      reportAt: (at: string) => (last !== undefined && last.builtAt === at ? last : undefined),
+    };
+  };
+
+  it("json — собрать снимок; md, csv, csv для Excel по `at` показанного — время сборки внутри акта то же, что на экране", () => {
+    const f = feedOf();
+    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
+    for (const fmt of ACC1_EXPORTS) {
+      const r = routeReport(f, fmt, shown.builtAt, "ru");
+      expect(r.status, fmt).toBe(200);
+      const line = acc1BuiltAt(shown.builtAt, "ru");
+      expect(r.body, fmt).toContain(fmt === "md" ? acc1MdCell(line) : line);
+    }
+  });
+
+  it("`at` нет — 400 NO_SNAPSHOT; собран новый — выгрузка прежнего 409 SNAPSHOT_GONE; неизвестный формат — 400 BAD_FORMAT, снимок не собирается", () => {
+    const f = feedOf();
+    const first = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
+    expect(routeReport(f, "md", null, "ru")).toMatchObject({ status: 400, body: JSON.stringify({ error: "NO_SNAPSHOT" }) });
+    expect(routeReport(f, "md", "", "ru")).toMatchObject({ status: 400 });
+    routeReport(f, "json", null, "ru");
+    expect(routeReport(f, "csv", first.builtAt, "ru")).toMatchObject({ status: 409, body: JSON.stringify({ error: "SNAPSHOT_GONE" }) });
+    expect(routeReport(f, "pdf", first.builtAt, "ru")).toMatchObject({ status: 400, body: JSON.stringify({ error: "BAD_FORMAT" }) });
+  });
+
+  it("поломка С3 по смыслу: выгрузка, собравшая новый снимок, дала бы другое время — здесь его нет", () => {
+    const f = feedOf();
+    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
+    const md = routeReport(f, "md", shown.builtAt, "en").body;
+    // ещё одна выгрузка — тот же снимок, то же время: новый не собирался
+    expect(routeReport(f, "md", shown.builtAt, "en").body).toBe(md);
   });
 });
 
@@ -100,8 +145,9 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(body.totals.no).toBe(0);
     expect(body.rows.filter((r) => r.test.startsWith("У-")).map((r) => r.agree)).toEqual(["unchecked", "unchecked", "unchecked", "unchecked"]);
     expect(typeof body.unlinked).toBe("number");
-    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3).
-    const md = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru`);
+    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3). П13: показанный снимок — по `at`.
+    const at = encodeURIComponent(body.builtAt);
+    const md = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru&at=${at}`);
     expect(md.headers.get("content-disposition")).toMatch(/^attachment; filename="acc1-.*-ru\.md"$/);
     expect(md.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
     expect(md.headers.get("x-content-type-options")).toBe("nosniff");
@@ -109,10 +155,17 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(md.headers.get("cache-control")).toBe("no-store");
     const mdText = await md.text();
     expect(mdText).toContain(ACC1_TITLE.ru);
-    // время сборки — внутри текста выгрузки (Р-1553, П8)
-    expect(mdText.split("\n")[2]).toMatch(/^Время сборки<span>:<\/span> \d{4}-\d\d-\d\dT/);
-    const xl = await fetch(`${demo.monitor.url}/pult/report?format=csv_excel&lang=en`);
+    // время сборки — внутри текста выгрузки (Р-1553, П8) и то же, что показано на экране (П13, контрольная точка).
+    // Время в акте — до секунды: пересборку в ту же секунду эта сверка не отличит — её ловит 409 ниже и unit-тест с шагом
+    // часов в 1 с (ревью Х4б № 3).
+    expect(mdText.split("\n")[2]).toContain(body.builtAt.replace(/\.\d{3}Z$/, "Z").replace(/:/g, "<span>:</span>"));
+    const xl = await fetch(`${demo.monitor.url}/pult/report?format=csv_excel&lang=en&at=${at}`);
     expect(xl.headers.get("content-disposition")).toMatch(/-en-excel\.csv"$/);
+    expect(await xl.text()).toContain(`Built at: ${body.builtAt.replace(/\.\d{3}Z$/, "Z")} (UTC)`);
+    // без `at` — 400; новый снимок — прежний 409 (П13)
+    expect((await fetch(`${demo.monitor.url}/pult/report?format=md`)).status).toBe(400);
+    await fetch(`${demo.monitor.url}/pult/report?format=json`);
+    expect((await fetch(`${demo.monitor.url}/pult/report?format=md&at=${at}`)).status).toBe(409);
     // Коды через маршрут: неизвестный формат — 400; json — без вложения.
     expect((await fetch(`${demo.monitor.url}/pult/report?format=pdf`)).status).toBe(400);
     expect((await fetch(`${demo.monitor.url}/pult/report?format=json`)).headers.get("content-disposition")).toBeNull();

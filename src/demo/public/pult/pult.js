@@ -1301,14 +1301,23 @@
       wrap.appendChild(row);
     }
     if (typeof d.unlinked === "number" && d.unlinked > 0) wrap.appendChild(el("p", label("report.unlinked") + ": " + d.unlinked, "muted"));
+    // П13 (Р-1558): выгрузка — показанный снимок (`at` = его время сборки), сервер нового не собирает. На паузе ссылки
+    // неактивны (дополнение к П12: ссылка тоже отправляет запрос) — текстом без адреса, с пояснением.
     const ex = el("p", label("report.export") + ": ", "report-export");
     for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
-      const a = el("a", e.label);
-      a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang }).toString());
-      a.setAttribute("download", "");
-      ex.appendChild(a);
+      if (paused || typeof d.builtAt !== "string") {
+        const off = el("span", e.label, "muted");
+        off.setAttribute("aria-disabled", "true");
+        ex.appendChild(off);
+      } else {
+        const a = el("a", e.label);
+        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.builtAt) }).toString());
+        a.setAttribute("download", "");
+        ex.appendChild(a);
+      }
       ex.appendChild(el("span", " "));
     }
+    if (paused) ex.appendChild(el("span", label("act.paused"), "muted"));
     wrap.appendChild(ex);
   }
   function buildReport() {

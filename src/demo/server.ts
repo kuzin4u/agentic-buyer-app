@@ -21,7 +21,7 @@ import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.
 import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
 import type { PultActions } from "../pult/actions.js";
 import { pultAct } from "./pult-act.js";
-import { reportResponse } from "./pult-report.js";
+import { routeReport } from "./pult-report.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
 import { escapeHtml, jsonForScript } from "./html.js";
@@ -529,7 +529,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           if (!pult) return send(res, 404, plain, t(lang, "http.not_found"));
           let r;
           try {
-            r = reportResponse(pult.report(), u.searchParams.get("format"), lang);
+            // П13: выгрузка — только показанный снимок (`at`), json — собрать новый.
+            r = routeReport(pult, u.searchParams.get("format"), u.searchParams.get("at"), lang);
           } catch {
             return send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "REPORT_FAILED" }));
           }

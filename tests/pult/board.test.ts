@@ -487,6 +487,24 @@ describe("лента пульта (П-2.1)", () => {
     p.close();
   });
 
+  it("П13 (ревью Х4б № 1): снимок отчёта — по `reportAt` только последний; после сброса источника (перезапуск стенда) прежний не отдаётся", async () => {
+    let t = Date.UTC(2026, 10, 14, 17, 0, 0);
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date(t), debounceMs: 0 });
+    f.push(step("cart.created", { mandate_id: "CS", intent_id: "IS" }, { stage: "cart" }));
+    await tick();
+    const a = p.report()!;
+    expect(p.reportAt(a.builtAt)).toBe(a);
+    t += 1000;
+    const b = p.report()!;
+    expect(p.reportAt(a.builtAt)).toBeUndefined();
+    expect(p.reportAt(b.builtAt)).toBe(b);
+    f.reset();
+    await tick();
+    expect(p.reportAt(b.builtAt)).toBeUndefined();
+    p.close();
+  });
+
   it("сброс источника (ревью П-2.1 № 9): переходы очищены, карточка с тем же номером после сброса — без ложного перехода", async () => {
     const f = fakeFeed();
     const p = createPultFeed(f.feed, { now: () => new Date(), debounceMs: 0 });

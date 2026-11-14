@@ -25,6 +25,23 @@ const isFormat = (s: string | null): s is ReportFormat => s !== null && (REPORT_
 /** Метка времени для имени файла: `2026-11-13T20-55` (часы шины, UTC). */
 const stamp = (iso: string) => iso.slice(0, 16).replace(":", "-");
 
+/** Маршрут `GET /pult/report` (П13, Р-1558): `json` — собрать снимок (кнопка «Собрать отчёт») и показать; выгрузки
+ *  (`md`, `csv`, `csv_excel`) — **только показанный снимок** по `at=<builtAt>`, нового не собирают: подписанный акт — тот,
+ *  что владелец смотрел на экране. `at` нет — 400 `NO_SNAPSHOT`; снимок с таким временем не последний (собран новый,
+ *  перезапуск стенда, другой пульт) — 409 `SNAPSHOT_GONE`: собрать заново. */
+export function routeReport(
+  feed: { report(): PultReport | undefined; reportAt(builtAt: string): PultReport | undefined },
+  format: string | null,
+  at: string | null,
+  lang: "ru" | "en",
+): ReportResponse {
+  if (!isFormat(format) || format === "json") return reportResponse(isFormat(format) ? feed.report() : undefined, format, lang);
+  const json = (status: number, error: string): ReportResponse => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify({ error }) });
+  if (at === null || at === "") return json(400, "NO_SNAPSHOT");
+  const snap = feed.reportAt(at);
+  return snap === undefined ? json(409, "SNAPSHOT_GONE") : reportResponse(snap, format, lang);
+}
+
 export function reportResponse(report: PultReport | undefined, format: string | null, lang: "ru" | "en"): ReportResponse {
   const json = (status: number, body: unknown): ReportResponse => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(body) });
   if (!isFormat(format)) return json(400, { error: "BAD_FORMAT" });

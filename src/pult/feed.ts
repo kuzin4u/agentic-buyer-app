@@ -88,8 +88,12 @@ export interface PultReport {
 
 export interface PultFeed {
   board(): PultBoardState;
-  /** Собрать отчёт по входу последнего пересчёта; движок ещё не отработал — undefined. */
+  /** Собрать отчёт по входу последнего пересчёта; движок ещё не отработал — undefined. Собранный снимок запоминается —
+   *  последний, один (П13). */
   report(): PultReport | undefined;
+  /** Последний собранный снимок, если его время сборки — `builtAt` (П13, Р-1558: выгрузка отдаёт показанный на экране
+   *  снимок, а не собирает новый); другой или не собирался — undefined. */
+  reportAt(builtAt: string): PultReport | undefined;
   /** Записать реакцию (кнопку пульта) и разослать доску. Пересчёт движка не нужен: реакция — не запись шины. */
   react(r: Reaction): void;
   subscribe(l: (e: PultFeedEvent) => void): () => void;
@@ -147,6 +151,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   // пересчёте и на нажатии кнопки (реакция связывается сразу, без новой записи шины); вход последнего пересчёта — для нажатия.
   let proto: ProtocolState = emptyProtocol();
   let protoIn: Omit<ProtocolInput, "reactions"> | undefined;
+  /** Последний собранный снимок отчёта — выгрузка отдаёт его (П13). */
+  let lastReport: PultReport | undefined;
   // Сбой шага протокола не трогает доску, «Контроль» и маршрут кнопки: остаётся прежний протокол (ревью П-6.1а № 10).
   const protoStep = (prevView: ProtocolView | undefined, fresh = false): ProtocolView | undefined => {
     if (!protoIn) return prevView;
@@ -279,6 +285,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
       lastEv = undefined;
       proto = emptyProtocol();
       protoIn = undefined;
+      // Снимок прежнего экземпляра стенда не выгружается: ссылка с его `at` — 409 (П13, ревью Х4б № 1).
+      lastReport = undefined;
       column.clear();
       jumps = [];
       schedule();
@@ -313,8 +321,10 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         ...(e.reaction !== undefined && { action: e.reaction }),
         ...(e.reactSec !== undefined && { reactSec: e.reactSec }),
       }));
-      return { builtAt, table, records };
+      lastReport = { builtAt, table, records };
+      return lastReport;
     },
+    reportAt: (builtAt) => (lastReport !== undefined && lastReport.builtAt === builtAt ? lastReport : undefined),
     react(r) {
       reactions = [...reactions, r].slice(-REACTIONS_KEPT);
       const protocol = protoStep(state.protocol, true);

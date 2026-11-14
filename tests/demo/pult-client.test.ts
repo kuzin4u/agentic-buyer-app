@@ -1435,8 +1435,18 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(rows[1]!.textContent, lang).toContain(PULT["report.violator"][lang]);
       expect(box.textContent, lang).toContain(`${PULT["report.unlinked"][lang]}: 2`);
       const links = box.querySelectorAll("a");
-      expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}`));
+      // П13: ссылка просит показанный снимок — `at` = его время сборки
+      const atQ = new URLSearchParams({ at: body.builtAt }).toString();
+      expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&${atQ}`));
       expect(links.map((a) => a.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
+      // П12, дополнение (Р-1558): на паузе ссылок нет — подписи текстом без адреса, с пояснением; после снятия — снова ссылки
+      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+      expect(box.querySelectorAll("a"), lang).toEqual([]);
+      const ex = box.querySelector(".report-export")!;
+      expect(ex.textContent, lang).toContain(PULT["act.paused"][lang]);
+      for (const f of ACC1_EXPORTS) expect(ex.textContent, lang).toContain(ACC1_EXPORT_LABEL[f][lang]);
+      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: false } }));
+      expect(box.querySelectorAll("a").length, lang).toBe(3);
       // Отказ сервера — «не собран» с кодом.
       env.window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "NO_ENGINE" }) });
       box.querySelectorAll("button[data-report]")[0]!.click();
