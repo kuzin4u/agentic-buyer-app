@@ -39,7 +39,7 @@ export const worstStatus = (list: readonly CondStatus[], empty: CondStatus = "na
   list.reduce<CondStatus | undefined>((a, s) => (a === undefined || RANK[s] < RANK[a] ? s : a), undefined) ?? empty;
 
 /** Пометка к статусу: почему он такой. */
-export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "event_pending", "preempted_by_reaction", "scope_or_expiry", "late_unlinked"] as const;
+export const NOTES = ["race_c28", "unconfirmed_paid", "amounts_after_mvp", "stand_log", "link_conflict", "order_mismatch", "event_pending", "preempted_by_reaction", "scope_or_expiry", "late_unlinked"] as const;
 export type Note = (typeof NOTES)[number];
 /** Пометки одной покупки: в сводный статус условия и в плитку узла не поднимаются — иначе «упреждено реакцией» одной покупки
  *  читалось бы за весь узел (ревью П-8.2 № 4). Остаются у условия объекта в движке; на экране — в журнале реакций
@@ -59,6 +59,8 @@ export const NOTE_LABEL: Readonly<Record<Note, Phrase>> = {
   // Журнал стенда — только в режиме сбоев (Р-1514; подключён в П-8.2, Р-1531).
   stand_log: p("проверяется по журналу сбоев стенда — журнал есть только в режиме сбоев", "checked from the stand fault log — the log exists in fault mode only"),
   link_conflict: p("конфликт звеньев — две покупки с одним номером заказа; решает человек", "link conflict — two purchases share an order number; a human decides"),
+  // Р-1540: запись журнала стенда привязана к покупке по поручению, а номер заказа в ней — не этой покупки.
+  order_mismatch: p("конфликт звеньев: номер заказа записи не совпадает с покупкой; решает человек", "link conflict: the record's order number does not match the purchase; a human decides"),
   event_pending: p("агент сообщил о подписи корзины — ждём событие Платформы", "the agent reported the cart signature — waiting for the Platform event"),
   // У-04 (П-8.2, Р-1531): без причинности — пульт не знает, успел ли клиент благодаря продлению.
   preempted_by_reaction: p(
@@ -281,9 +283,13 @@ const LATE = new Set<StandLogWhat>(["OUTCOME_EVENT_DELAYED", "OUTCOME_EVENTS_REO
 const effectsOf = (e: StandLogEntry): readonly (readonly [CheckableCondition, CondStatus])[] =>
   e.what === "MARKED" ? (e.test !== undefined && MARK_EFFECT[e.test] ? [MARK_EFFECT[e.test]!] : []) : (FAULT_EFFECT[e.what] ?? []);
 
+/** Неточная привязка записи журнала стенда — пометка, с которой она поднимает статус (`objsOfEntry`). */
+type WeakNote = "link_conflict" | "order_mismatch";
+
 /** Поднять статус условия до более тяжёлого по записи журнала; доказательства шины сохраняются. Неточная привязка записи
- *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4). */
-function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, e: StandLogEntry, weak = false): void {
+ *  (`weak`, `objsOfEntry`) поднимает не выше «ждёт» — с пометкой «конфликт звеньев» (ревью П-3.2в № 4; Р-1540 — своей
+ *  пометкой, если номер заказа записи не совпадает с покупкой). */
+function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition, status: CondStatus, e: StandLogEntry, weak?: WeakNote): void {
   const cur = out[c] ?? r("na");
   // Н-08 при отказе Платформы MANDATE_SCOPE на шине: защита сработала — статус остаётся «сработало», пометка хранится
   // вместе с причиной по шине (решение владельца по П-3.3, 1).
@@ -291,14 +297,14 @@ function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: Checkabl
   const bus = cur.cause?.kind === "rule" ? cur.cause.rule : cur.cause?.kind === "mark" ? cur.cause.bus : undefined;
   const stopped = e.what === "MARKED" && e.test === "Н-08" && c === "R17" && cur.status === "fired" && bus?.startsWith("mandate_scope_") === true;
   const want: CondStatus = stopped ? "fired" : status;
-  const st: CondStatus = weak && RANK[want] < RANK.wait ? "wait" : want;
+  const st: CondStatus = weak !== undefined && RANK[want] < RANK.wait ? "wait" : want;
   const own = st === "bad" || st === "fired" ? causeOf(e) : undefined;
   const cause: Cause | undefined = own?.kind === "mark" && bus !== undefined ? { ...own, bus } : own;
-  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak ? "link_conflict" : undefined, [e.seq], cause);
+  if (RANK[st] < RANK[cur.status]) out[c] = r(st, cur.seqs, weak, [e.seq], cause);
   // При равном статусе пометка «ПР» главнее причины по шине: это явное заявление приложения о нарушении (Н-08 при уже
   // «сработавшем» MANDATE_SCOPE — нарушил агент; без пометки — П-06, нарушения нет).
   else if (st === cur.status)
-    out[c] = r(cur.status, cur.seqs, cur.note ?? (weak ? "link_conflict" : undefined), [...(cur.log ?? []), e.seq], cause?.kind === "mark" ? cause : (cur.cause ?? cause));
+    out[c] = r(cur.status, cur.seqs, cur.note ?? weak, [...(cur.log ?? []), e.seq], cause?.kind === "mark" ? cause : (cur.cause ?? cause));
 }
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
@@ -416,7 +422,8 @@ function txConds(
   intentRecs: readonly Interpretation[],
   log: readonly StandLogEntry[] | undefined,
   o: EngineOptions,
-  weak?: ReadonlySet<number>,
+  /** Записи с неточной привязкой: номер записи журнала стенда → пометка. */
+  weak?: ReadonlyMap<number, WeakNote>,
 ): CondResults {
   const all = [...recs, ...intentRecs].sort((a, b) => a.seq - b.seq);
   const pays = recs.filter(isAgentPay);
@@ -667,8 +674,9 @@ function txConds(
     Object.assign(out, standConds(t, recs, log, { started, paid }, o));
     if (t.linkConflict) for (const c of ["R27", "R31", "R32"] as const) out[c] = r("wait", out[c]!.seqs, "link_conflict", out[c]!.log);
     // Сбои стенда и пометки «ПР», привязанные к транзакции, — поднимают статус (R31 — выше, по сроку). Запись с неточной
-    // привязкой (несколько кандидатов или только номер заказа у транзакции с конфликтом звеньев) — не выше «ждёт».
-    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e, weak?.has(e.seq));
+    // привязкой (несколько кандидатов, только номер заказа у транзакции с конфликтом звеньев или поручение при чужом номере
+    // заказа — Р-1540) — не выше «ждёт», со своей пометкой.
+    for (const e of log) for (const [c, st] of effectsOf(e)) raise(out, c, st, e, weak?.get(e.seq));
   }
   return out as CondResults;
 }
@@ -720,11 +728,12 @@ function mandateConds(m: PultMandate, recs: readonly Interpretation[], log: read
  *  записи — только транзакции, где заказ с этим номером был у этой витрины) → поручение корзины → поручение-намерение →
  *  поручение без покупки. На уровне заказа при `mandate_id` в записи — без транзакций, чьё поручение ему противоречит
  *  (Р-1537, Н-02). Неточная привязка (`weak`): кандидатов несколько — запись ко всем, но статус не выше «ждёт»;
- *  привязка только номером заказа к транзакции с конфликтом звеньев — тоже. Не нашлось — запись системы. */
-function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly string[]; readonly weak: boolean } {
+ *  привязка только номером заказа к транзакции с конфликтом звеньев — тоже. На уровне поручения номер заказа записи, которого
+ *  у покупки нет (а заказы у неё есть), — тоже неточно, своей пометкой (Р-1540). Не нашлось — запись системы. */
+function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly string[]; readonly weak?: WeakNote } {
   const { op_ref: p, confirmation_id: q, mandate_id: md, shop_id: sh } = e.ids;
   const ord = e.ids.order_id ?? e.ids.order_ref;
-  const pack = (c: readonly PultTx[], weak = c.length > 1) => ({ ids: c.map((t) => t.id), weak });
+  const pack = (c: readonly PultTx[], weak = c.length > 1) => ({ ids: c.map((t) => t.id), ...(weak && { weak: "link_conflict" as const }) });
   const levels: (readonly PultTx[])[] = [
     p !== undefined ? model.txs.filter((t) => t.opRefs.includes(p)) : [],
     q !== undefined ? model.txs.filter((t) => t.confirmationIds.includes(q)) : [],
@@ -749,10 +758,18 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
     // (иначе запись уходила бы в систему без ограничения «не выше „ждёт“»; повторное ревью П-3.2г № 1).
     const levelCart = model.txs.filter((t) => t.cartMandateId === md || t.linkConflict?.carts.includes(md));
     const levelIntent = model.txs.filter((t) => t.intentId === md || t.linkConflict?.intents.includes(md));
-    for (const c of [levelCart, levelIntent]) if (c.length > 0) return pack(c, c.length > 1 || c.some((t) => t.linkConflict !== undefined));
-    if (model.mandates.some((m) => m.id === md && m.txIds.length === 0)) return { ids: [md], weak: false };
+    // Р-1540 (#issuecomment-6835884137): номер заказа в записи есть, у покупки есть заказы, но этого среди них нет —
+    // противоречие звеньев, обвинение по половине доказательства: не выше «ждёт». Заказов у покупки нет — противоречить
+    // нечему (как на уровне заказа при транзакции без поручений).
+    const mismatch = (c: readonly PultTx[]) => ord !== undefined && c.some((t) => t.orderIds.length > 0 && !t.orderIds.includes(ord));
+    for (const c of [levelCart, levelIntent])
+      if (c.length > 0) {
+        if (c.length > 1 || c.some((t) => t.linkConflict !== undefined)) return pack(c, true);
+        return mismatch(c) ? { ids: c.map((t) => t.id), weak: "order_mismatch" } : pack(c, false);
+      }
+    if (model.mandates.some((m) => m.id === md && m.txIds.length === 0)) return { ids: [md] };
   }
-  return { ids: [], weak: false };
+  return { ids: [] };
 }
 
 /** Сработавшие защиты: записи одной остановки — один вид защиты в одном объекте — склеиваются в одну (ревью П-3.2б № 4:
@@ -797,8 +814,8 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   const mandateById = new Map(model.mandates.map((m) => [m.id, m] as const));
   // Записи журнала по объектам; без объекта — к системе.
   const logOf = new Map<string, StandLogEntry[]>();
-  // Записи с неточной привязкой — по объекту: номер записи журнала стенда.
-  const weakOf = new Map<string, Set<number>>();
+  // Записи с неточной привязкой — по объекту: номер записи журнала стенда → пометка.
+  const weakOf = new Map<string, Map<number, WeakNote>>();
   const systemLog: StandLogEntry[] = [];
   const outcomes = items.filter((x) => x.stream === "scenario" && FAULT_OUTCOME_STEPS.has(x.ref) && x.test !== undefined);
   /** Итог прогона драйвера для пометки: шаг итога того же теста не раньше пометки; часы — стенда. */
@@ -828,7 +845,7 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     if (ids.length === 0 && systemMark(i)) systemLog.push(e);
     for (const id of ids) {
       logOf.set(id, [...(logOf.get(id) ?? []), e]);
-      if (weak) weakOf.set(id, (weakOf.get(id) ?? new Set()).add(e.seq));
+      if (weak !== undefined) weakOf.set(id, (weakOf.get(id) ?? new Map<number, WeakNote>()).set(e.seq, weak));
     }
   }
   const own = (id: string) => (o.standLog === undefined ? undefined : (logOf.get(id) ?? []));

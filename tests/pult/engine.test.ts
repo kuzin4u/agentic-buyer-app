@@ -590,7 +590,12 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const st = (cart: string) => v.objs.find((o) => o.id === id(cart))!.conds;
     expect([st("CN1").R23.status, st("CN1").R25.status]).toEqual(["ok", "ok"]);
     expect(st("CN1").R23.log).toBeUndefined();
-    expect(st("CN2").R23).toMatchObject({ status: "bad", log: [e.seq] });
+    // Р-1540: по поручению — к CN2, но номер заказа записи (ON1) не её — неточно: не выше «ждёт», пометка «номер заказа записи
+    // не совпадает с покупкой»; обвинения по половине доказательства нет
+    expect(st("CN2").R23).toMatchObject({ status: "wait", note: "order_mismatch", log: [e.seq] });
+    expect(st("CN2").R25).toMatchObject({ status: "wait", note: "order_mismatch" });
+    expect(NOTE_LABEL.order_mismatch.ru).toBe("конфликт звеньев: номер заказа записи не совпадает с покупкой; решает человек");
+    expect(NOTE_LABEL.order_mismatch.en).not.toBe("");
     // Поручение записи совпадает с нашим — по-прежнему к нашей (уровень заказа).
     const same = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CN1", merchant_id: "MER-1", order_ref: "ON1" }, "Н-02");
     expect(withLog(items, [same]).objs.find((o) => o.id === id("CN1"))!.conds.R23).toMatchObject({ status: "bad", log: [same.seq] });
@@ -599,6 +604,35 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const w = withLog(items, [stray]);
     expect(w.objs.find((o) => o.id === id("CN1"))!.conds.R23.status).toBe("ok");
     expect(w.system.R23.status).toBe("bad");
+  });
+
+  it("Р-1540: совпадающий номер заказа — точно, «нарушено»; у покупки заказов нет — противоречить нечему, тоже точно", () => {
+    const items = purchase("M1");
+    const model = buildTxModel(items);
+    const tx = model.txs.find((t) => t.cartMandateId === "CM1")!;
+    expect(tx.orderIds).toContain("OM1");
+    // номер заказа свой — уровень заказа, точно (как раньше)
+    const own = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CM1", merchant_id: "MER-1", order_ref: "OM1" }, "Н-02");
+    expect(withLog(items, [own]).objs.find((o) => o.id === tx.id)!.conds.R23).toMatchObject({ status: "bad" });
+    // покупка без заказа на шине (только корзина): номер в записи есть, противоречить нечему — точно
+    const cartOnly = purchase("M2", { skip: ["order", "start", "pay", "done"] });
+    const t2 = buildTxModel(cartOnly).txs.find((t) => t.cartMandateId === "CM2")!;
+    expect(t2.orderIds).toEqual([]);
+    const any = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CM2", merchant_id: "MER-1", order_ref: "O-other" }, "Н-02");
+    const r2 = withLog(cartOnly, [any]).objs.find((o) => o.id === t2.id)!.conds.R23;
+    expect(r2.status).toBe("bad");
+    expect(r2.note).toBeUndefined();
+  });
+
+  it("Р-1540 (ревью № 3 (а)): кандидатов по поручению несколько и номер заказа чужой — пометка прежняя, «две покупки» (`link_conflict`), не `order_mismatch`", () => {
+    // одно намерение IK — две покупки под ним; запись — по намерению, номер заказа не их
+    const items = [...purchase("K1", { intentId: "IK" }), ...purchase("K2", { intentId: "IK", intent: () => [] })];
+    const model = buildTxModel(items);
+    const ids = model.txs.filter((t) => t.intentId === "IK").map((t) => t.id);
+    expect(ids).toHaveLength(2);
+    const e = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "IK", merchant_id: "MER-1", order_ref: "O-other" }, "Н-02");
+    const v = withLog(items, [e]);
+    for (const id of ids) expect(v.objs.find((o) => o.id === id)!.conds.R23).toMatchObject({ status: "wait", note: "link_conflict" });
   });
 
   it("повтор запроса отклонён Платформой (IDEMPOTENCY_CONFLICT) — R23 и R25 «сработало»", () => {
