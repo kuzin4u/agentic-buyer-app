@@ -391,9 +391,10 @@ export const CONTROL = {
   "fault.outcome.refused": p("остановлено защитой", "stopped by a safeguard"),
   // П7 доп. 2: самостоятельный исход «только записи стенда» (Н-05) — не защита и не исполнение.
   "fault.outcome.recorded": p("записи стенда сделаны — не защита и не исполнение", "stand records made — neither a safeguard nor execution"),
-  "fault.test.missing": p("код теста не указан", "test code not given"),
   "fault.outcome.unplayed": p("помечено, но не разыграно", "marked but not played"),
   "fault.outcome.failed": p("не разыграно, на стенде не помечено", "not played, not marked on the stand"),
+  // После группы исходов (Х5, повторное ревью П-4.1а № 4): не исход, а подпись прогона без кода теста.
+  "fault.test.missing": p("код теста не указан", "test code not given"),
   "verdict.title": p("Вердикт владельца", "Owner's verdict"),
   "verdict.accept": p("Принять прогон", "Accept the run"),
   "verdict.reject": p("Не принимать прогон", "Reject the run"),

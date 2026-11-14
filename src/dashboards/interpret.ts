@@ -106,6 +106,20 @@ export const LOCAL_STAND_EMULATED: readonly Role[] = ["bank", "merchant"];
 const own = <T>(map: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 const CODE_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** Знаки кода — та же форма; длина — до `CODE_ACCEPTED`: длинный код (драйвер приписывает `UNEXPECTED_` к коду стенда) —
+ *  усекается до `CODE_SHOWN`. */
+const CODE_CHARS_RE = /^[A-Z][A-Z0-9_]*$/;
+const CODE_SHOWN = 64;
+/** Самый длинный код, который ещё принимается к показу (усечённым): код стенда — до 64 знаков, плюс приставка драйвера, с
+ *  запасом; длиннее — уже не код, а мусор в поле — кода нет. */
+const CODE_ACCEPTED = 256;
+/** Код исхода драйвера «ПР» (части через запятую): каждая часть — по форме кода; длиннее 64 знаков — усечение с пометкой
+ *  «…» (Х5, ревью П-4.1а № 4: раньше такой исход показывался без кода). Чужие знаки — кода нет. */
+function codeOfTest(s: string): string | undefined {
+  const parts = s.split(",");
+  if (!parts.every((c) => CODE_RE.test(c) || (CODE_CHARS_RE.test(c) && c.length <= CODE_ACCEPTED))) return undefined;
+  return parts.map((c) => (c.length > CODE_SHOWN ? c.slice(0, CODE_SHOWN - 1) + "…" : c)).join(",");
+}
 /** Код теста задания: кириллическая «Н», дефис, две цифры (Н-01…Н-12; П-4.1а). */
 const TEST_RE = /^Н-\d{2}$/;
 
@@ -469,7 +483,7 @@ function interpretScenario(item: Extract<WireItem, { stream: "scenario" }>, env:
   if (byEmulator && l.step.endsWith("_failed")) kind = "conflict";
   const raw = typeof l.params.status === "string" ? l.params.status : typeof l.params.reply === "string" ? l.params.reply : undefined;
   const test = typeof l.params.test === "string" && TEST_RE.test(l.params.test) ? l.params.test : undefined;
-  const testCode = test !== undefined && typeof l.params.code === "string" && l.params.code.split(",").every((c) => CODE_RE.test(c)) ? l.params.code : undefined;
+  const testCode = test !== undefined && typeof l.params.code === "string" ? codeOfTest(l.params.code) : undefined;
   const vt = l.step === "intent.created" ? l.params.valid_to : undefined;
   const validTo = typeof vt === "object" && vt !== null && "iso" in vt && typeof vt.iso === "string" && Number.isFinite(Date.parse(vt.iso)) ? new Date(vt.iso).toISOString() : undefined;
   return {

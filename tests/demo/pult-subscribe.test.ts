@@ -37,8 +37,14 @@ function connect(url: string): Promise<{ req: ClientRequest; types: string[]; ne
   return new Promise((ok, fail) => {
     const types: string[] = [];
     const waiters: (() => void)[] = [];
+    // Х5 (ревью П-4.4 № 4): поток закрыт — ожидания отклоняются сразу понятной причиной, а не таймаутом.
+    let closed = false;
     const req = request(url, (res: IncomingMessage) => {
       let buf = "";
+      res.on("close", () => {
+        closed = true;
+        for (const w of waiters.splice(0)) w();
+      });
       res.setEncoding("utf8");
       res.on("data", (chunk: string) => {
         buf += chunk;
@@ -62,6 +68,9 @@ function connect(url: string): Promise<{ req: ClientRequest; types: string[]; ne
               if (types.slice(after).includes(type)) {
                 clearTimeout(t);
                 done();
+              } else if (closed) {
+                clearTimeout(t);
+                timeout(new Error(`поток закрыт до сообщения ${type}`));
               } else waiters.push(check);
             };
             check();

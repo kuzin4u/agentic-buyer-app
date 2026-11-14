@@ -96,8 +96,8 @@ export function faultOf(run: Run): FaultRun | undefined {
     const outcome = r.stream === "scenario" ? FAULT_STEP.get(r.ref) : undefined;
     if (outcome !== undefined && r.test === test) last = { outcome, r };
   }
-  // Код — из поля шага целиком (`testCode`), а не первая часть составного кода в `who.code` (ревью П-4.1а № 2). Код длиннее
-  // формы (64 знака на часть) не берётся — «Открыто», П-8.1 (ревью П-4.1а № 4).
+  // Код — из поля шага целиком (`testCode`), а не первая часть составного кода в `who.code` (ревью П-4.1а № 2). Часть длиннее
+  // 64 знаков сокращается с «…» в `codeOfTest` (`interpret.ts`; Х5, ревью П-4.1а № 4).
   const code = last && last.outcome !== "marked" && last.outcome !== "recorded" ? last.r.testCode : undefined;
   return { ...(test !== undefined && { test }), ...(last && { outcome: last.outcome }), ...(code !== undefined && { code }) };
 }

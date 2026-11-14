@@ -203,11 +203,22 @@ describe("П-5.2: живой стенд — сводка транзакции (�
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const reader = res.body!.getReader();
+    // Х5 (нестабильность при нагрузке): читать до двух **законченных** записей — каждая кончается пустой строкой; декодер —
+    // потоковый, кириллица на границе куска не режется.
+    const dec = new TextDecoder();
     let text = "";
-    while ((text.match(/^data: /gm) ?? []).length < 2) text += new TextDecoder().decode((await reader.read()).value);
+    const done = () => text.split("\n\n").slice(0, -1).filter((b) => b.split("\n").some((l) => l.startsWith("data: "))).length >= 2;
+    while (!done()) {
+      const { value, done: end } = await reader.read();
+      if (end) break;
+      text += dec.decode(value, { stream: true });
+    }
     ac.abort();
     await reader.cancel().catch(() => undefined);
-    const msgs = text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)) as { type: string; labels?: Record<string, string>; view?: FeedsView });
+    const blocks = text.split("\n\n").slice(0, -1);
+    const msgs = blocks
+      .flatMap((b) => b.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)))
+      .map((s) => JSON.parse(s) as { type: string; labels?: Record<string, string>; view?: FeedsView });
     expect(msgs[0]!.type).toBe("hello");
     expect(msgs[0]!.labels!["feeds.view.plain"]).toBe("In plain words");
     expect(msgs[1]!.type).toBe("feeds");

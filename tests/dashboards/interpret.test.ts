@@ -10,6 +10,7 @@ import { FAULT_OUTCOMES, faultOf, splitRuns } from "../../src/dashboards/control
 import { rawInHumanText } from "./human-text.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { TRAINING_MERCHANTS } from "../../src/demo/shops.js";
+import { MESSAGES } from "../../src/demo/i18n.js";
 import { timeView } from "../../src/demo/money.js";
 import { parseWireItem, WIRE_SCENARIO_HIDDEN_STEPS, type DiagEntryWire, type DiagSnapshot, type WireItem, type WireMonitorEvent } from "../../src/dashboards/wire.js";
 
@@ -64,7 +65,16 @@ const mon = (e: Partial<WireMonitorEvent> & Pick<WireMonitorEvent, "source" | "c
   event: { seq: ++seq, at, ids: {}, ...e },
 });
 const con = (kind: string, fields: Record<string, string> = {}): WireItem => ({ stream: "console", line: { seq: ++seq, at, kind, ...fields } });
-const step = (name: string, params: Record<string, string | number> = {}): WireItem => ({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+/** Шаг сюжета — через разбор линии (`parseWireItem`), как его видят экраны (Х5, повторное ревью П-4.1а № 1): переименование
+ *  поля у драйвера или выпадение его из перечня параметров шины тест ловит. */
+const step = (name: string, params: Record<string, string | number> = {}): WireItem => {
+  const w = parseWireItem({ stream: "scenario", line: { seq: ++seq, at, step: name, params } });
+  if (w === undefined) throw new Error(`шаг ${name} не прошёл разбор линии`);
+  // Молча отброшенный ключ — тоже отказ (ревью Х5 № 1): поле, которого нет в перечне шины, экраны не увидят.
+  const kept = w.stream === "scenario" ? w.line.params : {};
+  for (const k of Object.keys(params)) if (!(k in kept)) throw new Error(`шаг ${name}: ключ ${k} отброшен разбором линии`);
+  return w;
+};
 const overreach = () => mon({ source: "agent_platform", cls: "decline", what: "POST /pao/v1/credentials", status: 403, code: "MANDATE_REVOKED" });
 
 describe("интерпретатор: квалификация по правилам", () => {
@@ -256,6 +266,21 @@ describe("интерпретатор: квалификация по правил
     expect(interpret(step("run.fault"), ENV).test).toBeUndefined();
   });
 
+  it("Х5 (ревью П-4.1а № 4): код исхода длиннее 64 знаков (`UNEXPECTED_` + код стенда) — усечён с пометкой «…», а не потерян; чужие знаки — кода нет", () => {
+    const long = "UNEXPECTED_" + "A".repeat(60);
+    const got = interpret(step("fault.unplayed", { test: "Н-07", code: long }), ENV).testCode;
+    expect(got).toBe(long.slice(0, 63) + "…");
+    expect(got!.length).toBe(64);
+    // составной — по частям, короткая часть — как есть
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: `PREP_FAILED,${long}` }), ENV).testCode).toBe(`PREP_FAILED,${long.slice(0, 63)}…`);
+    for (const bad of ["bad code", "<b>X</b>", "X-1", "A".repeat(257), "A".repeat(300)]) expect(interpret(step("fault.unplayed", { test: "Н-07", code: bad }), ENV).testCode, bad.slice(0, 20)).toBeUndefined();
+    // граница: 64 — как есть, 65 и 256 — усечены, 257 — кода нет (строкой выше; ревью Х5 № 8)
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(64) }), ENV).testCode).toBe("A".repeat(64));
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(65) }), ENV).testCode).toBe("A".repeat(63) + "…");
+    expect(interpret(step("fault.unplayed", { test: "Н-07", code: "A".repeat(256) }), ENV).testCode).toBe("A".repeat(63) + "…");
+    expect(interpret(step("fault.refused", { test: "Н-08", code: "MANDATE_SCOPE" }), ENV).testCode).toBe("MANDATE_SCOPE");
+  });
+
   it("П-4.1а, ревью № 1–3 (Р-1511): шаги драйвера в его форме → интерпретатор → прогон «ПР»: пять исходов, fault.sent и заметки — не исход, составной код — целиком", () => {
     const runOf = (...steps: WireItem[]) => faultOf(splitRuns(steps.map((s) => interpret(s, ENV)))[0]!);
     const head = (test: string) => [step("run.fault", { test }), step("fault.note.prepared", { test }), step("fault.sent", { test })];
@@ -276,6 +301,13 @@ describe("интерпретатор: квалификация по правил
     expect([...steps].sort()).toEqual([...FAULT_OUTCOMES].sort());
     // У каждого исхода — подпись ru и en.
     for (const o of FAULT_OUTCOMES) for (const lang of ["ru", "en"] as const) expect(CONTROL[`fault.outcome.${o}`][lang].length, o).toBeGreaterThan(0);
+    // Х5 (повторное ревью П-4.1а № 2): вторая сверка — по ключам словаря драйвера `step.fault.*` (`src/demo/i18n.ts`):
+    // без `sent` (не исход) и без `note.*` (заметки — не исход, исключение явное) — тот же перечень.
+    for (const lang of ["ru", "en"] as const) {
+      const keys = Object.keys(MESSAGES[lang]).filter((k) => k.startsWith("step.fault.")).map((k) => k.slice("step.fault.".length));
+      const outcomes = keys.filter((k) => k !== "sent" && !k.startsWith("note."));
+      expect(outcomes.sort(), lang).toEqual([...FAULT_OUTCOMES].sort());
+    }
   });
 
   it("словарь покрывает все шаги сюжетов демо-стенда, кроме скрытых с линии (ревью № 14)", () => {

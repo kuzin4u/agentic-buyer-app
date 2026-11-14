@@ -487,6 +487,33 @@ describe("лента пульта (П-2.1)", () => {
     p.close();
   });
 
+  it("Х5 (ревью П-4.4 № 1): отписка от ленты пульта — после `off()` изменение ленты событий подписчику не шлёт, другим — шлёт", async () => {
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date("2026-11-14T17:00:00Z"), debounceMs: 0 });
+    const a: PultFeedEvent[] = [];
+    const b: PultFeedEvent[] = [];
+    const offA = p.subscribe((e) => a.push(e));
+    p.subscribe((e) => b.push(e));
+    f.push(step("cart.created", { mandate_id: "CU1", intent_id: "IU1" }, { stage: "cart" }));
+    await tick();
+    expect(a.some((e) => e.type === "board")).toBe(true);
+    const seenA = a.length;
+    const seenB = b.length;
+    offA();
+    f.push(step("order.placed", { order_id: "OU1", mandate_id: "CU1" }, { stage: "payment" }));
+    await tick();
+    expect(a).toHaveLength(seenA);
+    expect(b.length).toBeGreaterThan(seenB);
+    // повторная отписка — без ошибки и без побочных действий: другой подписчик по-прежнему получает события (ревью Х5 № 3)
+    expect(() => offA()).not.toThrow();
+    const seenB2 = b.length;
+    f.push(event("confirmation.required", { confirmation_id: "QU1", order_id: "OU1" }, { stage: "confirmation" }));
+    await tick();
+    expect(b.length).toBeGreaterThan(seenB2);
+    expect(a).toHaveLength(seenA);
+    p.close();
+  });
+
   it("П13 (ревью Х4б № 1): снимок отчёта — по `reportAt` только последний; после сброса источника (перезапуск стенда) прежний не отдаётся", async () => {
     let t = Date.UTC(2026, 10, 14, 17, 0, 0);
     const f = fakeFeed();

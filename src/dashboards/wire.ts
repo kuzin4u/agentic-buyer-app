@@ -161,9 +161,11 @@ function parseConsole(l: unknown): WireConsoleLine | undefined {
  *  не переносится. Ссылка страницы УПК (`upk_url`) экранам не нужна — шага достаточно. */
 export const WIRE_SCENARIO_PARAMS = [
   "amount", "candidates", "code", "codes", "confirmation_id", "contour", "delivery_cost", "delivery_days", "delivery_method",
-  "intent_id", "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "sku", "state", "status",
-  "subject", "test", "threshold", "title", "total", "unavailable", "valid_to",
+  "intent_id", "limit", "mandate_id", "market", "merchant_id", "op_ref", "order_id", "price", "qty", "reply", "shop_id", "sku", "state",
+  "status", "subject", "test", "threshold", "title", "total", "unavailable", "valid_to",
 ] as const;
+// `shop_id` — витрина шагов драйвера «ПР» (`fault.note.armed`, `catalog_read`, `disarmed`, `fault.recorded`): раньше
+// отбрасывался, и `{shop_id}` во фразах `phrases.ts` всегда выпадал (Х5, ревью Х5 № 1). Идентификатор — инвариант 1 не задет.
 
 /** Параметры шагов — моменты времени (WireTime), не строки (П-11.1д-а). */
 export const WIRE_TIME_PARAMS = ["valid_to"] as const;

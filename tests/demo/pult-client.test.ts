@@ -3,7 +3,7 @@
 // раскладка и её хранение, состояние ленты, фокус (крошки, Esc, `pult:select` → `pult:focus`, клавиатурный фокус),
 // доска (колонки, порядок «Завершены», счётчики без перестройки, выбор карточки нажатием).
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
 import { STAND_FAULT_TESTS } from "../../src/demo/stand-faults.js";
 import { REACTION_RECORDS } from "../../src/pult/reactions.js";
@@ -232,6 +232,9 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
   });
 
   it("П-2.2 «График»: переключение вида сохраняется; строки и отрезки по времени; «сейчас» растёт без перестройки узлов; выбор строки — фокус", () => {
+    // Х5: часы экрана подменены — под нагрузкой «мгновения у экрана» сдвигали «сейчас», и положения расходились.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(5_000_000);
+    onTestFinished(() => clock.mockRestore());
     const env = start();
     const graph = {
       rows: [
@@ -254,9 +257,13 @@ describe("скрипт пульта на подменённом DOM (П-2.1а)",
     expect(Number.parseFloat(segs[0]!.style.width!)).toBeCloseTo(50, 0);
     expect(Number.parseFloat(segs[1]!.style.left!) + Number.parseFloat(segs[1]!.style.width!)).toBeCloseTo(100, 0);
     expect(row.querySelector(".gmark")!.className).toBe("gmark k-error");
-    // Раз в секунду — только положения: узел строки прежний.
+    // Раз в секунду — только положения: «сейчас» растёт (часы сдвинуты на 10 с — шкала вдвое длиннее, cart — четверть),
+    // pay по-прежнему до «сейчас», узел строки прежний (ревью Х5 № 2).
+    clock.mockReturnValue(5_010_000);
     for (const f of env.intervals) f();
     expect(env.document.querySelector(".grow[data-card='G1']")).toBe(row);
+    expect(Number.parseFloat(segs[0]!.style.width!)).toBeCloseTo(25, 0);
+    expect(Number.parseFloat(segs[1]!.style.left!) + Number.parseFloat(segs[1]!.style.width!)).toBeCloseTo(100, 0);
     // Выбор строки — фокус на транзакцию.
     row.dispatchEvent(new FakeEvent("pointerdown", { bubbles: true }));
     expect($(env, "grid").dataset.focusTx).toBe("G1");
