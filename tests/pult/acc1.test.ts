@@ -118,7 +118,7 @@ describe("К2: строки акта ACC-1", () => {
   it("запись системы (`obj: \"\"`) в строку теста не попадает — уходит в «Записи без строки теста» (ревью № 7)", () => {
     const t = withRows({ "П-01": { objs: ["T1"] } });
     const sys: Acc1Record = { id: "П-004", obj: "", status: "open", at: AT };
-    expect(acc1Rows(t, [sys]).map((r) => r.note.ru).join("")).toBe("");
+    expect(acc1Rows(t, [sys], {}).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
     expect(acc1Unlinked(t, [sys])).toEqual([sys]);
   });
   it("подписи — у каждого статуса движка и каждого вида реакции, ru и en, и это подписи панели «Журнал» (один источник)", () => {
@@ -150,14 +150,26 @@ describe("К2: строки акта ACC-1", () => {
   it("записи без строки теста не теряются — отдельной строкой в Markdown и CSV (ревью К2 № 3)", () => {
     const recs: Acc1Record[] = [{ id: "П-009", obj: "SYS", status: "open", at: AT }];
     expect(acc1Unlinked(base, recs)).toEqual(recs);
-    expect(acc1Rows(base, recs).map((r) => r.note.ru).join("")).toBe("");
+    expect(acc1Rows(base, recs, {}).map((r) => r.note.ru).join("")).toBe(""); // без известных причин (Н-02 — П11)
     expect(acc1Markdown(base, "ru", recs)).toContain("Записи без строки теста<span>:</span> записи<span>:</span> П-009 (2026-11-13T12<span>:</span>00<span>:</span>05.000Z) — открыто");
     const csv = parseCsv(acc1Csv(base, "en", recs));
     expect(csv).toHaveLength(28);
     expect(csv[26]![5]).toBe(`Records not linked to a test row: records: П-009 (${AT}) — open`);
     expect(csv[27]![5]).toMatch(/^Built at: 2026-11-13T12:00:00Z \(UTC\)/);
   });
-  it("Н-08: временное замечание № 10 снято (кирпич № 10 окна А) — ни при каком исходе замечания нет; известных причин нет", () => {
+  it("П11 (Р-1556): Н-02 «не проверено» — причина в замечании, ru и en; при «да» или «нет» — замечания нет", () => {
+    const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-02": o })), "Н-02").note;
+    expect(note({ agree: "unchecked" }).ru).toContain("сбой стенда не вызвать честным агентом");
+    expect(note({ agree: "unchecked" }).ru).toContain("инвариант 9");
+    expect(note({ agree: "unchecked" }).en).toContain("cannot be caused by an honest agent");
+    expect(note({ agree: "unchecked" }).en).not.toMatch(/[«»]/); // коды Н-02 и П11 — кириллицей, как во всём en-акте
+    expect(note({ agree: "yes" }).ru).toBe("");
+    expect(note({ agree: "no" }).ru).toBe("");
+    // прогона нет (Н-02 не взводили) — тоже «не проверено», причина та же (ревью № 5)
+    expect(row(acc1Rows(base), "Н-02")).toMatchObject({ agree: "unchecked" });
+    expect(row(acc1Rows(base), "Н-02").note.ru).toContain("сбой стенда не вызвать честным агентом");
+  });
+  it("Н-08: временное замечание № 10 снято (кирпич № 10 окна А) — ни при каком исходе замечания нет", () => {
     const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-08": o })), "Н-08").note;
     expect(note({ agree: "no", driver: "refused" }).ru).toBe("");
     expect(note({ agree: "no", driver: "refused" }).en).toBe("");

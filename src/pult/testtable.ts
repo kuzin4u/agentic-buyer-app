@@ -109,8 +109,9 @@ export type Expect =
       /** Операции не было: поручение без покупки. */
       readonly noOperation?: true;
     }
-  /** `passport: null` — паспорта нет. `fired` — сбой обязан сработать: запись журнала стенда в окне, итог по её операции
-   *  есть (Н-12 на стенде, столбец M v1.1); не сработал или итога ещё нет — «не проверено». */
+  /** `passport: null` — паспорта нет. `fired` — сбой обязан сработать: запись журнала стенда в окне (не сработал —
+   *  ситуация не возникла, «не проверено»; П8, П11); при `passport: null` ещё и итог по её операции есть (Н-12 на стенде,
+   *  столбец M v1.1), итога нет — «не проверено». */
   | { readonly kind: "incorrect"; readonly passport: ExpectFinding | null; readonly fired?: readonly StandLogWhat[] }
   | { readonly kind: "toward"; readonly wait: Exclude<WaitKind, "agent_step">; readonly cond: "R08" | "R18" | "R21" }
   | { readonly kind: "prevented"; readonly cond: "R21" }
@@ -132,7 +133,8 @@ const bad = (conds: readonly CheckableCondition[], violator: Party, node?: NodeI
   passport: { conds, violator, ...(node !== undefined && { node }) },
 });
 
-/** 25 строк задания: `v10` — колонки E и C (сверка скриптом — PR #15), `mvp` — столбец M v1.1 (сверка скриптом — PR #16). */
+/** 25 строк задания: `v10` — колонки E и C (сверка скриптом — PR #15), `mvp` — столбец M v1.1 (сверка скриптом — PR #16);
+ *  у Н-02 `mvp` — M (= E) плюс условие П11 «сбой сработал», в задании его нет. */
 export const TEST_SPECS: readonly Spec[] = [
   { test: "П-01", kind: "correct", v10: { kind: "correct", outcome: ok("paid") } },
   { test: "П-02", kind: "correct", v10: { kind: "correct", outcome: ok("paid") } },
@@ -188,7 +190,14 @@ export const TEST_SPECS: readonly Spec[] = [
     mvp: { kind: "correct", noOperation: true, decision: { kind: "protection", cond: "R09", protector: "agent" } },
   },
   { test: "Н-01", kind: "incorrect", v10: bad(["R46"], "agent", "У2") },
-  { test: "Н-02", kind: "incorrect", v10: bad(["R23", "R25"], "platform", "У2") },
+  // M = E; сбой обязан сработать (запись стенда в окне), иначе ситуация не возникла — «не проверено» (П11, Р-1556: честный
+  // агент второго запроса реквизита по выданному заказу не делает).
+  {
+    test: "Н-02",
+    kind: "incorrect",
+    v10: bad(["R23", "R25"], "platform", "У2"),
+    mvp: { kind: "incorrect", passport: { conds: ["R23", "R25"], violator: "platform", node: "У2" }, fired: FAULT_WHAT["Н-02"] },
+  },
   // M: пульт по инварианту 6 слова продавца итогом не берёт — R27 «сработало», нарушил продавец, защитил пульт; R28, R30
   // «соблюдено»; паспорта «нарушил: оператор» нет.
   {
@@ -342,6 +351,7 @@ export function expectPhrase(e: Expect): Phrase {
       if (e.passport === null)
         return e.fired ? join([p("сбой сработал:", "the fault fired:"), lit(e.fired.join(" / ")), p("итог учтён, паспорта нет", "outcome counted, no passport")], " ") : p("паспорта нет", "no passport");
       return join([
+        ...(e.fired ? [join([p("сбой сработал (П11):", "the fault fired (П11):"), lit(e.fired.join(" / "))], " ")] : []),
         join([p("паспорт:", "passport:"), lit(e.passport.conds.join(" / "))], " "),
         ...(e.passport.node ? [join([p("узел", "node"), lit(e.passport.node)], " ")] : []),
         join([p("нарушил:", "violator:"), party(e.passport.violator)], " "),
@@ -459,11 +469,13 @@ function judgeCorrect(e: Extract<Expect, { kind: "correct" }>, txs: readonly Pul
 function judgeIncorrect(e: Extract<Expect, { kind: "incorrect" }>, vs: readonly Verdict[], fired: readonly StandLogEntry[], model: TxModel, driver?: FaultOutcome): Judged {
   const pass = passportsOf(vs);
   const factPass = pass.length ? join([join([p("паспортов:", "passports:"), lit(String(pass.length))], " "), ...pass.slice(0, 5).map(findingPhrase)], "; ") : p("паспортов нет", "no passports");
+  // Сбой обязан сработать, а записи стенда в окне нет — ситуация теста не возникла (П8; П11 — Н-02).
+  if (e.fired && !fired.some((x) => e.fired!.includes(x.what)))
+    return { agree: "unchecked", fact: join([p("сбой не сработал — ситуация не возникла", "the fault did not fire — the situation did not arise"), factPass], "; ") };
   if (e.passport === null) {
     if (e.fired) {
       // Сбой обязан сработать, и итог по его операции должен прийти (Н-12, столбец M v1.1; ревью № 2).
-      const recs = fired.filter((x) => e.fired!.includes(x.what));
-      if (!recs.length) return { agree: "unchecked", fact: join([p("сбой не сработал", "the fault did not fire"), factPass], "; ") };
+      const recs = fired.filter((x) => e.fired!.includes(x.what)); // не пусто: проверено выше
       const refs = recs.map((x) => x.ids.op_ref).filter((x): x is string => x !== undefined);
       const done = refs.length > 0 && refs.every((r) => model.txs.some((t) => t.opRefs.includes(r) && t.outcome !== undefined));
       if (!done && pass.length === 0) return { agree: "unchecked", fact: join([p("сбой сработал, итога по операции ещё нет", "the fault fired, no outcome for the operation yet"), factPass], "; ") };

@@ -233,6 +233,24 @@ describe("П-11.5а: Н-xx — ожидаемый паспорт", () => {
     expect(row(table({ items, model: done, standLog: fired, verdicts: [lost] }), "Н-12").agree).toBe("no");
     expect(row(table({ items: [] }), "Н-10")).toMatchObject({ agree: "no_case", fact: NOT_REPRODUCIBLE_LABEL.INVARIANT_1 });
   });
+  it("П11 (Р-1556): Н-02 взведён, но сбой не сработал — «не проверено» (не «нет»); сработал и паспорт R23 платёжной системы — «да»", () => {
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-02" }), rec(3, 2, "cart.created")];
+    const model = modelOf([tx("T1", [3])]);
+    const none = row(table({ items, model, standLog: [] }), "Н-02");
+    expect(none.agree).toBe("unchecked");
+    expect(none.fact.ru).toContain("сбой не сработал — ситуация не возникла");
+    expect(none.fact.en).toContain("the fault did not fire — the situation did not arise");
+    expect(none.expected.ru).toContain("сбой сработал (П11): SECOND_CREDENTIAL_ISSUED");
+    // Н-12 при несработавшем сбое — тот же вердикт и тот же общий текст (ревью № 2)
+    const n12 = row(table({ items: [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" })], standLog: [] }), "Н-12");
+    expect(n12.agree).toBe("unchecked");
+    expect(n12.fact.ru).toContain("сбой не сработал — ситуация не возникла");
+    const fired = [log(1, 2, "SECOND_CREDENTIAL_ISSUED", { test: "Н-02" })];
+    const v: Verdict = { kind: "violation", cond: "R23", node: "У2", violator: "platform", obj: "T1", cause: { kind: "fault", what: "SECOND_CREDENTIAL_ISSUED" }, seqs: [] };
+    expect(row(table({ items, model, standLog: fired, verdicts: [v] }), "Н-02").agree).toBe("yes");
+    // сработал, а паспорта нет — расхождение, «нет»
+    expect(row(table({ items, model, standLog: fired }), "Н-02").agree).toBe("no");
+  });
   it("ревью № 5: пометка «ПР» без доказательств на шине — только если её запись журнала стенда в окне прогона", () => {
     const items = [
       rec(1, 0, "run.fault", { test: "Н-07" }),

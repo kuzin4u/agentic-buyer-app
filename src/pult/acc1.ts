@@ -64,7 +64,7 @@ export interface Acc1Row {
   readonly expected: Phrase;
   readonly fact: Phrase;
   readonly agree: Agree;
-  /** Замечание: известная причина «нет» и записи журнала этого теста. Пусто — замечаний нет. */
+  /** Замечание: известная причина «нет» или «не проверено» и записи журнала этого теста. Пусто — замечаний нет. */
   readonly note: Phrase;
   /** Прогон при эмуляторе клиента «Авто» (П5 п. 3). */
   readonly auto: boolean;
@@ -74,15 +74,24 @@ export interface Acc1Row {
   readonly run: string;
 }
 
-/** Известная причина «нет», которую пульт на стенде не может снять сам (адрес — STATUS). */
+/** Известная причина «нет» или «не проверено», которую пульт на стенде не может снять сам (адрес — STATUS, DECISIONS). */
 export interface KnownNote {
   readonly applies: (r: TestRow) => boolean;
   readonly note: Phrase;
 }
-/** Известных причин сейчас нет. Было: Н-08 — «нет» с причиной «ветка «сработало, защитила Платформа» на стенде недостижима,
- *  № 10» (Р-1546, П9 п. 4); снято после кирпича № 10 окна А (`cf35e9e`, Р-1548) — живой Н-08 даёт «да» по этой ветке
- *  (`tests/demo/acc1-n08-live.test.ts`). */
-export const KNOWN_NOTES: Partial<Readonly<Record<TestCode, KnownNote>>> = {};
+/** Известные причины. Н-02 — «не проверено»: сбой стенда честным агентом не вызвать (П11, Р-1556); снимается веткой драйвера
+ *  после выпуска стенда с Н-02 в `MARKABLE`. Было: Н-08 — «нет» с причиной «ветка «сработало, защитила Платформа» на стенде
+ *  недостижима, № 10» (Р-1546, П9 п. 4); снято после кирпича № 10 окна А (`cf35e9e`, Р-1548) — живой Н-08 даёт «да» по этой
+ *  ветке (`tests/demo/acc1-n08-live.test.ts`). */
+export const KNOWN_NOTES: Partial<Readonly<Record<TestCode, KnownNote>>> = {
+  "Н-02": {
+    applies: (r) => r.agree === "unchecked",
+    note: p(
+      "сбой стенда не вызвать честным агентом: второй реквизит выдаётся только на новый запрос по уже выданному заказу, а агент повторяет оплату прежним ключом (инвариант 9 агента); пометку «ПР» по Н-02 стенд не принимает — ветка драйвера после выпуска стенда (П11)",
+      'the stand fault cannot be caused by an honest agent: a second credential is issued only for a new request on an already issued order, and the agent repeats a payment with the same key (agent invariant 9); the stand does not accept a violator mark for Н-02 — a driver branch after a stand release (П11)',
+    ),
+  },
+};
 
 const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "client emulator: auto");
 const RECORDS_LABEL: Phrase = p("записи:", "records:");
@@ -103,7 +112,7 @@ const recList = (rs: readonly Acc1Record[]): Phrase => joinP([RECORDS_LABEL, joi
 const belongs = (x: Acc1Record, r: TestRow) => (x.test !== undefined ? x.test === r.test : x.obj !== undefined && r.objs.includes(x.obj));
 
 /** Строки акта: по одной на тест, в порядке таблицы. `known` — известные причины (по умолчанию `KNOWN_NOTES`; подмена —
- *  для теста границы замечаний, пока известных причин нет — ревью К8 № 1). */
+ *  для теста границы замечаний — ревью К8 № 1). */
 export function acc1Rows(
   table: TestTable,
   records: readonly Acc1Record[] = [],
