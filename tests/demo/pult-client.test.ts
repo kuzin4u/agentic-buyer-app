@@ -1587,6 +1587,9 @@ describe("панель «Журнал» (П-6.1а)", () => {
       const env = start({ lang });
       const calls: string[] = [];
       const body = {
+        // Номер снимка — опознаватель выгрузки (Х4б № 4, К2.1 окна А, малая правка по Р-1493): по времени сборки два
+        // снимка совпали бы при замороженных часах стенда или двух вкладках в одну миллисекунду.
+        no: 7,
         builtAt: "2026-11-13T20:55:07.000Z",
         totals: { tests: 25, yes: 1, no: 1, noCase: 0, unchecked: 23 },
         agreeLabels: { yes: { ru: "да", en: "yes" }, no: { ru: "нет", en: "no" }, no_case: { ru: "нет случая", en: "no case" }, unchecked: { ru: "не проверено", en: "not checked" } },
@@ -1618,8 +1621,8 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(rows[1]!.textContent, lang).toContain(PULT["report.violator"][lang]);
       expect(box.textContent, lang).toContain(`${PULT["report.unlinked"][lang]}: 2`);
       const links = box.querySelectorAll("a");
-      // П13: ссылка просит показанный снимок — `at` = его время сборки
-      const atQ = new URLSearchParams({ at: body.builtAt }).toString();
+      // П13: ссылка просит показанный снимок — в `at` его номер (имя параметра историческое; К2.1 окна А)
+      const atQ = new URLSearchParams({ at: String(body.no) }).toString();
       expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&${atQ}`));
       expect(links.map((a) => a.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
       // П12, дополнение (Р-1558): на паузе ссылок нет — подписи текстом без адреса, с пояснением; после снятия — снова ссылки

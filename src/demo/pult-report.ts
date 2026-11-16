@@ -26,9 +26,12 @@ const isFormat = (s: string | null): s is ReportFormat => s !== null && (REPORT_
 const stamp = (iso: string) => iso.slice(0, 16).replace(":", "-");
 
 /** Маршрут `GET /pult/report` (П13, Р-1558): `json` — собрать снимок (кнопка «Собрать отчёт») и показать; выгрузки
- *  (`md`, `csv`, `csv_excel`) — **только показанный снимок** по `at=<builtAt>`, нового не собирают: подписанный акт — тот,
- *  что владелец смотрел на экране. `at` нет — 400 `NO_SNAPSHOT`; снимок с таким временем не последний (собран новый,
- *  перезапуск стенда, другой пульт) — 409 `SNAPSHOT_GONE`: собрать заново. */
+ *  (`md`, `csv`, `csv_excel`) — **только показанный снимок** по его номеру, нового не собирают: подписанный акт — тот,
+ *  что владелец смотрел на экране. Опознавателя нет — 400 `NO_SNAPSHOT`; снимок с таким номером не последний (собран
+ *  новый, перезапуск стенда, другой пульт) — 409 `SNAPSHOT_GONE`: собрать заново.
+ *  Параметр запроса называется `at` по-прежнему: его читает `src/demo/server.ts` (файл окна Б). Содержимое — **номер**
+ *  снимка (`PultReport.no`), а не время сборки: по времени два снимка совпали бы при двух вкладках в одну миллисекунду
+ *  или при замороженных часах стенда, и выгрузка отдала бы чужое содержимое (Х4б № 4, К2.1). */
 export function routeReport(
   feed: { report(): PultReport | undefined; reportAt(builtAt: string): PultReport | undefined },
   format: string | null,
@@ -47,9 +50,11 @@ export function reportResponse(report: PultReport | undefined, format: string | 
   if (!isFormat(format)) return json(400, { error: "BAD_FORMAT" });
   // Движок ещё не отработал — отчёта нет (не пустой акт).
   if (report === undefined) return json(409, { error: "NO_ENGINE" });
-  const { table, records, builtAt } = report;
+  const { table, records, builtAt, no } = report;
   if (format === "json") {
     return json(200, {
+      // Номер снимка — им экран просит выгрузку именно показанного снимка (Х4б № 4, К2.1).
+      no,
       builtAt,
       totals: table.totals,
       rows: acc1Rows(table, records).map((r) => ({ ...r, agreeLabel: AGREE_LABEL[r.agree] })),

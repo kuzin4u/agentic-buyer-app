@@ -1337,7 +1337,10 @@
         ex.appendChild(off);
       } else {
         const a = el("a", e.label);
-        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.builtAt) }).toString());
+        // Опознаватель снимка — его номер (К2.1): по времени сборки два снимка совпали бы при двух вкладках в одну
+        // миллисекунду или при замороженных часах стенда. Имя параметра `at` историческое (его читает `server.ts`).
+        // Номера нет (ответ без него) — сервер ответит 409 «соберите заново»: безопасная сторона, чужой акт не отдаётся.
+        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.no) }).toString());
         a.setAttribute("download", "");
         a.dataset.export = "1";
         ex.appendChild(a);
