@@ -141,7 +141,10 @@ export const RULE_CAUSES = [
 export type RuleCause = (typeof RULE_CAUSES)[number];
 export type Cause =
   | { readonly kind: "rule"; readonly rule: RuleCause }
-  | { readonly kind: "fault"; readonly what: StandLogWhat }
+  // Сбой «П» стенда: код записи и тест, в котором он взведён. Тест — чтобы вердикт привязывался к строке таблицы 25 тестов
+  // по тесту, а не по коду: у двух тестов код может совпасть, и тогда привязка по коду разъехалась бы (Б5 № 7, К2.6).
+  // Записи без теста (служебные, пометки без кода) `test` не несут — привязка по коду остаётся запасным путём.
+  | { readonly kind: "fault"; readonly what: StandLogWhat; readonly test?: StandTest }
   // Пометка «ПР» доказывает попытку нарушения; `bus` — причина по шине того же условия, если была (Н-08: защитник
   // «Платформа» — только при отказе MANDATE_SCOPE на шине; решение владельца по П-3.3, 1).
   | { readonly kind: "mark"; readonly test: StandTest; readonly bus?: RuleCause };
@@ -271,7 +274,11 @@ const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note, log?: 
 const rc = (status: "bad" | "fired", rule: RuleCause, seqs: readonly number[] = [], log?: readonly number[]): CondResult =>
   r(status, seqs, undefined, log, { kind: "rule", rule });
 const causeOf = (e: StandLogEntry): Cause | undefined =>
-  e.what === "MARKED" ? (e.test !== undefined ? { kind: "mark", test: e.test } : undefined) : { kind: "fault", what: e.what };
+  e.what === "MARKED"
+    ? e.test !== undefined
+      ? { kind: "mark", test: e.test }
+      : undefined
+    : { kind: "fault", what: e.what, ...(e.test !== undefined && { test: e.test }) };
 
 /** Сбой стенда или пометка «ПР» → условия и статус. Срок R31 — отдельно (`r31`): «итог есть» — «соблюдено». */
 const FAULT_EFFECT: Partial<Record<StandLogWhat, readonly (readonly [CheckableCondition, CondStatus])[]>> = {

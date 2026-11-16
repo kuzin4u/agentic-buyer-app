@@ -502,6 +502,22 @@ describe("К2: метка прогона и факт с видом вердик�
       seen.set(c, test);
     }
   });
+  it("Б5 № 7 (К2.6 окна А): вердикт сбоя привязывается к строке по тесту записи, а не по коду — при общем коде не разъезжается", () => {
+    // Сегодня коды `FAULT_WHAT` у тестов не пересекаются (тест выше это держит), поэтому случай гипотетический: вердикт
+    // несёт код из перечня Н-12, а тест записи — Н-11. По коду он достался бы строке Н-12, по тесту — не достаётся.
+    const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
+    const model = modelOf([tx("T1", [3], { opRefs: ["op_1"], ...paid(3) })]);
+    const fired = log(1, 2, "OUTCOME_EVENT_DELAYED", { test: "Н-12", ids: { op_ref: "op_1" } });
+    const alien: Verdict = { kind: "violation", cond: "R31", violator: "operator", node: "У4", seqs: [], cause: { kind: "fault", what: "OUTCOME_EVENT_DELAYED", test: "Н-11" } };
+    // Чужой вердикт строке Н-12 не достаётся: сбой сработал, своих вердиктов нет — «да» по сработавшему сбою.
+    expect(row(table({ items, model, standLog: [fired], verdicts: [alien] }), "Н-12").agree).toBe("yes");
+    // Тот же вердикт со своим тестом — достаётся (нарушитель «оператор» вместо ожидаемого — «нет»).
+    const own: Verdict = { ...alien, cause: { kind: "fault", what: "OUTCOME_EVENT_DELAYED", test: "Н-12" } };
+    expect(row(table({ items, model, standLog: [fired], verdicts: [own] }), "Н-12").agree).toBe("no");
+    // Вердикт без теста в причине — прежний путь по коду (записи, которые тест не несут).
+    const bare: Verdict = { ...alien, cause: { kind: "fault", what: "OUTCOME_EVENT_DELAYED" } };
+    expect(row(table({ items, model, standLog: [fired], verdicts: [bare] }), "Н-12").agree).toBe("no");
+  });
   it("Б5 (повторное ревью П-11.5а № 5): запись сбоя «П» с тестом другого теста к строке не относится; без теста — по коду", () => {
     const items = [rec(1, 0, "run.purchase"), rec(2, 1, "stand_fault.armed", { test: "Н-12" }), rec(3, 2, "cart.created")];
     const model = modelOf([tx("T1", [3])]);

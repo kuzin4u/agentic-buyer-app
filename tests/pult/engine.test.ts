@@ -691,6 +691,17 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     ];
     const leak = fault("UPK_CODE_LEAKED", { confirmation_id: "QL2" }, "Н-11");
     expect(txOf(withLog(purchase("L2", { at: { start: () => q("L2") } }), [leak])).R20).toMatchObject({ status: "bad", log: [leak.seq] });
+    // Б5 № 7 (К2.6): причина сбоя несёт и тест записи — по нему вердикт привязывается к строке таблицы 25 тестов, а не по
+    // коду (у двух тестов код может совпасть). Запись без теста — причина без него, привязка по коду остаётся.
+    expect(txOf(withLog(purchase("L2c", { at: { start: () => q("L2c") } }), [fault("UPK_CODE_LEAKED", { confirmation_id: "QL2c" }, "Н-11")])).R20.cause).toEqual({
+      kind: "fault",
+      what: "UPK_CODE_LEAKED",
+      test: "Н-11",
+    });
+    expect(txOf(withLog(purchase("L2d", { at: { start: () => q("L2d") } }), [entry("UPK_CODE_LEAKED", { confirmation_id: "QL2d" })])).R20.cause).toEqual({
+      kind: "fault",
+      what: "UPK_CODE_LEAKED",
+    });
     expect(txOf(withLog(purchase("L2b", { at: { start: () => q("L2b") } }), [])).R20.status).toBe("ok");
     // Н-02 — форма стенда: поручение корзины, продавец, номер заказа в запросе реквизита (`order_ref`).
     const second = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CL3", merchant_id: "MER-1", order_ref: "OL3" }, "Н-02");
