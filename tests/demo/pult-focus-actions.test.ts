@@ -5,8 +5,9 @@
 //  - К1.5 (Х4а № 8): у «Отозвать поручение» ключ — поручение, поэтому при одном намерении на двух покупках кнопки разных
 //    строк несут один `actKey`; фокус возвращается только в свою строку. Своей строки не стало (покупка ушла с экрана или
 //    её кнопки погасил конфликт звеньев) — фокус в чужую строку не уходит и теряется, как на паузе (ревью К1.5 № 1).
-//  - К1.6 (Х4а № 9): на паузе кнопок реакции в разметке нет и фокус уходит на `body`; после снятия паузы он возвращается
-//    на первый шаг той же кнопки своей строки — начатый отзыв пауза снимает, поэтому «Да, отозвать» под Enter не окажется.
+//  - К1.6б (Х4а № 9, вторая половина — вариант (б), решение владельца 16.11): кода возврата фокуса после снятия паузы нет
+//    намеренно — случай при текущей раскладке не наступает. Здесь это закреплено: пробел на кнопке реакции паузу не ставит,
+//    а пауза с заголовка панели фокус человека не трогает. Появится второй источник паузы (кнопка) — первый тест покраснеет.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { pultPage } from "../../src/demo/dash-pult.js";
@@ -21,9 +22,11 @@ const ru = (k: keyof typeof PULT) => PULT[k].ru;
 const NOW = "2026-11-16T12:00:10.000Z";
 const T0 = "2026-11-16T11:59:00.000Z";
 
-function start(): PageEnv {
+/** `withKeys` — вместе с раскладкой `keys.js`: ею проверяется, что пробел на кнопке паузу не ставит (К1.6б). */
+function start(withKeys = false): PageEnv {
   const env = pageEnv(pultPage("ru", brand, false, { actions: true }), {});
   env.run(PULT_JS);
+  if (withKeys) env.run(readFileSync("src/demo/public/pult/keys.js", "utf8"));
   return env;
 }
 /** Покупка поручения `IT1`; поручение корзины отличается от идентификатора покупки — иначе подмена признака строки
@@ -47,8 +50,6 @@ const boardMsg = (counts: { txs: number; wrong: number }, cards: PultCard[] = [t
 });
 const revokeButtons = (env: PageEnv): FakeElement[] =>
   env.document.getElementById("b-ctl")!.querySelectorAll("button[data-act]").filter((b) => b.dataset.act === "revoke");
-
-const pause = (env: PageEnv, paused: boolean) => env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused } }));
 
 describe("фокус кнопок реакции при перестройке «Контроля» (К1.5, К1.6)", () => {
   it("Х4а № 8: одно поручение на двух покупках — фокус возвращается в свою строку, а не в чужую", () => {
@@ -131,91 +132,35 @@ describe("фокус кнопок реакции при перестройке �
     expect(env.document.activeElement.dataset.actObj).toBe("CT2");
   });
 
-  it("Х4а № 9: пауза уводит фокус на `body`, снятие возвращает его на кнопку своей строки", () => {
-    const env = start();
+  it("Х4а № 9 (вариант (б), К1.6б): пробел на кнопке реакции паузу не ставит — случай возврата фокуса не наступает", () => {
+    const env = start(true);
     const es = env.sources[0]!;
     es.send(boardMsg({ txs: 2, wrong: 0 }));
-    revokeButtons(env)[1]!.focus();
-    pause(env, true);
-    expect(revokeButtons(env)).toEqual([]); // на паузе кнопок реакции нет (П12)
-    expect(env.document.activeElement).toBe(env.document.body);
-    pause(env, false);
-    const after = revokeButtons(env);
-    expect(after).toHaveLength(2);
-    expect(env.document.activeElement).toBe(after[1]);
-    expect(env.document.activeElement.dataset.actObj).toBe("CT2");
+    const b = revokeButtons(env)[1]!;
+    b.focus();
+    // Раскладка пульта: пробел на нажимаемом элементе нажимает его, а не ставит паузу (`keys.js`). Поэтому фокус не может
+    // стоять на кнопке реакции в момент паузы, и возвращать после снятия нечего — кода возврата в `pult.js` нет намеренно.
+    const ev = new FakeEvent("keydown", { bubbles: true, key: " " });
+    b.dispatchEvent(ev);
+    // Паузы нет: кнопки реакции на экране остались, пометки паузы у строки статуса нет.
+    expect(revokeButtons(env)).toHaveLength(2);
+    expect(env.document.querySelector(".conn-paused")!.hidden).toBe(true); // пометка паузы скрыта
+    expect(env.document.activeElement).toBe(b);
   });
 
-  it("Х4а № 9 и В4: пауза при начатом отзыве — фокус возвращается на первый шаг, не на «Да, отозвать»", () => {
-    const env = start();
+  it("пауза с заголовка панели: кнопки реакции гаснут, фокус человека не трогается", () => {
+    const env = start(true);
     const es = env.sources[0]!;
     es.send(boardMsg({ txs: 2, wrong: 0 }));
-    const second = revokeButtons(env)[1]!;
-    second.focus();
-    second.click(); // вопрос «Да, отозвать» / «Отмена», фокус на «Отмене» своей строки
-    pause(env, true);
-    pause(env, false);
-    const box = env.document.getElementById("b-ctl")!;
-    // Пауза сняла начатый отзыв (Х1 № 7): вопроса нет, Enter по возвращённому фокусу отзыв не завершает.
-    expect(box.textContent).not.toContain(ru("act.revoke.ask"));
-    const active = env.document.activeElement;
-    expect(active.dataset.actKey).toBe("revoke:IT1");
-    expect(active.dataset.actObj).toBe("CT2");
-    expect(active.dataset.second).toBeUndefined();
-    expect(active.dataset.actCancel).toBeUndefined();
-  });
-
-  it("Х4а № 9: накопленная на паузе доска убрала свою покупку — фокус в чужую строку не уходит", () => {
-    const env = start();
-    const es = env.sources[0]!;
-    es.send(boardMsg({ txs: 2, wrong: 0 }));
-    revokeButtons(env)[1]!.focus();
-    pause(env, true);
-    es.send(boardMsg({ txs: 1, wrong: 0 }, [tx("CT1")])); // копится на паузе, показывается при снятии
-    pause(env, false);
-    const after = revokeButtons(env);
-    expect(after).toHaveLength(1);
-    expect(after[0]!.dataset.actObj).toBe("CT1");
-    expect(env.document.activeElement).toBe(env.document.body);
-  });
-
-  it("Х4а № 9: накопленная доска оставила свою покупку — фокус возвращается на её кнопку", () => {
-    const env = start();
-    const es = env.sources[0]!;
-    es.send(boardMsg({ txs: 2, wrong: 0 }));
-    revokeButtons(env)[1]!.focus();
-    pause(env, true);
-    es.send(boardMsg({ txs: 2, wrong: 1 }));
-    pause(env, false);
-    const after = revokeButtons(env);
-    expect(after).toHaveLength(2);
-    expect(env.document.activeElement).toBe(after[1]);
-    expect(env.document.activeElement.dataset.actObj).toBe("CT2");
-  });
-
-  it("фокус был не на кнопке реакции — пауза и снятие его не перехватывают", () => {
-    const env = start();
-    const es = env.sources[0]!;
-    es.send(boardMsg({ txs: 2, wrong: 0 }));
-    pause(env, true);
-    pause(env, false);
-    expect(env.document.activeElement).toBe(env.document.body);
-  });
-
-  it("ревью К1.6 № 2: человек перевёл фокус за время паузы — возврат его не перебивает", () => {
-    const env = start();
-    const es = env.sources[0]!;
-    es.send(boardMsg({ txs: 2, wrong: 0 }));
-    revokeButtons(env)[1]!.focus();
-    pause(env, true);
-    // Так уводит фокус раскладка пульта (клавиши 1–4 — заголовок панели); снять паузу пробелом можно только отсюда.
     const head = env.document.getElementById("h-ctl")!;
     head.setAttribute("tabindex", "-1");
     head.focus();
-    pause(env, false);
-    // Иначе следующий пробел нажал бы кнопку реакции под вернувшимся фокусом, а не поставил паузу (П12).
+    head.dispatchEvent(new FakeEvent("keydown", { bubbles: true, key: " " }));
+    expect(revokeButtons(env)).toEqual([]); // пауза встала (П12)
     expect(env.document.activeElement).toBe(head);
-    expect(revokeButtons(env)).toHaveLength(2);
+    head.dispatchEvent(new FakeEvent("keydown", { bubbles: true, key: " " }));
+    expect(revokeButtons(env)).toHaveLength(2); // пауза снята
+    // Следующий пробел снова ставит паузу, а не нажимает кнопку реакции под вернувшимся фокусом (ревью К1.6 № 2).
+    expect(env.document.activeElement).toBe(head);
   });
-
 });
