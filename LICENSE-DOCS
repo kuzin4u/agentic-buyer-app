@@ -39,6 +39,7 @@ separately under the Apache License 2.0 — see LICENSE.
     - DECISIONS.md — журнал решений владельца;
     - GLOSSARY.md — термины и их названия в интерфейсе;
     - demo-walkthrough.md — памятка прогона демо-стенда;
+    - acceptance-run.md — инструкция ручной приёмки ACC-1 и прогона К1.4;
     - CLAUDE.md — правила работы в репозитории, инварианты приложения, стек;
     - README.md, CHANGELOG.md;
     - docs/release — сообщения тегов передаваемых версий;
