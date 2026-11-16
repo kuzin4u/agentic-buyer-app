@@ -516,6 +516,50 @@ describe("№ 10 (Р-1548): корзина драйвера «ПР» — тра�
     const r = judgeLog(items, weak).vs.filter((v) => v.cond === "R09" && v.obj === "CDB1");
     expect(r.map((v) => v.kind)).toEqual(["client_decision"]);
   });
+  it("Б4а № 12 (К2.5): пометка «ПР» запрещает «решение клиента» и на пути П-03 — отказ от корзины без остановки", () => {
+    // Путь П-03 в `verdict.ts` выносит «решение клиента» по одному событию `mandate.rejected`, без остановки и без условия
+    // R09, поэтому запрет пометкой через `stopCause` его не касался (ревью Б4а № 12). Теперь признак — один: `ObjCheck.marked`.
+    const items = purchase("DC1", { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [event("mandate.rejected", { mandate_id: "CDC1" })] } });
+    const plain = judgeLog(items, []).vs.filter((v) => v.kind === "client_decision");
+    expect(plain).toHaveLength(1); // без пометки — как раньше
+    expect(judgeLog(items, []).ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    // Пометка «ПР» этой корзины — приложение заявляет о нарушении: «решение клиента» не выносится.
+    const mark = [entry("MARKED", { mandate_id: "CDC1" }, { test: "Н-06" })];
+    const withMark = judgeLog(items, mark);
+    expect(withMark.ev.objs.find((o) => o.kind === "tx")!.marked).toBe(true);
+    expect(withMark.vs.filter((v) => v.kind === "client_decision")).toEqual([]);
+    // Неточная пометка запрета не даёт — она не об этой покупке (ревью № 10 № 6). Для неточности у покупки должны быть
+    // заказы, а номер заказа в записи — другой (Р-1540): без заказов привязка по поручению точная, и запрет сработал бы.
+    const withOrder = purchase("DC3", { skip: ["signed", "start", "pay", "done"], at: { end: () => [event("mandate.rejected", { mandate_id: "CDC3" })] } });
+    const weak = [entry("MARKED", { mandate_id: "CDC3", order_ref: "O-чужой" }, { test: "Н-02" })];
+    const w = judgeLog(withOrder, weak);
+    expect(w.ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    expect(w.vs.filter((v) => v.kind === "client_decision")).toHaveLength(1);
+    // То же с разыгранным прогоном (у пометки есть шаг итога): неточность по-прежнему снимает запрет — иначе ложное
+    // «нарушение» прятало бы отказ клиента чужой покупки. Признак пометки один и тот же (`markPendingOf`), поэтому оба
+    // случая проходят через него (ревью К2.5 № 1, № 4).
+    const wPlayed = judgeLog([...withOrder, outcome("fault.marked", "Н-02", 1)], weak);
+    expect(wPlayed.ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    expect(wPlayed.vs.filter((v) => v.kind === "client_decision")).toHaveLength(1);
+  });
+  it("ревью К2.5 № 2: пометка «ПР» запрещает «решение клиента» и в ветке сработавших защит — поручение без покупки", () => {
+    // Третье место, где рождается «решение клиента»: вердикт по сработавшей защите `revoke` у поручения без покупки.
+    // Прежде пометку смотрели только условия и П-03, и здесь при точной пометке выносилось «решение клиента».
+    const items = [
+      step("intent.awaiting_signature", { mandate_id: "IPR" }, { stage: "mandate" }),
+      event("mandate.signed", { mandate_id: "IPR" }),
+      event("mandate.revoked", { mandate_id: "IPR" }, { stage: "revoke" }),
+      step("revoke.refused", { mandate_id: "IPR" }, { code: "MANDATE_REVOKED" }),
+    ];
+    const plain = judgeLog(items, []).vs.filter((v) => v.guarantee === "revoke");
+    expect(plain).toMatchObject([{ kind: "client_decision", violator: "client_decision", protector: "undetermined" }]);
+    // Точная пометка «ПР» по этому поручению — защита остаётся, нарушитель «не определён» (как `inactive_*` в `stopCause`).
+    const mark = [entry("MARKED", { mandate_id: "IPR" }, { test: "Н-06" })];
+    const r = judgeLog(items, mark);
+    expect(r.ev.objs.find((o) => o.kind === "mandate")!.marked).toBe(true);
+    expect(r.vs.filter((v) => v.guarantee === "revoke")).toMatchObject([{ kind: "protection", violator: "undetermined", protector: "undetermined" }]);
+    expect(r.vs.filter((v) => v.kind === "client_decision")).toEqual([]);
+  });
   it("ревью Б4а № 1: пометка «ПР» старше окна не судится, но «решение клиента» по-прежнему прячет (запрет — по всему журналу)", () => {
     const shape = purchase("DB3", {
       skip: ["order", "start", "pay", "done"],

@@ -198,13 +198,19 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
     pay_refused: [],
   };
   const bySeqG = new Map(items.map((x) => [x.seq, x] as const));
+  // Объекты с точно привязанной пометкой «ПР» (`ObjCheck.marked`, К2.5): транзакции и поручения без покупки.
+  const marked = new Set(view.objs.filter((o) => o.marked === true).map((o) => o.id));
   for (const g of view.guarantees) {
     if (out.some((v) => v.obj === g.obj && v.cond !== undefined && COVERED[g.kind].includes(v.cond))) continue;
     // Отзыв или не действует — субъект по коду, как у R09 (`stopCause`; повторное ревью П-5.1 № 4): отзыв — решение
     // клиента; срок — нарушителя нет; один MANDATE_NOT_ACTIVE — не определён.
     const codes = new Set(g.seqs.map((s) => bySeqG.get(s)).flatMap((x) => (x?.who?.code !== undefined ? [x.who.code] : x?.ref === "revoke.refused" ? ["MANDATE_REVOKED"] : [])));
-    const row =
+    const row0 =
       g.kind !== "revoke" ? BY_GUARANTEE[g.kind] : codes.has("MANDATE_REVOKED") ? BY_GUARANTEE.revoke : codes.has("MANDATE_EXPIRED") ? {} : { violator: "undetermined" as const };
+    // Пометка «ПР» у объекта запрещает «решение клиента» и здесь — тем же правилом, что в условиях и у П-03: приложение
+    // заявило о нарушении, и отзыв его не объясняет. Защита при этом остаётся (остановка была), нарушитель — «не определён»,
+    // как у `inactive_*` в `stopCause` (ревью К2.5 № 2).
+    const row = row0.violator === "client_decision" && g.obj !== undefined && marked.has(g.obj) ? { violator: "undetermined" as const } : row0;
     out.push({
       kind: row.violator === "client_decision" ? "client_decision" : "protection",
       ...(g.obj !== undefined && { obj: g.obj }),
@@ -220,7 +226,11 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
     const rej = t.seqs.map((s) => bySeq.get(s)).find((x) => x?.source === "pao_event" && x.ref === "mandate.rejected" && x.ids?.mandate_id === t.cartMandateId);
     // Остановка после отказа уже дала R09 «решение клиента» (Р-1538) — тот же отказ второй раз не считается.
     const viaR09 = out.some((v) => v.obj === t.id && v.cond === "R09" && v.cause?.kind === "rule" && v.cause.rule.startsWith("rejected_"));
-    if (rej && !viaR09) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
+    // Пометка «ПР» в транзакции запрещает «решение клиента» — то же правило, что у условий (`stopCause`): отказ клиента не
+    // объясняет остановку, о которой приложение заявило как о нарушении. Прежде этот путь запрет не учитывал, и при пометке
+    // рядом с отказом клиента «решение клиента» показывалось в «Причинах» и в столбце решения таблицы 25 тестов
+    // (в протокол «решение клиента» не идёт — `protocol.ts`; поправка по ревью К2.5 № 3). Ревью Б4а № 12, К2.5.
+    if (rej && !viaR09 && !marked.has(t.id)) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
   }
   return out;
 }

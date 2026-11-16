@@ -227,6 +227,11 @@ export interface ObjCheck {
   readonly id: string;
   readonly kind: "tx" | "mandate";
   readonly conds: CondResults;
+  /** К объекту точно привязана пометка «ПР» (`markPendingOf`): приложение заявляет о нарушении. По этому признаку «решение
+   *  клиента» не выносится ни в одном из трёх мест, где оно рождается: условия (`stopCause`), вердикт П-03 и ветка
+   *  сработавших защит (`verdict.ts`, К2.5) — иначе один и тот же запрет жил бы в разных понятиях пометки, а у П-03 — в
+   *  более узком (ревью Б4а № 12, ревью К2.5 № 1, 2). Ставится и транзакциям, и поручениям без покупки. Нет пометки — ключа нет. */
+  readonly marked?: true;
 }
 export interface EngineView {
   readonly objs: readonly ObjCheck[];
@@ -488,7 +493,10 @@ function txConds(
     // по самой пометке): иначе между
     // ответом Платформы и шагом итога на миг выносилось бы «решение клиента», и протокол заводил бы по нему запись — запись
     // акта зависела бы от того, попал ли пересчёт в долю секунды (Б4а, повторное ревью № 10 (1), вариант (а), П15).
-    const marked = markPending || (log ?? []).some((e) => e.what === "MARKED" && !(weak?.has(e.seq) ?? false));
+    // Точно привязанная пометка «ПР» — один признак на весь движок: `markPendingOf` (К2.5, ревью К2.5 № 1). Отдельная
+    // проверка «MARKED в журнале объекта и не `weak`» была бы вторым понятием и к тому же мёртвой: запись попадает в журнал
+    // объекта только когда `objsOfEntry` дал этот объект, а `weak` получает её ровно при неточной привязке.
+    const marked = markPending;
     const why = marked
       ? codes.has("MANDATE_EXPIRED")
         ? "expired"
@@ -878,9 +886,12 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // транзакции R17 «нарушено», и протокол заводит открытую запись рядом с «сработало» (живой тест протокола по префиксам
   // ленты). Вердикт по пометке выносится к итогу прогона — на секунды позже.
   const entries = (o.standLog ?? []).filter((e) => inWindow(e) && (e.what !== "MARKED" || e.test === undefined || outcomeOf(e) !== undefined));
-  /** Транзакции и поручения с точно привязанной пометкой «ПР» — для запрета «решения клиента» (Б4а, № 10 (1)): по всему
-   *  журналу стенда — и без итога прогона, и старше окна. Запрет ведёт только к «не определён», поэтому окно и итог его не
-   *  снимают (ревью Б4а № 1: иначе на краю окна правила (1) и (4) давали бы «решение клиента»). */
+  /** Транзакции и поручения с точно привязанной пометкой «ПР» — **единственный признак пометки** для запрета «решения
+   *  клиента» (Б4а, № 10 (1); К2.5): по всему журналу стенда — и без итога прогона, и старше окна. Запрет ведёт только к
+   *  «не определён», поэтому окно и итог его не снимают (ревью Б4а № 1: иначе на краю окна правила (1) и (4) давали бы
+   *  «решение клиента»). Неточная привязка (`weak`: конфликт звеньев, чужой номер заказа) пометкой здесь не считается — она
+   *  не прячет «решение клиента» чужой покупки (ревью № 10 № 6). Отсюда признак идёт в `ObjCheck.marked` и в `stopCause`:
+   *  второго понятия пометки в движке нет (ревью К2.5 № 1). */
   const markPendingOf = new Set(
     // Пометка и без кода теста (формат журнала её допускает) — тоже: иначе она старше окна выпадала бы из запрета (повторное
     // ревью Б4а № 1).
@@ -917,13 +928,20 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   const objs: ObjCheck[] = [];
   for (const t of model.txs) {
     const intent = t.intentId !== undefined ? mandateById.get(t.intentId) : undefined;
-    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id), markPendingOf.has(t.id)) });
+    objs.push({
+      id: t.id,
+      kind: "tx",
+      conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id), markPendingOf.has(t.id)),
+      ...(markPendingOf.has(t.id) && { marked: true }),
+    });
     for (const s of t.seqs) objOf.set(s, t.id);
   }
   for (const m of model.mandates) {
     for (const s of m.seqs) if (!objOf.has(s)) objOf.set(s, m.id);
     if (m.txIds.length > 0) continue;
-    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs), own(m.id)) });
+    // Поручение без покупки — тоже с признаком пометки: по нему идёт ветка сработавших защит (`revoke`), и там «решение
+    // клиента» запрещается тем же признаком (ревью К2.5 № 2).
+    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs), own(m.id)), ...(markPendingOf.has(m.id) && { marked: true }) });
   }
   const logOn = o.standLog !== undefined;
   const system: Partial<Record<CheckableCondition, CondResult>> = {};
