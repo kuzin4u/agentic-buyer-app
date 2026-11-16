@@ -1044,6 +1044,39 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     }
   });
 
+  it("Х1 № 6 (П12 п. 5): отказ `sendAct` на паузе — подстраховка держится и при кнопке с `data-act` в разметке, которой на паузе быть не должно", () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    const pause = pauseOf(env);
+    env.sources[0]!.send(msg);
+    const live = btn(env, "stop")[0]!;
+    // Кнопка той же формы, что строит `actButton`: щелчок пойдёт тем же делегированным обработчиком «Контроля».
+    const params = live.dataset.params;
+    const key = live.dataset.actKey;
+    expect(params).toBeTruthy();
+    pause(true);
+    // На паузе кнопок с `data-act` нет — экранный рубеж П12 (уже проверено выше). Подкладываем такую кнопку сами: так выглядит
+    // устаревшая разметка (щелчок по кнопке, нарисованной до паузы, или вмешательство расширения браузера). Второй рубеж —
+    // отказ в `sendAct` — должен держаться: запрос по замороженной доске не уходит.
+    const box = $(env, "b-ctl");
+    expect(box.querySelectorAll("button[data-act]")).toEqual([]);
+    const stale = env.document.createElement("button");
+    stale.dataset.act = "stop";
+    stale.dataset.actKey = key!;
+    stale.dataset.params = params!;
+    box.appendChild(stale);
+    stale.click();
+    expect(calls).toEqual([]);
+    // И следа «отправляем» в результатах действий нет: состояние кнопок пауза не меняет.
+    expect(box.textContent).not.toContain(ru("act.sending"));
+    // Контрольная часть: после снятия паузы **та же подложенная** кнопка отправляет запрос — значит отказ был именно из-за
+    // паузы, а не из-за формы кнопки (ревью Б-К2 № 4: `btn(env, "stop")[0]` после перерисовки — уже другая, живая кнопка).
+    pause(false);
+    expect(btn(env, "stop")).toHaveLength(2);
+    stale.click();
+    expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+  });
+
   it("П12, ревью Х1 № 4: на паузе «Контроль», «Интерпретатор» («Причины») и «Журнал» стоят на прежней доске, после снятия — новая", () => {
     const env = start({ actions: true });
     withFetch(env);
