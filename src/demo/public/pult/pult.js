@@ -768,17 +768,7 @@
       }
     }
     if (keepAct !== undefined) {
-      const all = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === keepAct && !b.hasAttribute("disabled"));
-      // Х4а № 8 (К1.5): фокус возвращается только в свою строку. Своей строки на экране не стало (покупка ушла, конфликт
-      // звеньев сделал её кнопки неактивными, Р-1542) — фокус в чужую строку не уходит: именно это и было переносом, а
-      // кнопки соседней покупки выглядят так же. Фокус тогда теряется (`body`), как и на паузе — это Х4а № 9, кирпич К1.6.
-      // У кнопок, где объект уже в ключе («Напомнить клиенту», «Передать на разбор»), признака строки нет и выбор прежний:
-      // такая кнопка на экране одна.
-      const same = keepObj !== undefined ? all.filter((b) => b.dataset.actObj === keepObj) : all;
-      const target =
-        actState.pending === keepAct
-          ? same.find((b) => b.dataset.actCancel !== undefined)
-          : same.find((b) => b.dataset.second === undefined && b.dataset.actCancel === undefined);
+      const target = actFocusTarget(keepAct, keepObj);
       if (target) target.focus();
     }
   }
@@ -849,6 +839,21 @@
   const ACTIONS = cfg.actions === true;
   const actState = { pending: "", results: {} };
   const VIOLATOR = { agent: "AGENT", merchant: "MERCHANT", bank: "BANK", platform: "PLATFORM", operator: "OPERATOR" };
+  /** Кнопка того же действия, на которую возвращается клавиатурный фокус. Одно правило на оба случая возврата — после
+   *  перестройки «Контроля» (Х4а № 8, К1.5) и после снятия паузы (Х4а № 9, К1.6): два места с одним правилом разошлись бы
+   *  молча, и разошлась бы именно привязка фокуса к В4 (ревью К1.6 № 3).
+   *  - Только своя строка (`data-act-obj`): кнопка соседней покупки выглядит так же, и действие ушло бы по другой покупке;
+   *    своей строки на экране нет (покупка ушла, конфликт звеньев погасил кнопки — Р-1542) — цели нет, фокус не ставим.
+   *  - У кнопок, где объект уже в ключе («Напомнить клиенту», «Передать на разбор»), признака строки нет: такая кнопка одна.
+   *  - При начатом отзыве цель — «Отмена», иначе первый шаг: «Да, отозвать» под Enter не попадает (В4). Это же правило
+   *    страхует возврат после паузы, если пауза когда-нибудь перестанет снимать начатый отзыв (Х1 № 7). */
+  function actFocusTarget(key, obj) {
+    const all = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === key && !b.hasAttribute("disabled"));
+    const same = obj !== undefined ? all.filter((b) => b.dataset.actObj === obj) : all;
+    return actState.pending === key
+      ? same.find((b) => b.dataset.actCancel !== undefined)
+      : same.find((b) => b.dataset.second === undefined && b.dataset.actCancel === undefined);
+  }
   function actButton(key, text, act, params, cls) {
     // П12: на паузе кнопка реакции неактивна с пояснением — запрос по замороженной доске не уходит.
     if (paused) return disabledButton(text, label("act.paused"));
@@ -1594,11 +1599,38 @@
     }
     if (faultsPaused) faultsPaused.hidden = !off;
   }
+  /** Кнопка реакции, на которой стоял фокус в момент паузы (Х4а № 9, К1.6): ключ действия и строка (покупка). */
+  let pausedAct = null;
+  /** Возврат фокуса после снятия паузы — тем же правилом, что после перестройки (`actFocusTarget`). Цели нет (покупка ушла
+   *  с экрана, конфликт звеньев) — фокус остаётся там, куда его поставила перестройка.
+   *  Фокус, переведённый человеком за время паузы, не перебивается (ревью К1.6 № 2): снять паузу пробелом можно только с
+   *  не-нажимаемого элемента, то есть человек мог уйти на заголовок панели — и тогда следующий пробел должен снова ставить
+   *  паузу, а не нажимать кнопку реакции под вернувшимся фокусом.
+   *  Сброс снимка — на случай вызова не из обработчика паузы: сам обработчик присваивает его на каждом входе. */
+  function restorePausedAct() {
+    const a = pausedAct;
+    pausedAct = null;
+    if (!a) return;
+    const cur = document.activeElement;
+    if (cur && cur !== document.body && cur !== document.documentElement) return;
+    const target = actFocusTarget(a.key, a.obj);
+    if (target) target.focus();
+  }
   document.addEventListener("pult:pause", (ev) => {
     const next = Boolean(ev && ev.detail && ev.detail.paused === true);
     if (next === paused) return;
     if (next) {
       pausedAt = Date.now();
+      // Х4а № 9 (К1.6): на паузе кнопок реакции в разметке нет, перестройка уводит фокус на `body`, и после снятия он не
+      // возвращался — кнопка запоминается до перестройки. Запоминается ключ и строка, не узел: оторванный узел не держим.
+      // При нынешней раскладке случай человеку недоступен — пробел на нажимаемом элементе паузу не ставит (`keys.js`), —
+      // и снимок пригодится, когда у паузы появится второй источник (кнопка; его уже ждёт `keys.js`). Вопрос владельцу —
+      // в PR #18 (ревью К1.6 № 1).
+      const a = document.activeElement;
+      pausedAct =
+        a && ctlBody && ctlBody.contains(a) && a.dataset && a.dataset.actKey !== undefined
+          ? { key: a.dataset.actKey, obj: a.dataset.actObj }
+          : null;
       // Начатый отзыв («Да, отозвать») пауза снимает: после снятия один щелчок отозвал бы по другой доске (повторное ревью
       // Х1 № 7; П12 — «Отклонено (б)»).
       actState.pending = "";
@@ -1611,11 +1643,13 @@
       pendingBoard = null;
       applyBoard(b, pendingAt);
       autoFromBoard(b, pendingSeq);
+      restorePausedAct();
       return;
     }
     // Кнопки «Контроля» и «Собрать отчёт» — неактивны / снова активны на той же доске.
     if (board) renderCtl();
     renderLog();
+    if (!paused) restorePausedAct();
   });
 
   const es = new EventSource("/pult/events");
