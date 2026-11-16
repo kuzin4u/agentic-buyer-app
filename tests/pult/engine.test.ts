@@ -10,7 +10,7 @@ import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultId
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
-import { conditionsView } from "../../src/pult/conditions.js";
+import { conditionsView, rulesForPage } from "../../src/pult/conditions.js";
 import { cardLikeNumber } from "../support/card-like.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, SCOPE_NO_CART_TITLE, SCOPE_NO_CART_TODO, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
@@ -725,6 +725,46 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const e = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "IK", merchant_id: "MER-1", order_ref: "O-other" }, "Н-02");
     const v = withLog(items, [e]);
     for (const id of ids) expect(v.objs.find((o) => o.id === id)!.conds.R23).toMatchObject({ status: "wait", note: "link_conflict" });
+  });
+
+  it("Р-1540 (ревью № 3 (б)): пометка `order_mismatch` доходит до плитки узла — её несёт и сводка условия, и объект того же статуса", () => {
+    // Тот же случай, что в тесте Н-02 выше: запись по поручению чужой покупки, а номер заказа в ней — нашей. У объекта это
+    // «ждёт» с пометкой; проверяется **путь пометки до экрана**, который до сих пор не был проверен. Путей два, и оба
+    // открываются статусом сводки: плитка берёт пометку у сводки условия (`conditions.ts:89`) и у объектов в статусе плитки
+    // (`:92`), но только у условий, чья сводка в статусе плитки (`:88`). Ниже закреплены оба и нижний случай, где пометку
+    // несёт **только** сводка (ревью Б-К3 № 1).
+    const items = [...purchase("B1"), ...purchase("B2")];
+    const model = buildTxModel(items);
+    const id = (cart: string) => model.txs.find((t) => t.cartMandateId === cart)!.id;
+    const e = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CB2", merchant_id: "MER-1", order_ref: "OB1" }, "Н-02");
+    const v = withLog(items, [e]);
+    expect(v.objs.find((o) => o.id === id("CB2"))!.conds.R23).toMatchObject({ status: "wait", note: "order_mismatch" });
+    // Сводка условия несёт тот же статус и ту же пометку — первое звено пути.
+    expect(v.system.R23).toMatchObject({ status: "wait", note: "order_mismatch" });
+    // Плитка узла У2: статус «ждёт» и пометка в перечне плитки.
+    const view = conditionsView(v);
+    const tile = view.nodes.find((n) => n.id === "У2")!;
+    expect(tile.status).toBe("wait");
+    expect(tile.notes).toContain("order_mismatch");
+    // Объектов на плитке при «ждёт» не показывают вовсе — обвинять некого (`conditions.ts:82` заполняет их только у «нарушено»
+    // и «сработало»); своя покупка здесь ни при чём: у неё условие «соблюдено» и пометки нет.
+    expect(tile.objs).toEqual([]);
+    const own = v.objs.find((o) => o.id === id("CB1"))!.conds.R23;
+    expect(own.status).toBe("ok");
+    expect(own.note).toBeUndefined();
+    // Ключ пометки доходит до полезной нагрузки страницы (`rulesForPage` — то, что кладётся в страницу один раз): на плитке
+    // пометка читается словами, и ru с en разные. Сам текст словаря закреплён в тесте Н-02 выше.
+    for (const lang of ["ru", "en"] as const) expect(rulesForPage(lang).notes.order_mismatch, lang).toBeTruthy();
+    expect(rulesForPage("ru").notes.order_mismatch).not.toBe(rulesForPage("en").notes.order_mismatch);
+    // И обратная сторона того же звена — рубеж статуса (`conditions.ts:88`): пометка условия, чья сводка **не** в статусе
+    // плитки, на плитку не попадает. Журнала стенда нет вовсе — у R23 сводка «не применяется» с пометкой `stand_log`
+    // (`engine.ts:924`), но статус плитки У2 определяет R46, и пометки на плитке нет. Уберут рубеж — пометка «журнала стенда
+    // нет» полезет на плитку, статус которой о журнале ничего не говорит.
+    const noLog = run(items);
+    expect(noLog.system.R23).toMatchObject({ status: "none", note: "stand_log" });
+    const noLogTile = conditionsView(noLog).nodes.find((n) => n.id === "У2")!;
+    expect(noLogTile.status).not.toBe("none");
+    expect(noLogTile.notes).not.toContain("stand_log");
   });
 
   it("повтор запроса отклонён Платформой (IDEMPOTENCY_CONFLICT) — R23 и R25 «сработало»", () => {
