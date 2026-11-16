@@ -1527,7 +1527,7 @@ describe("панель «Журнал» (П-6.1а)", () => {
     }
   });
 
-  it("Б2 (П13; ответ чата #issuecomment-6881016969, п. 2): сборка не удалась после показанного снимка — ссылок нет, «соберите заново»; щелчок по ссылке — 409 (собран новый, в т. ч. в другой вкладке) — то же; ru/en", async () => {
+  it("Б2 (П13; ответ чата #issuecomment-6881016969, п. 2): сборка не удалась после показанного снимка — кнопок выгрузки нет, «соберите заново»; щелчок по кнопке — 409 (собран новый, в т. ч. в другой вкладке) — то же; ru/en", async () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });
       const body = { builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
@@ -1542,29 +1542,33 @@ describe("панель «Журнал» (П-6.1а)", () => {
       const build = () => box.querySelectorAll("button[data-report]")[0]!.click();
       build();
       await new Promise((r) => setTimeout(r, 0));
-      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
-      // повторная сборка не удалась (сервер мог успеть собрать новый снимок) — ссылки прежнего сняты, подсказка
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
+      // повторная сборка не удалась (сервер мог успеть собрать новый снимок) — кнопки прежнего снимка сняты, подсказка
       next = () => Promise.reject(new Error("обрыв"));
       build();
       await new Promise((r) => setTimeout(r, 0));
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
+      // И ссылки не появляются вместо кнопок: перехватывать «сохранить ссылку как» стало нечего (Б-К5).
       expect(box.querySelectorAll("a"), lang).toEqual([]);
       expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
-      // удачная сборка — ссылки снова
+      // удачная сборка — кнопки снова
       next = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
       build();
       await new Promise((r) => setTimeout(r, 0));
-      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
       expect(box.textContent, lang).not.toContain(PULT["report.rebuild"][lang]);
-      // щелчок по ссылке: сервер — 409 SNAPSHOT_GONE — подсказка на экране, а не загрузка JSON
+      // щелчок по кнопке выгрузки: сервер — 409 SNAPSHOT_GONE — подсказка на экране, а не загрузка JSON
       next = () => Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
-      const link = box.querySelectorAll("a[data-export]")[0]!;
-      const href = link.getAttribute("href")!;
+      const btn0 = box.querySelectorAll("button[data-export]")[0]!;
+      const url = btn0.dataset.exportUrl!;
+      // Б-К5: адреса в разметке нет — отменять навигацию не нужно, и «сохранить ссылку как» браузер не предложит.
+      expect(btn0.getAttribute("href"), lang).toBe(null);
       const click = new FakeEvent("click", { bubbles: true });
-      link.dispatchEvent(click);
-      expect(click.defaultPrevented, lang).toBe(true);
+      btn0.dispatchEvent(click);
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
-      expect(calls.at(-1), lang).toBe(href);
+      expect(calls.at(-1), lang).toBe(url);
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
       expect(box.querySelectorAll("a"), lang).toEqual([]);
       expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
       expect(box.textContent, lang).toContain("SNAPSHOT_GONE");
@@ -1592,14 +1596,14 @@ describe("панель «Журнал» (П-6.1а)", () => {
     box.querySelectorAll("button[data-report]")[0]!.click();
     await new Promise((r) => setTimeout(r, 0));
     next = () => Promise.resolve({ ok: true, blob: () => Promise.resolve("акт"), headers: { get: () => 'attachment; filename="acc1-2026-11-14T20-00-ru.md"' } });
-    box.querySelectorAll("a[data-export]")[0]!.click();
+    box.querySelectorAll("button[data-export]")[0]!.click();
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     expect(clicked).toEqual([{ href: "blob:acc1", download: "acc1-2026-11-14T20-00-ru.md" }]);
     expect(revoked).toEqual([]); // не сразу после click
-    // ответ 409 по ссылке пришёл, когда уже собран новый снимок — подсказку не ставит
+    // ответ 409 по кнопке пришёл, когда уже собран новый снимок — подсказку не ставит
     let late!: (v: unknown) => void;
     next = () => new Promise((ok) => (late = ok));
-    box.querySelectorAll("a[data-export]")[0]!.click();
+    box.querySelectorAll("button[data-export]")[0]!.click();
     const fresh = { ...body, builtAt: "2026-11-14T20:05:00.000Z" };
     const after = () => Promise.resolve({ ok: true, json: () => Promise.resolve(fresh) });
     const pendingFetch = next;
@@ -1609,20 +1613,23 @@ describe("панель «Журнал» (П-6.1а)", () => {
     await new Promise((r) => setTimeout(r, 0));
     late({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
-    expect(box.querySelectorAll("a[data-export]").length).toBe(3);
+    expect(box.querySelectorAll("button[data-export]").length).toBe(3);
     expect(box.textContent).not.toContain(PULT["report.rebuild"].ru);
     // на паузе — без запроса (ссылок нет, но и прямой вызов не шлёт)
     const before = calls.length;
     env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
-    expect(box.querySelectorAll("a[data-export]")).toEqual([]);
+    expect(box.querySelectorAll("button[data-export]")).toEqual([]);
     expect(calls.length).toBe(before);
   });
 
-  it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки ссылками на файл; отказ — с кодом; ru/en", async () => {
+  it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки кнопками (Б-К5: адреса в разметке нет); отказ — с кодом; ru/en", async () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });
       const calls: string[] = [];
       const body = {
+        // Номер снимка — опознаватель выгрузки (Х4б № 4, К2.1 окна А): по времени сборки два снимка совпали бы при
+        // замороженных часах стенда или двух вкладках в одну миллисекунду. Кнопки Б-К5 строят адрес от него.
+        no: 7,
         builtAt: "2026-11-13T20:55:07.000Z",
         totals: { tests: 25, yes: 1, no: 1, noCase: 0, unchecked: 23 },
         agreeLabels: { yes: { ru: "да", en: "yes" }, no: { ru: "нет", en: "no" }, no_case: { ru: "нет случая", en: "no case" }, unchecked: { ru: "не проверено", en: "not checked" } },
@@ -1653,19 +1660,25 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(rows[0]!.textContent, lang).toContain("<b>x</b>");
       expect(rows[1]!.textContent, lang).toContain(PULT["report.violator"][lang]);
       expect(box.textContent, lang).toContain(`${PULT["report.unlinked"][lang]}: 2`);
-      const links = box.querySelectorAll("a");
-      // П13: ссылка просит показанный снимок — `at` = его время сборки
-      const atQ = new URLSearchParams({ at: body.builtAt }).toString();
-      expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&${atQ}`));
-      expect(links.map((a) => a.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
-      // П12, дополнение (Р-1558): на паузе ссылок нет — подписи текстом без адреса, с пояснением; после снятия — снова ссылки
-      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+      // Б-К5: выгрузки — кнопки, адреса в разметке нет (у ссылки оставался путь «сохранить ссылку как», минующий
+      // `downloadExport`). Опознаватель показанного снимка — его **номер** (`no`, К2.1 окна А), имя параметра `at`
+      // историческое; номера в ответе нет — шим берёт время сборки, после слияния с К2.1 останется только номер.
+      const outs = box.querySelectorAll("button[data-export]");
+      // Номер снимка в адресе — литералом, а не той же развилкой, что в коде (ревью Б-К5 № 9): фикстура несёт `no: 7`.
+      expect(outs.map((b) => b.dataset.exportUrl), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&at=7`));
+      expect(outs.map((b) => b.getAttribute("href")), lang).toEqual([null, null, null]);
+      expect(outs.map((b) => b.getAttribute("type")), lang).toEqual(["button", "button", "button"]);
+      expect(outs.map((b) => b.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
+      // Ни одной ссылки в панели «Журнал» больше нет: перехватывать «сохранить ссылку как» стало нечего.
       expect(box.querySelectorAll("a"), lang).toEqual([]);
+      // П12, дополнение (Р-1558): на паузе кнопок нет — подписи текстом без адреса, с пояснением; после снятия — снова кнопки
+      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
       const ex = box.querySelector(".report-export")!;
       expect(ex.textContent, lang).toContain(PULT["act.paused"][lang]);
       for (const f of ACC1_EXPORTS) expect(ex.textContent, lang).toContain(ACC1_EXPORT_LABEL[f][lang]);
       env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: false } }));
-      expect(box.querySelectorAll("a").length, lang).toBe(3);
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
       // Отказ сервера — «не собран» с кодом.
       env.window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "NO_ENGINE" }) });
       box.querySelectorAll("button[data-report]")[0]!.click();

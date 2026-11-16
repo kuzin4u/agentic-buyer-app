@@ -1317,17 +1317,27 @@
     // неактивны (дополнение к П12: ссылка тоже отправляет запрос) — текстом без адреса, с пояснением.
     // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — ссылок нет, подсказка «соберите заново».
     const ex = el("p", label("report.export") + ": ", "report-export");
+    // Опознаватель показанного снимка. Сейчас — время сборки; после слияния с К2.1 окна А — его номер (`d.no`), имя параметра
+    // `at` остаётся историческим (его читает `server.ts`). Шим на одно слияние: номер берётся, только если он **годный** —
+    // целое число или непустая строка; иначе откат на время сборки, а не `at=` или `at=[object Object]` (ревью Б-К5 № 1).
+    const okNo = typeof d.no === "number" ? Number.isFinite(d.no) : typeof d.no === "string" && d.no !== "";
+    const snapId = okNo ? String(d.no) : typeof d.builtAt === "string" ? d.builtAt : undefined;
     for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
-      if (paused || report.stale || typeof d.builtAt !== "string") {
+      if (paused || report.stale || snapId === undefined) {
         const off = el("span", e.label, "muted");
         off.setAttribute("aria-disabled", "true");
         ex.appendChild(off);
       } else {
-        const a = el("a", e.label);
-        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.builtAt) }).toString());
-        a.setAttribute("download", "");
-        a.dataset.export = "1";
-        ex.appendChild(a);
+        // Б-К5 (вторая половина ревью Б2 № 7; малая правка окна Б по Р-1493: **окну А — сверить**): выгрузка — **кнопка**,
+        // а не ссылка. У ссылки, пока у неё есть `href`, остаётся
+        // браузерный путь «сохранить ссылку как»: он события не даёт, `downloadExport` минует, и при 409 владелец получает
+        // файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки. Перехватить этот путь нечем — кнопка убирает причину:
+        // адреса в разметке нет, «сохранить как» не предлагается, запрос всегда идёт через `downloadExport` (fetch + Blob).
+        const b = el("button", e.label);
+        b.type = "button";
+        b.dataset.export = "1";
+        b.dataset.exportUrl = "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: snapId }).toString();
+        ex.appendChild(b);
       }
       ex.appendChild(el("span", " "));
     }
@@ -1411,11 +1421,14 @@
     logBox.addEventListener("click", (ev) => {
       const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
       if (rb) return buildReport();
-      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
-      if (ea) {
-        ev.preventDefault();
-        return downloadExport(ea.getAttribute("href"));
-      }
+      // Выгрузка — кнопка (Б-К5): отменять нечего, навигации у кнопки нет; адрес берётся из её данных, а не из `href`.
+      // Перехват `auxclick` средней кнопкой (К1.3 окна А) после этого не нужен: у кнопки нет ни адреса, ни «открыть
+      // в новой вкладке». **Окну А — сверить при слиянии:** (1) убрать обработчик `auxclick` для `a[data-export]`;
+      // (2) опознаватель снимка у кнопок — номер (`d.no`), шим `snapId` сводится к нему; (3) `shownAt` и признак
+      // устаревшего снимка в `downloadExport` ниже по-прежнему сличаются по времени сборки — перевести на номер, иначе
+      // коллизия Х4б № 4 (замороженные часы, две вкладки в одну миллисекунду) останется в этой проверке (ревью Б-К5 № 3).
+      const ea = ev.target instanceof Element ? ev.target.closest("button[data-export]") : null;
+      if (ea) return downloadExport(ea.dataset.exportUrl);
       const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
       if (!b) return;
       logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";
