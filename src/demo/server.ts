@@ -20,7 +20,7 @@ import { pultPage } from "./dash-pult.js";
 import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
 import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
 import type { PultActions } from "../pult/actions.js";
-import { actFailureLog, actFailWhat, pultAct } from "./pult-act.js";
+import { actFailureLog, actFailWhat, createActProvenance, pultAct, type ActProvenance } from "./pult-act.js";
 import { routeReport } from "./pult-report.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
@@ -116,6 +116,10 @@ export interface MonitorServerOptions {
 export interface MonitorServer {
   readonly url: string;
   readonly server: Server;
+  /** Провенанс прогона (П26): в этом прогоне нажимал тест. Единственный источник признака для акта ACC-1 — и у маршрута
+   *  отчёта, и у прогона 25 тестов, который собирает акт сам (ревью Б-К4, повторное, блокер 1: второй источник — подсчёт
+   *  по окну журнала реакций — давал бы ложное «да», когда нажатия вытесняются окном). */
+  readonly provenance: ActProvenance;
   close(): Promise<void>;
 }
 
@@ -299,6 +303,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   let pult: PultFeed | undefined;
   /** «Ленты» пульта (П-5.2) поверх ленты «Интерпретации»: своя лента `/pult/feeds`, логику ленты пульта не трогает. */
   let feeds: FeedsFeed | undefined;
+  /** Провенанс прогона (П26): живёт столько же, сколько стенд — перезапуск стенда начинает прогон заново. */
+  const provenance = createActProvenance();
 
   const send = (res: ServerResponse, status: number, type: string, body: string | Buffer, extra: Readonly<Record<string, string>> = {}) => {
     res.writeHead(status, {
@@ -411,7 +417,9 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       // Сбой обработки — 500 с телом, а не повисший запрос и не необработанный отказ, который уронил бы процесс стенда.
       // Сбой и самой отправки ответа (клиент закрыл соединение) — тоже сюда (ревью П-8.1 № 7).
       const what = u.pathname.slice("/pult/act/".length);
-      void pultAct(what, u.searchParams, o.pultActions, pult, now)
+      // Провенанс нажатия обязателен в режиме сбоев (П26): признак передаёт нажимающий, умолчания нет; нажатие с признаком
+      // «тест» поднимает липкий признак прогона — его и ставит акт, не считая нажатия в окне журнала реакций.
+      void pultAct(what, u.searchParams, o.pultActions, pult, now, { faults: o.faults === true, provenance })
         .then((r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)))
         .catch((e: unknown) => {
           // Причина сбоя — в журнал сервера (Б1, ревью Б1 № 3): без неё `ACTION_FAILED` не объясним ничем. В строку идёт
@@ -535,7 +543,8 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
           let r;
           try {
             // П13: выгрузка — только показанный снимок (`at`), json — собрать новый.
-            r = routeReport(pult, u.searchParams.get("format"), u.searchParams.get("at"), lang);
+            // Провенанс прогона (П26) — липкий признак сборки стенда: акт помечает прогон, в котором нажимал тест.
+            r = routeReport(pult, u.searchParams.get("format"), u.searchParams.get("at"), lang, provenance);
           } catch {
             return send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "REPORT_FAILED" }));
           }
@@ -647,6 +656,7 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
   return {
     url,
     server,
+    provenance,
     close: async () => {
       // Сначала лента дашбордов (её адаптер держит соединение /events с этим же сервером), затем сервер.
       // Мягкое закрытие (К1.4б, Р-1336): простаивающие соединения закрываются сразу; оставшиеся рвутся через ≈ 0,5 с —

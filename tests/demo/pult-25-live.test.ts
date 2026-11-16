@@ -213,7 +213,10 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
     if (!q) throw new Error("номер запроса подтверждения");
     // Оператор ждёт порога «Идёт к нарушению» и жмёт «Напомнить клиенту»; клиент подтверждает после напоминания.
     await pause(SLOW_MS);
-    const remind = await ok(post(`/pult/act/remind?confirmation=${encodeURIComponent(q)}`), "Напомнить клиенту", 200);
+    // `by=test` — провенанс нажатия (П26): роль оператора здесь играет прогон, и он помечает себя сам. Признак обязателен
+    // в режиме сбоев (без него маршрут отвечает 400 `BY_REQUIRED`), и по нему акт ставит пометку у У-01…У-04 — без параметра
+    // `operatorByTest`. Малая правка окна Б по Р-1493: **окну А — сверить**.
+    const remind = await ok(post(`/pult/act/remind?confirmation=${encodeURIComponent(q)}&by=test`), "Напомнить клиенту", 200);
     const rr = (await remind.json()) as { outcome?: string };
     if (rr.outcome !== "done") throw new Error(`«Напомнить клиенту»: ${JSON.stringify(rr)}`);
     await upkAnswer(n, "APPROVE");
@@ -276,7 +279,11 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
     const dirty = execSync("git status --porcelain --untracked-files=no", { encoding: "utf8" }).trim() !== "";
     const out = process.env.PULT_25_OUT ?? join(tmpdir(), `acc1-run-${at.replace(/[:.]/g, "-")}`);
     mkdirSync(out, { recursive: true });
-    const opts = { operatorByTest: true } as const;
+    // Провенанс — из признака нажатия (П26): нажатие «Напомнить» ушло с `by=test`, и маршрут поднял липкий признак прогона.
+    // Прежнее `operatorByTest: true` убрано — иначе прогон ставил бы пометку даже при неработающем признаке (ревью Б-К4,
+    // блокер Б3). Считать по журналу реакций нельзя: окно последних нажатий вытесняет их в длинном прогоне (повторное
+    // ревью, блокер 1) — источник признака один, и он здесь. Малая правка окна Б по Р-1493: **окну А — сверить**.
+    const opts = { operatorByTest: demo.monitor.provenance.byTest() } as const;
     for (const lang of ["ru", "en"] as const) {
       writeFileSync(join(out, `acc1-${lang}.md`), acc1Markdown(rep!.table, lang, rep!.records, opts));
       writeFileSync(join(out, `acc1-${lang}.csv`), acc1Csv(rep!.table, lang, rep!.records, opts));

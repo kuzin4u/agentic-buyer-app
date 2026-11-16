@@ -912,7 +912,9 @@
       renderCtl();
       return;
     }
-    f("/pult/act/" + act + "?" + query, { method: "POST" })
+    // `by=operator` — провенанс нажатия (П26): у пульта нажимает человек, и он помечает себя сам; в режиме сбоев признак
+    // обязателен (без него маршрут отвечает 400 `BY_REQUIRED`). Малая правка окна Б по Р-1493: **окну А — сверить**.
+    f("/pult/act/" + act + "?" + (query ? query + "&" : "") + "by=operator", { method: "POST" })
       .then((r) => r.json())
       .then((body) => {
         actState.results[key] = describeReaction(body);
@@ -1234,7 +1236,9 @@
     wrap.appendChild(el("h3", label("log.actions"), "ctl-h"));
     const rows = [];
     for (const x of Array.isArray(board.reactions) ? board.reactions : [])
-      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) });
+      // Провенанс нажатия (П26 п. 4) — в строке журнала: помеченное отступление от инварианта 3 видно человеку.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) + (x.by === "test" || x.by === "operator" ? " · " + label("act.by." + x.by) : "") });
     for (const d of p && Array.isArray(p.decisions) ? p.decisions : [])
       rows.push({ at: d.at, text: (d.at ? clock(d.at) + " · " : "") + label("log.decision") + " · " + (d.obj || label("ctl.system")) + (d.cond ? " · " + d.cond : "") });
     rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
@@ -1300,7 +1304,9 @@
     const tot = [["yes", t.yes], ["no", t.no], ["no_case", t.noCase], ["unchecked", t.unchecked]].map(([k, n]) => txt(al[k]) + ": " + (typeof n === "number" ? n : 0));
     wrap.appendChild(el("p", tot.join(" · ") + " · " + label("report.tests") + ": " + (typeof t.tests === "number" ? t.tests : 0), "ctl-status"));
     for (const r of Array.isArray(d.rows) ? d.rows : []) {
-      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : ""].filter((x) => x);
+      // `report.by_test` — провенанс строки оператора (П26 п. 4): на экране «Отчёт» пометка та же, что в выгрузке акта.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : "", r.operatorByTest ? label("report.by_test") : ""].filter((x) => x);
       const parts = [r.test, txt(r.kind), txt(r.expected), txt(r.fact), txt(r.agreeLabel), txt(r.note), marks.join(" "), r.run].filter((x) => typeof x === "string" && x);
       const row = el("div", parts.join(" · "), "report-row");
       row.dataset.agree = typeof r.agree === "string" ? r.agree : "";

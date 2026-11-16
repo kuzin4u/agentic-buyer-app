@@ -42,15 +42,79 @@ export function actFailureLog(what: ActFailWhat, e: unknown, lang: Lang = "ru"):
 const isAction = (s: string): s is PultActionKind => (PULT_ACTIONS as readonly string[]).includes(s);
 const isViolator = (s: string): s is ReviewViolator => (REVIEW_VIOLATORS as readonly string[]).includes(s);
 
-export async function pultAct(what: string, q: URLSearchParams, actions: PultActions, feed: Pick<PultFeed, "react">, now: () => Date): Promise<PultActReply> {
+/** Кто нажал (П26): перечень значений `by` — из поля `Reaction.by`, а не из памяти (Р-1511, закрытый перечень из источника).
+ *  Карта исчерпывающая, поэтому перечень и поле не разойдутся **в обе стороны**: добавят значение в поле окна А, не добавив
+ *  сюда, — у `Record` не хватит ключа; добавят лишнее сюда — ключа не будет в типе (ревью Б-К4 № Н1: прежний `satisfies`
+ *  проверял только одну сторону, и новое значение поля маршрут молча отклонял бы как `BAD_PARAMS`). */
+export type ReactionBy = NonNullable<Reaction["by"]>;
+const BY_VALUES: Readonly<Record<ReactionBy, true>> = { operator: true, test: true };
+export const REACTION_BY: readonly ReactionBy[] = Object.keys(BY_VALUES) as ReactionBy[];
+const isBy = (s: string | null): s is ReactionBy => s !== null && (REACTION_BY as readonly string[]).includes(s);
+
+/** Провенанс прогона (П26): признак «в этом прогоне нажимал тест» живёт **здесь**, в сборке демо-стенда, а не вычисляется
+ *  по журналу реакций ленты при выгрузке. Журнал реакций — окно последних 50 нажатий (`REACTIONS_KEPT` в `src/pult/feed.ts`):
+ *  в прогоне 25 тестов нажатия теста вытеснились бы, и акт в конце прогона вышел бы без пометки — ровно то ложное «да»,
+ *  против которого признак и вводится (ревью Б-К4, блокер Б1). Поэтому признак **липкий**: нажатие теста поднимает его
+ *  навсегда (до перезапуска стенда), нажатие человека не снимает. */
+export interface ActProvenance {
+  /** Нажатие пришло с признаком — записать прогону. */
+  press(by: ReactionBy): void;
+  /** Роль оператора в прогоне играл тест. */
+  byTest(): boolean;
+  /** Запомнить признак показанного снимка отчёта (его время сборки) — выгрузка отдаёт провенанс **того** снимка, а не
+   *  нынешний (П13, Х4б: подписанный акт — тот, что владелец смотрел). Снимок хранится один, как у ленты. */
+  shown(builtAt: string): void;
+  /** Признак снимка с этим временем сборки; снимок другой или не показывался — нынешний (`byTest()`). */
+  byTestAt(builtAt: string): boolean;
+}
+
+export function createActProvenance(): ActProvenance {
+  let byTest = false;
+  let shown: { at: string; byTest: boolean } | undefined;
+  return {
+    press: (by) => {
+      if (by === "test") byTest = true;
+    },
+    byTest: () => byTest,
+    shown: (at) => {
+      shown = { at, byTest };
+    },
+    byTestAt: (at) => (shown !== undefined && shown.at === at ? shown.byTest : byTest),
+  };
+}
+
+export interface PultActOptions {
+  /** Режим сбоев стенда (`DEMO_FAULTS=1`): в нём провенанс нажатия **обязателен** — запрос без `by` отклоняется (400
+   *  `BY_REQUIRED`, П26 п. 3). Вне режима сбоев признак не принимается и в запись не идёт: прогона тестов там нет. */
+  readonly faults?: boolean;
+  /** Провенанс прогона: нажатие с признаком записывается сюда (П26). Нет — признак живёт только в записи журнала реакций. */
+  readonly provenance?: ActProvenance;
+}
+
+export async function pultAct(
+  what: string,
+  q: URLSearchParams,
+  actions: PultActions,
+  feed: Pick<PultFeed, "react">,
+  now: () => Date,
+  o: PultActOptions = {},
+): Promise<PultActReply> {
   if (!isAction(what)) return { status: 404, body: { error: "UNKNOWN_ACTION" } };
   const id = (k: string) => {
     const v = q.get(k);
     return v !== null && ID.test(v) ? v : undefined;
   };
   const bad: PultActReply = { status: 400, body: { error: "BAD_PARAMS" } };
+  // Провенанс нажатия (П26): в режиме сбоев обязателен и без умолчания — «неподтверждённое не разрешено». Значение не из
+  // перечня — тоже отказ: догадываться, кто нажал, маршрут не вправе. Вне режима сбоев признак отбрасывается.
+  // Повтор параметра (`by=operator&by=test`) — отказ: какое из двух считать нажатием, маршрут не решает (ревью Б-К4 № Н2).
+  const all = q.getAll("by");
+  const raw = all.length > 1 ? "" : (all[0] ?? null);
+  const by = o.faults === true ? (isBy(raw) ? raw : undefined) : undefined;
+  if (o.faults === true && by === undefined) return { status: 400, body: { error: raw === null ? "BY_REQUIRED" : "BAD_PARAMS" } };
+  if (by !== undefined) o.provenance?.press(by);
   const record = (obj: string, result: ActionResult, cond?: string): PultActReply => {
-    const reaction: Reaction = { at: now().toISOString(), action: what, obj, ...(cond !== undefined && { cond }), outcome: result.ok ? "done" : "refused", result };
+    const reaction: Reaction = { at: now().toISOString(), action: what, obj, ...(cond !== undefined && { cond }), outcome: result.ok ? "done" : "refused", result, ...(by !== undefined && { by }) };
     feed.react(reaction);
     // Сбой адаптера — 500, отказ стенда по правилам — 409 (ревью П-8.1 № 4).
     return { status: result.ok ? 200 : result.failed ? 500 : 409, body: reaction };
@@ -69,7 +133,7 @@ export async function pultAct(what: string, q: URLSearchParams, actions: PultAct
       const obj = id("obj");
       const cond = q.get("cond") ?? "";
       if (!obj || !NOTE_CONDS.has(cond)) return bad;
-      const reaction: Reaction = { at: now().toISOString(), action: what, obj, cond, outcome: "noted" };
+      const reaction: Reaction = { at: now().toISOString(), action: what, obj, cond, outcome: "noted", ...(by !== undefined && { by }) };
       feed.react(reaction);
       return { status: 200, body: reaction };
     }

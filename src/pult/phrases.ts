@@ -291,6 +291,11 @@ export const PULT = {
   "report.unlinked": p("записей протокола без строки теста", "protocol records without a test row"),
   "report.auto": p("«Авто»", "“Auto”"),
   "report.violator": p("«ПР»", "“ПР”"),
+  // Провенанс нажатия (П26 п. 4): помеченное отступление от инварианта 3 видно человеку — в журнале реакций у каждого
+  // нажатия и у строк оператора в отчёте. Малая правка окна Б по Р-1493: **окну А — сверить**.
+  "act.by.test": p("нажал тест", "pressed by a test"),
+  "act.by.operator": p("нажал оператор", "pressed by the operator"),
+  "report.by_test": p("роль оператора играл тест", "the operator's role was played by a test"),
   "proto.type.warn": p("предупреждение", "warning"),
   "proto.type.bad": p("нарушение", "violation"),
   "proto.type.fired": p("сработала гарантия", "guarantee fired"),

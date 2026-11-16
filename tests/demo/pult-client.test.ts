@@ -850,7 +850,10 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     btn(env, "revoke")[0]!.click();
     const second = btn(env, "revoke").find((b) => b.dataset.second === "1")!;
     second.click();
-    expect(calls).toEqual(["/pult/act/revoke?mandate=IT1"]);
+    // `by=operator` — провенанс нажатия (П26): у пульта нажимает человек, и он помечает себя сам; в режиме сбоев признак
+    // обязателен, иначе маршрут отвечает 400 `BY_REQUIRED`. Признак есть у каждого запроса кнопки, в том числе у «напомнено»
+    // без стенда (`remind_note`): запись журнала реакций одинаково говорит, кто нажал.
+    expect(calls).toEqual(["/pult/act/revoke?mandate=IT1&by=operator"]);
     // Условие 1: ответ стенда «отказано» — на экране отказ с кодом, не «сделано».
     await new Promise((r) => setTimeout(r, 0));
     const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
@@ -876,7 +879,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
         env.sources[0]!.send(msg);
         expect(btn(env, "stop")[0]).toBe(stop);
       });
-      expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+      expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
     });
 
     it("бегущие секунды прошли, доска та же — узел прежний (секунды — вне сравнения, перечень CTL_TICKING)", () => {
@@ -896,7 +899,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
           env.sources[0]!.send(msg);
           expect(btn(env, "stop")[0]).toBe(stop);
         });
-        expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+        expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
       } finally {
         now.mockRestore();
       }
@@ -1074,7 +1077,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     pause(false);
     expect(btn(env, "stop")).toHaveLength(2);
     stale.click();
-    expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+    expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
   });
 
   it("П12, ревью Х1 № 4: на паузе «Контроль», «Интерпретатор» («Причины») и «Журнал» стоят на прежней доске, после снятия — новая", () => {
@@ -1264,9 +1267,9 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     const reminds = btn(env, "remind_note");
     expect(reminds).toHaveLength(1);
     reminds[0]!.click();
-    expect(calls).toEqual(["/pult/act/remind_note?obj=IM1&cond=R08"]);
+    expect(calls).toEqual(["/pult/act/remind_note?obj=IM1&cond=R08&by=operator"]);
     btn(env, "remind")[0]!.click();
-    expect(calls[1]).toBe("/pult/act/remind?confirmation=Q1");
+    expect(calls[1]).toBe("/pult/act/remind?confirmation=Q1&by=operator");
     const off = $(env, "b-ctl").querySelectorAll("button[disabled]").map((b) => b.textContent);
     expect(off).toEqual(expect.arrayContaining([ru("act.notify"), ru("act.review")]));
     expect($(env, "b-ctl").textContent).toContain(ru("act.notify.none"));
@@ -1668,6 +1671,41 @@ describe("панель «Журнал» (П-6.1а)", () => {
       box.querySelectorAll("button[data-report]")[0]!.click();
       await new Promise((r) => setTimeout(r, 0));
       expect(box.textContent, lang).toContain(`${PULT["report.failed"][lang]} · NO_ENGINE`);
+    }
+  });
+
+  it("П26 п. 4: провенанс нажатия виден человеку — в строке журнала реакций и у строки оператора в отчёте; ru и en", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      // Журнал реакций: у каждого нажатия — кто нажал. Отступление от инварианта 3 помечено на экране, как у П5 и П7.
+      const env = start({ lang });
+      const by = (x: string) => ({ at: T(20), action: "remind", obj: "Q" + x, cond: "R21", outcome: "done", result: { ok: true, status: 200 }, link: { state: "unavailable" }, by: x });
+      env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], reactions: [by("test"), by("operator"), { ...by("x"), by: undefined }] } });
+      const rows = $(env, "b-log").querySelectorAll(".log-row").map((r) => r.textContent);
+      expect(rows[0], lang).toContain(PULT["act.by.test"][lang]);
+      expect(rows[1], lang).toContain(PULT["act.by.operator"][lang]);
+      // Признака нет (нажатие вне режима сбоев) — и в строке его нет: пустой пометки на экране не появляется.
+      expect(rows[2], lang).not.toContain(PULT["act.by.operator"][lang]);
+      expect(rows[2], lang).not.toContain(PULT["act.by.test"][lang]);
+
+      // Экран «Отчёт»: пометка у строки оператора — та же, что в выгрузке акта.
+      const e2 = start({ lang });
+      const body = {
+        builtAt: "2026-11-16T12:00:00.000Z",
+        totals: { tests: 25, yes: 1, no: 0, noCase: 0, unchecked: 24 },
+        agreeLabels: { yes: { ru: "да", en: "yes" } },
+        rows: [
+          { test: "У-01", kind: { ru: "идёт к нарушению", en: "toward" }, expected: { ru: "о", en: "e" }, fact: { ru: "ф", en: "f" }, agree: "yes", agreeLabel: { ru: "да", en: "yes" }, note: { ru: "", en: "" }, auto: false, violatorDriver: false, operatorByTest: true, run: "run.intent 1/1" },
+          { test: "П-01", kind: { ru: "правильный", en: "correct" }, expected: { ru: "о", en: "e" }, fact: { ru: "ф", en: "f" }, agree: "yes", agreeLabel: { ru: "да", en: "yes" }, note: { ru: "", en: "" }, auto: false, violatorDriver: false, operatorByTest: false, run: "run.purchase 1/1" },
+        ],
+        unlinked: 0,
+      };
+      e2.window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      e2.sources[0]!.send(boardMsg([]));
+      $(e2, "b-log").querySelectorAll("button[data-report]")[0]!.click();
+      await new Promise((r) => setTimeout(r, 0));
+      const report = $(e2, "b-log").querySelectorAll(".report-row").map((r) => r.textContent);
+      expect(report[0], lang).toContain(PULT["report.by_test"][lang]);
+      expect(report[1], lang).not.toContain(PULT["report.by_test"][lang]);
     }
   });
 

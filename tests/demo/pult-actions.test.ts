@@ -5,7 +5,7 @@ import { DEMO_VIOLATORS, type DemoIds, type DemoViolator, type StandDemo } from 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { envFlag } from "../../src/demo/flags.js";
 import { t } from "../../src/demo/i18n.js";
-import { actFailureLog, actFailWhat, pultAct } from "../../src/demo/pult-act.js";
+import { actFailureLog, actFailWhat, pultAct, REACTION_BY } from "../../src/demo/pult-act.js";
 import { pultActions } from "../../src/demo/pult-actions.js";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
@@ -52,6 +52,66 @@ describe("кнопки реакции пульта — флаг, порт, ма�
       expect(r.body, act).toMatchObject({ outcome: "refused", result: { ok: false, code: "MANDATE_NOT_ACTIVE" } });
     }
     expect(log.map((x) => x.outcome)).toEqual(["refused", "refused", "refused", "refused"]);
+  });
+
+  it("П26: провенанс нажатия — в режиме сбоев `by` обязателен (400 `BY_REQUIRED`), значение — из перечня, вне режима сбоев не принимается", async () => {
+    const a = refusedAll();
+    const mk = () => {
+      const log: Reaction[] = [];
+      return { log, feed: { react: (r: Reaction) => log.push(r) } };
+    };
+    // Перечень значений выведен из поля `Reaction.by` исчерпывающей картой (`pult-act.ts`): признак может быть только таким,
+    // и расхождение перечня с полем ловит компилятор в обе стороны (ревью Б-К4 № Н1).
+    expect([...REACTION_BY]).toEqual(["operator", "test"]);
+
+    // Режим сбоев: без `by` — 400 `BY_REQUIRED`. Умолчания нет: иначе прогон, не передавший признак, молча записался бы
+    // оператором, и у У-01…У-04 в акте появилось бы ложное «да» (П26 п. 3). Стенд не вызывается, записи в журнале реакций нет.
+    for (const [act, params] of [
+      ["stop", { cart: "CART-1" }],
+      ["remind", { confirmation: "CNF-1" }],
+      ["revoke", { mandate: "MND-1" }],
+      ["review", { mandate_id: "CART-1", condition: "R46", violator: "AGENT" }],
+      ["remind_note", { obj: "MND-2", cond: "R08" }],
+    ] as [string, Record<string, string>][]) {
+      const { log, feed } = mk();
+      expect(await pultAct(act, q(params), a, feed, NOW, { faults: true }), act).toEqual({ status: 400, body: { error: "BY_REQUIRED" } });
+      expect(log, act).toEqual([]);
+    }
+    for (const m of [a.stopPurchase, a.remindClient, a.revokeMandate, a.sendToReview]) expect(m).not.toHaveBeenCalled();
+
+    // Значение не из перечня — тоже отказ, но другой: параметр есть и он неверен (400 `BAD_PARAMS`), догадываться маршрут не вправе.
+    for (const by of ["human", "TEST", "", "operator,test", "1"]) {
+      const { log, feed } = mk();
+      expect(await pultAct("revoke", q({ mandate: "MND-1", by }), a, feed, NOW, { faults: true }), by).toEqual({ status: 400, body: { error: "BAD_PARAMS" } });
+      expect(log, by).toEqual([]);
+    }
+
+    // Признак есть — он в записи журнала реакций, как её передал нажимающий; исход действия от него не зависит.
+    for (const by of REACTION_BY) {
+      const { log, feed } = mk();
+      const r = await pultAct("revoke", q({ mandate: "MND-1", by }), a, feed, NOW, { faults: true });
+      expect(r.status, by).toBe(409);
+      expect(r.body, by).toMatchObject({ outcome: "refused", by });
+      expect(log.map((x) => x.by), by).toEqual([by]);
+    }
+    // «Напомнено» без стенда (В1 (а)) — тоже с признаком: запись одинаково говорит, кто нажал.
+    const note = mk();
+    expect(await pultAct("remind_note", q({ obj: "MND-2", cond: "R08", by: "test" }), a, note.feed, NOW, { faults: true })).toMatchObject({
+      status: 200,
+      body: { outcome: "noted", by: "test" },
+    });
+
+    // Вне режима сбоев признак не принимается: прогона тестов там нет, и признак в записи не появляется даже присланный.
+    for (const opts of [{}, { faults: false }]) {
+      const { log, feed } = mk();
+      const r = await pultAct("revoke", q({ mandate: "MND-1", by: "test" }), a, feed, NOW, opts);
+      expect(r.status).toBe(409);
+      expect((r.body as Reaction).by).toBeUndefined();
+      expect(log.map((x) => x.by)).toEqual([undefined]);
+      // И без признака маршрут вне режима сбоев работает как раньше — 400 `BY_REQUIRED` там нет.
+      const plainCall = mk();
+      expect((await pultAct("revoke", q({ mandate: "MND-1" }), a, plainCall.feed, NOW, opts)).status).toBe(409);
+    }
   });
 
   it("условие 2 Р-1527 (В1 (а)): «Напомнить» у R08 / R18 стенд не вызывает вовсе — только «напомнено»", async () => {
@@ -391,9 +451,16 @@ describe("У-04 на живом стенде в режиме сбоев: «На�
     // П-6.1а заводится тогда же: оператор жмёт после порога (модель 1.23: реакция раньше записи не считается).
     const dueIn = Date.parse(w21.since) + b0.control.waitMs - Date.now();
     if (dueIn > 0) await new Promise((r) => setTimeout(r, dueIn + 250));
-    // Оператор: «Напомнить клиенту».
-    const r = (await (await post(`/pult/act/remind?confirmation=${q}`)).json()) as Reaction;
-    expect(r).toMatchObject({ outcome: "done", result: { ok: true, extended: true } });
+    // Оператора здесь играет тест, и признак говорит ровно это: `by=test` (П26). Записывать `operator` автотестом нельзя —
+    // запись журнала реакций сказала бы неправду, а исход действия от признака не зависит вовсе (повторное ревью Б-К4 № 3).
+    const r = (await (await post(`/pult/act/remind?confirmation=${q}&by=test`)).json()) as Reaction;
+    expect(r).toMatchObject({ outcome: "done", by: "test", result: { ok: true, extended: true } });
+    // Без признака тот же запрос в режиме сбоев не проходит — 400 с машинной причиной, запись не появляется.
+    const noBy = await post(`/pult/act/remind?confirmation=${q}`);
+    expect(noBy.status).toBe(400);
+    expect(await noBy.json()).toEqual({ error: "BY_REQUIRED" });
+    // Сшивка в сервере (П26): нажатие с признаком подняло липкий провенанс прогона — его и возьмёт акт ACC-1.
+    expect(demo.monitor.provenance.byTest()).toBe(true);
     // Клиент: страница УПК → код из SMS → «подтвердить».
     const answer = await fetch(String(req.params.upk_url), {
       method: "POST",
@@ -422,5 +489,27 @@ describe("У-04 на живом стенде в режиме сбоев: «На�
     expect(pe).toMatchObject({ type: "warn", status: "prevented", reaction: "remind" });
     expect(pe.reactSec).toBeGreaterThanOrEqual(0);
     expect(pb.protocol!.entries.filter((e) => e.obj === cart && e.type === "bad")).toEqual([]);
+  });
+
+  it("П26 по HTTP целиком: нажатие `by=test` → акт ACC-1 с экрана «Отчёт» и его выгрузка несут пометку провенанса", async () => {
+    // Идёт после теста выше: в прогоне уже есть нажатие с признаком `test`, то есть провенанс прогона поднят.
+    expect(demo.monitor.provenance.byTest()).toBe(true);
+    const json = (await (await fetch(`${demo.monitor.url}/pult/report?format=json&lang=ru`)).json()) as {
+      builtAt: string;
+      rows: { test: string; run: string; operatorByTest: boolean }[];
+    };
+    // Строки оператора с прогоном в этом прогоне есть (сюжет 4 с ожиданием подтверждения) — у них пометка стоит.
+    const operatorRows = json.rows.filter((r) => r.test.startsWith("У-") && r.run !== "");
+    expect(operatorRows.length).toBeGreaterThan(0);
+    expect(operatorRows.every((r) => r.operatorByTest)).toBe(true);
+    // Прочие строки пометку не получают: она только у строк оператора (П8, Б5 № 10).
+    expect(json.rows.filter((r) => !r.test.startsWith("У-")).some((r) => r.operatorByTest)).toBe(false);
+    // Выгрузка показанного снимка — та же пометка словами, и это тот же снимок (`at` = время сборки, П13).
+    const md = await (await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru&at=${encodeURIComponent(json.builtAt)}`)).text();
+    expect(md).toContain(PULT["report.by_test"].ru);
+    // И это именно показанный снимок (П13): чужое время сборки — 409, а не другой акт.
+    const stale = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru&at=2026-01-01T00:00:00.000Z`);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: "SNAPSHOT_GONE" });
   });
 });
