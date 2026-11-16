@@ -138,7 +138,7 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(rs.slice(-5).map((r) => [r.name, r.result?.state])).toEqual(rs.slice(-5).map((r) => [r.name, "accepted"]));
     const rep = await fetch(`${demo.monitor.url}/pult/report?format=json&lang=ru`);
     expect(rep.status).toBe(200);
-    const body = (await rep.json()) as { builtAt: string; totals: { no: number }; unlinked: number; rows: { test: string; agree: string }[] };
+    const body = (await rep.json()) as { no: number; builtAt: string; totals: { no: number }; unlinked: number; rows: { test: string; agree: string }[] };
     expect(Number.isFinite(Date.parse(body.builtAt))).toBe(true);
     const agree = Object.fromEntries(body.rows.map((r) => [r.test, r.agree]));
     expect([agree["П-01"], agree["П-05"], agree["П-02"], agree["П-08"]]).toEqual(["yes", "yes", "yes", "yes"]);
@@ -147,8 +147,10 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(body.totals.no).toBe(0);
     expect(body.rows.filter((r) => r.test.startsWith("У-")).map((r) => r.agree)).toEqual(["unchecked", "unchecked", "unchecked", "unchecked"]);
     expect(typeof body.unlinked).toBe("number");
-    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3). П13: показанный снимок — по `at`.
-    const at = encodeURIComponent(body.builtAt);
+    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3). П13: показанный снимок — по его номеру
+    // в параметре `at` (имя историческое; К2.1, Х4б № 4: по времени сборки два снимка совпали бы при замороженных часах).
+    expect(typeof body.no).toBe("number");
+    const at = encodeURIComponent(String(body.no));
     const md = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru&at=${at}`);
     expect(md.headers.get("content-disposition")).toMatch(/^attachment; filename="acc1-.*-ru\.md"$/);
     expect(md.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
