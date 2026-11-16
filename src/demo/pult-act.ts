@@ -4,6 +4,7 @@
 // Отзыв в два шага (В4) — на экране: сюда приходит уже подтверждённый отзыв.
 import { PULT_ACTIONS, REVIEW_ID_FIELDS, REVIEW_VIOLATORS, type ActionResult, type PultActionKind, type PultActions, type Reaction, type ReviewIds, type ReviewViolator } from "../pult/actions.js";
 import type { PultFeed } from "../pult/feed.js";
+import { t, type Lang } from "./i18n.js";
 
 /** Номер объекта стенда: латиница, цифры, `_ - : .`, до 128 знаков. Иное — 400. */
 const ID = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -16,6 +17,26 @@ const PULT_PREFIX = /^(cart|order|op|confirmation):/;
 export interface PultActReply {
   readonly status: number;
   readonly body: unknown;
+}
+
+/** Длина текста ошибки в журнале сервера — как у текста отказа стенда на экране (`CODE_MAX` в `pult-actions.ts`). */
+const REASON_MAX = 120;
+/** Вид действия для журнала сервера: только разобранное действие или «unknown» — сырой отрезок пути в журнал не идёт
+ *  (ревью Б-К1 № 1: путь приходит от клиента, не проверен и не ограничен по длине). */
+export type ActFailWhat = PultActionKind | "unknown";
+export const actFailWhat = (s: string): ActFailWhat => (isAction(s) ? s : "unknown");
+/** Строка журнала **сервера** (не экрана и не журнала реакций) о сбое действия — Б1, ревью Б1 № 3: до этого причина `failed`
+ *  не попадала никуда: на экране «не удалось — сбой пульта или стенда», в журнале реакций код `ADAPTER_FAILED`, а чем именно
+ *  сбой вызван — нигде. Инвариант 1: в строку идут только вид действия, вид ошибки и её текст до 120 знаков — ни пути
+ *  с номерами объектов, ни строки запроса, ни тела запроса и ответа стенда. Слова — из словаря, как у прочих строк журнала
+ *  сервера (`cli.stop_failed`, `cli.release_failed`, `cli.pass_failed`; ревью Б-К1 № 2). */
+export function actFailureLog(what: ActFailWhat, e: unknown, lang: Lang = "ru"): string {
+  const kind = e instanceof Error ? e.constructor.name : typeof e;
+  const text = e instanceof Error ? Array.from(e.message).slice(0, REASON_MAX).join("") : "";
+  return t(lang, "cli.act_failed")
+    .replace("{what}", what)
+    .replace("{kind}", kind)
+    .replace("{text}", text ? `: ${text}` : "");
 }
 
 const isAction = (s: string): s is PultActionKind => (PULT_ACTIONS as readonly string[]).includes(s);

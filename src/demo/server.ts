@@ -20,7 +20,7 @@ import { pultPage } from "./dash-pult.js";
 import { createPultFeed, type PultFeed, type PultFeedEvent } from "../pult/feed.js";
 import { createFeedsFeed, feedsLabels, type FeedsEvent, type FeedsFeed } from "../pult/feeds.js";
 import type { PultActions } from "../pult/actions.js";
-import { pultAct } from "./pult-act.js";
+import { actFailureLog, actFailWhat, pultAct } from "./pult-act.js";
 import { routeReport } from "./pult-report.js";
 import { switcherHtml } from "./switcher.js";
 import { MESSAGES, langOf, t, type Lang, type MessageKey } from "./i18n.js";
@@ -410,9 +410,14 @@ export async function startMonitorServer(o: MonitorServerOptions): Promise<Monit
       const now = o.dashboards?.now ?? (() => new Date());
       // Сбой обработки — 500 с телом, а не повисший запрос и не необработанный отказ, который уронил бы процесс стенда.
       // Сбой и самой отправки ответа (клиент закрыл соединение) — тоже сюда (ревью П-8.1 № 7).
-      void pultAct(u.pathname.slice("/pult/act/".length), u.searchParams, o.pultActions, pult, now)
+      const what = u.pathname.slice("/pult/act/".length);
+      void pultAct(what, u.searchParams, o.pultActions, pult, now)
         .then((r) => send(res, r.status, "application/json; charset=utf-8", JSON.stringify(r.body)))
-        .catch(() => {
+        .catch((e: unknown) => {
+          // Причина сбоя — в журнал сервера (Б1, ревью Б1 № 3): без неё `ACTION_FAILED` не объясним ничем. В строку идёт
+          // **разобранное** действие, а не отрезок пути от клиента: номера объектов и чужой текст в журнал не попадают
+          // (инвариант 1; ревью Б-К1 № 1).
+          console.error(actFailureLog(actFailWhat(what), e, lang));
           if (!res.headersSent) send(res, 500, "application/json; charset=utf-8", JSON.stringify({ error: "ACTION_FAILED" }));
         });
       return;

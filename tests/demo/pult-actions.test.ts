@@ -5,7 +5,7 @@ import { DEMO_VIOLATORS, type DemoIds, type DemoViolator, type StandDemo } from 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { envFlag } from "../../src/demo/flags.js";
 import { t } from "../../src/demo/i18n.js";
-import { pultAct } from "../../src/demo/pult-act.js";
+import { actFailureLog, actFailWhat, pultAct } from "../../src/demo/pult-act.js";
 import { pultActions } from "../../src/demo/pult-actions.js";
 import type { BusItem, MonitorEvent, ScenarioLine } from "../../src/demo/bus.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
@@ -115,12 +115,22 @@ describe("кнопки реакции пульта — флаг, порт, ма�
         throw new TypeError("cannot read properties of undefined");
       }),
     } as unknown as StandDemo;
-    const p = pultActions(demo);
+    const log = vi.fn();
+    const p = pultActions(demo, log);
     const long = await p.revokeMandate("Y");
     expect(long).toMatchObject({ ok: false });
     expect(long.code!.length).toBe(120);
     expect(long.failed).toBeUndefined();
-    expect(await p.stopPurchase("C")).toEqual({ ok: false, failed: true, code: "ADAPTER_FAILED" });
+    // Отказ стенда по правилам — не сбой: в журнал сервера ничего не пишется (Б1, ревью Б1 № 3).
+    expect(log).not.toHaveBeenCalled();
+    expect(await p.stopPurchase("MND-cart-0001")).toEqual({ ok: false, failed: true, code: "ADAPTER_FAILED" });
+    // Причина `failed` — в журнале сервера: вид действия, вид ошибки и её текст; номера объекта в строке нет (инвариант 1).
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = String(log.mock.calls[0]![0]);
+    expect(line).toBe(actFailureLog("stop", new TypeError("cannot read properties of undefined")));
+    expect(line).toContain("TypeError");
+    expect(line).toContain("cannot read properties of undefined");
+    expect(line).not.toContain("MND-cart-0001");
     const feed = { react: vi.fn() };
     const r = await pultAct("stop", new URLSearchParams("cart=C1"), p, feed, NOW);
     expect(r.status).toBe(500);
@@ -129,6 +139,31 @@ describe("кнопки реакции пульта — флаг, порт, ма�
     expect(feed.react).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "refused" }));
     const r2 = await pultAct("revoke", new URLSearchParams("mandate=M1"), p, feed, NOW);
     expect(r2.status).toBe(409);
+  });
+
+  it("Б1 № 3: строка журнала сервера — из словаря (ru и en), вид действия разобран, текст ошибки до 120 знаков; сырой путь не журналируется", () => {
+    // Слова — из словаря, как у прочих строк журнала сервера (`cli.stop_failed`, `cli.release_failed`; ревью Б-К1 № 2).
+    for (const lang of ["ru", "en"] as const) {
+      const line = actFailureLog("remind", new TypeError("y".repeat(500)), lang);
+      const text = t(lang, "cli.act_failed").replace("{what}", "remind").replace("{kind}", "TypeError").replace("{text}", ": " + "y".repeat(120));
+      expect(line, lang).toBe(text);
+      // Не ошибка вовсе (стенд отдал строку, число, `undefined`) — в журнал только вид: домысливать текст нечему.
+      expect(actFailureLog("stop", "упало", lang), lang).toBe(t(lang, "cli.act_failed").replace("{what}", "stop").replace("{kind}", "string").replace("{text}", ""));
+      expect(actFailureLog("review", undefined, lang), lang).toBe(t(lang, "cli.act_failed").replace("{what}", "review").replace("{kind}", "undefined").replace("{text}", ""));
+    }
+    // По умолчанию — ru: журнал адаптера языка страницы не знает (его знает маршрут).
+    expect(actFailureLog("stop", "упало")).toBe(actFailureLog("stop", "упало", "ru"));
+    // Знаки, а не единицы UTF-16 (как `CODE_MAX` отказа): эмодзи не режется посередине.
+    const emoji = actFailureLog("revoke", new TypeError("🙂".repeat(200)));
+    expect(Array.from(emoji.slice(emoji.indexOf("TypeError: ") + "TypeError: ".length))).toHaveLength(120);
+    // Ревью Б-К1 № 1: в журнал идёт только разобранное действие. Путь приходит от клиента — маршрут ловится по началу
+    // `/pult/act/`, поэтому хвост может быть любым: номер объекта, чужой текст, десятки килобайт. В строке его быть не должно.
+    expect(actFailWhat("stop")).toBe("stop");
+    expect(actFailWhat("stop/mnd_0191f0c2-5f3a-7c21-9a01-6f1d2b3c4d5e")).toBe("unknown");
+    expect(actFailWhat("x".repeat(10_000))).toBe("unknown");
+    const sneaky = actFailureLog(actFailWhat("stop/mnd_0191f0c2"), new TypeError("boom"));
+    expect(sneaky).not.toContain("mnd_0191f0c2");
+    expect(sneaky).toContain("unknown");
   });
 });
 
@@ -148,18 +183,19 @@ describe("кнопки реакции на живом стенде с насто
     }
   }
   // Отсечка «после» — по номеру записи (`seq`), а не по позиции в истории шины: окно истории обрезается, позиции съезжают
-  // (Б1, повторное ревью П-8.1-р № 4).
+  // (Б1, повторное ревью П-8.1-р № 4). Шаги сюжета пишет сам стенд в порядке их наступления, поэтому для них отсечка по `seq`
+  // верна. **Событиям ПАО она не годится** (Б1, ревью Б1 № 10): номер события выдаётся при приёме на шину, и запоздавшее
+  // событие прошлого теста получит `seq` больше нашей отсечки — его нашли бы вместо нашего. Поэтому события ищутся по номеру
+  // запроса подтверждения, а запрос этого теста отличается от прошлых набором `seen`.
   const lastStep = () => steps().reduce((s, x) => Math.max(s, x.seq), 0);
-  const lastEvent = () => events().reduce((s, x) => Math.max(s, x.seq), 0);
   const after = (n: number, name: string) => () => steps().find((s) => s.seq > n && s.step === name);
   const post = (path: string, origin = demo.monitor.url) => fetch(`${demo.monitor.url}${path}`, { method: "POST", headers: { origin } });
   /** Сюжет 4 до ожидания подтверждения клиентом: подписи — эмулятором банка в автотесте (П2 п. 5). */
   /** Подтверждения прошлых тестов: история шины между сюжетами не очищается (ревью П-8.1 № 3). */
   const seen = new Set<string>();
-  async function toPendingConfirmation(): Promise<{ n: number; m: number; intent: string; cart: string; confirmation: string }> {
+  async function toPendingConfirmation(): Promise<{ n: number; intent: string; cart: string; confirmation: string }> {
     await demo.scenarios.settled();
     const n = lastStep();
-    const m = lastEvent();
     expect((await post("/scenario/upk")).status).toBe(202);
     const w = await until(after(n, "intent.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(w.params.mandate_id));
@@ -168,15 +204,16 @@ describe("кнопки реакции на живом стенде с насто
     const cw = await until(after(n, "cart.awaiting_signature"));
     await demo.stand.stand.issuer.sign(String(cw.params.mandate_id));
     await until(after(n, "upk.required"));
-    // Только события этого сюжета: запрос подтверждения прошлого теста уже закрыт, его `confirmation.rejected` нашёлся бы
-    // сразу и проверка П2 доп. 6 молча ослабла бы.
-    const ev = await until(() => events().find((e) => e.seq > m && e.what === "confirmation.required"));
+    // Только запрос подтверждения этого сюжета: запрос прошлого теста уже закрыт, его `confirmation.rejected` нашёлся бы сразу
+    // и проверка П2 доп. 6 молча ослабла бы. Отличается запрос **не отсечкой по `seq`** (её запоздавшее событие прошлого теста
+    // перешагнёт — Б1, ревью Б1 № 10), а набором уже виденных номеров: берём первый незнакомый.
+    const ev = await until(() => events().find((e) => e.what === "confirmation.required" && !seen.has(String(e.ids.confirmation_id))));
     const confirmation = String(ev.ids.confirmation_id);
-    expect(seen.has(confirmation)).toBe(false);
     seen.add(confirmation);
-    return { n, m, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation };
+    return { n, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation };
   }
-  const eventAfter = (m: number, what: string, f: (e: MonitorEvent) => boolean) => () => events().find((e) => e.seq > m && e.what === what && f(e));
+  /** Событие — по номеру объекта, без отсечки по `seq` (Б1, ревью Б1 № 10): номер события выдаётся при приёме на шину. */
+  const eventWith = (what: string, f: (e: MonitorEvent) => boolean) => () => events().find((e) => e.what === what && f(e));
 
   beforeAll(async () => {
     [demo, plain] = await Promise.all([startDemo({ actions: true }), startDemo()]);
@@ -213,7 +250,44 @@ describe("кнопки реакции на живом стенде с насто
     const stop = (await (await post(`/pult/act/stop?cart=${p.cart}`)).json()) as Reaction;
     expect(stop).toMatchObject({ outcome: "done" });
     expect(stop.result?.rejected).toContain(p.confirmation);
-    await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
+    await until(eventWith("confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
+    await demo.scenarios.settled();
+    expect(steps().some((s) => s.seq > p.n && s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
+  });
+
+  it("Б1 № 3 живьём: «остановить» по поручению-намерению (не CART) и «напомнить» по неожидающему запросу — 409 с текстом стенда, «отказано», не «сделано»", async () => {
+    const p = await toPendingConfirmation();
+    // (1) «Остановить покупку» по поручению намерения: остановка — только корзины (CART), стенд отказывает исключением.
+    // Отказ по правилам, а не сбой: 409, `outcome: "refused"`, текст стенда в коде записи, признака `failed` нет (иначе 500).
+    const notCart = await post(`/pult/act/stop?cart=${p.intent}`);
+    expect(notCart.status).toBe(409);
+    const nc = (await notCart.json()) as Reaction;
+    expect(nc).toMatchObject({ action: "stop", obj: p.intent, outcome: "refused" });
+    expect(nc.result?.failed).toBeUndefined();
+    expect(nc.result!.code!.length).toBeLessThanOrEqual(120);
+    // Причина — именно «не CART», а не «мандат не найден» и не иное состояние (ревью Б-К1 № 3): текст отказа стенда
+    // (`agentic-ps-platform` v0.48.0, `dist/stand/demo-actions.js:14`) называет тип мандата и требуемый CART. Перепишет стенд
+    // формулировку — тест покраснеет здесь, а не молча зазеленеет на другом отказе (сверка при подъёме тега, П2).
+    expect(nc.result!.code).toContain("CART");
+    expect(nc.result!.code).toContain(p.intent);
+    expect(nc.result!.code).not.toContain("не найден");
+    // Покупка от отказанной кнопки не двинулась: запрос подтверждения всё ещё ждёт.
+    expect(events().some((e) => e.what === "confirmation.rejected" && e.ids.confirmation_id === p.confirmation)).toBe(false);
+    // (2) Запрос подтверждения закрывается остановкой корзины (РП76) — и «Напомнить» по уже не ждущему запросу отказывают.
+    const stop = (await (await post(`/pult/act/stop?cart=${p.cart}`)).json()) as Reaction;
+    expect(stop).toMatchObject({ outcome: "done" });
+    expect(stop.result?.rejected).toContain(p.confirmation);
+    await until(eventWith("confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
+    const late = await post(`/pult/act/remind?confirmation=${p.confirmation}`);
+    expect(late.status).toBe(409);
+    const lt = (await late.json()) as Reaction;
+    expect(lt).toMatchObject({ action: "remind", obj: p.confirmation, cond: "R21", outcome: "refused" });
+    expect(lt.result?.failed).toBeUndefined();
+    // Причина — «запрос не ожидает решения», а не «запрос не найден» (`demo-actions.js:43` против `:40`): номер запроса верный,
+    // отказ именно по состоянию (ревью Б-К1 № 3).
+    expect(lt.result!.code).toContain(p.confirmation);
+    expect(lt.result!.code).toContain("не ожидает");
+    expect(lt.result!.code).not.toContain("не найден");
     await demo.scenarios.settled();
     expect(steps().some((s) => s.seq > p.n && s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
   });
@@ -222,8 +296,8 @@ describe("кнопки реакции на живом стенде с насто
     const p = await toPendingConfirmation();
     const r = (await (await post(`/pult/act/revoke?mandate=${p.intent}`)).json()) as Reaction;
     expect(r).toMatchObject({ action: "revoke", outcome: "done", result: { ok: true } });
-    await until(eventAfter(p.m, "confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
-    await until(eventAfter(p.m, "mandate.revoked", (e) => e.ids.mandate_id === p.intent));
+    await until(eventWith("confirmation.rejected", (e) => e.ids.confirmation_id === p.confirmation));
+    await until(eventWith("mandate.revoked", (e) => e.ids.mandate_id === p.intent));
     await demo.scenarios.settled();
     expect(steps().some((s) => s.seq > p.n && s.step === "outcome" && s.params.status === "AUTHORIZED")).toBe(false);
     expect(events().some((e) => e.what === "operation.authorized" && e.ids.mandate_id === p.cart)).toBe(false);
