@@ -192,6 +192,8 @@
   let pausedAt = 0;
   let pendingBoard = null;
   let pendingAt = 0;
+  /** Номер прихода накопленной на паузе доски: по нему она сверяется с `hello` при показе (К1.2). */
+  let pendingSeq = 0;
   const clockNow = () => (paused ? pausedAt : Date.now());
 
   const el = (tag, text, cls) => {
@@ -1450,9 +1452,22 @@
   const lastPress = {};
   // Б2 (видимая часть № 12): у переключателя «Авто» — тот же счётчик нажатий, ответ — только на последнее; отказ — виден.
   let autoPress = 0;
-  // Б2 (узкое ревью № 11, № 15): после `hello` первая доска могла быть посчитана до него (пауза пересчёта 200 мс) — её режим
-  // «Авто» прежний и свежий режим из `hello` не перекрывает.
-  let autoFromHello = false;
+  // Режим «Авто» приходит двумя путями: **от источника** — `hello` подключения и ответ переключателя (состояние эмулятора) —
+  // и **доской**, которая пересказывает шаг режима на шине. Сервер считает доску с паузой пересчёта, поэтому посчитанной до
+  // значения от источника может быть только одна доска — первая пришедшая после него (узкое ревью № 15); остальные посчитаны
+  // позже и свой режим ставят. Правило — по номерам прихода сообщений ленты (`recvSeq`), `srcAutoSeq` — номер последнего
+  // значения от источника, `firstBoardAfterSrc` — номер первой доски после него:
+  //  - значения от источника ещё не было — режим ставит доска, как раньше;
+  //  - доска пришла раньше него (накопилась на паузе до переподключения или до нажатия) — не ставит: значение от источника
+  //    свежее (ревью Х1 № 9 — прежде такая доска возвращала старое значение; ревью К1.2 № 3 — то же у переключателя);
+  //  - доска первая после него — могла быть посчитана до него, значение от источника главнее (узкое ревью № 15);
+  //  - любая следующая — ставит свой режим, в том числе когда на паузе накопились две и показана последняя (ревью Б2 № 3:
+  //    прежде одноразовый флаг снимался именно ею, и режим из `hello` держался до следующей доски).
+  // Счётчик прихода растёт на каждое сообщение, поэтому ничьей нет и часы стенда (в том числе замороженные `setClock`) в
+  // правиле не участвуют. Доски, вытесненные из буфера паузы, в счёте учтены: номер присваивается при приходе, не при показе.
+  let recvSeq = 0;
+  let srcAutoSeq = 0;
+  let firstBoardAfterSrc = 0;
   if (faultsBox) {
     showAuto(undefined);
     faultsBox.addEventListener("click", (ev) => {
@@ -1462,7 +1477,13 @@
         const n = ++autoPress;
         post("/client/auto/" + b.dataset.auto, (body) => {
           if (n !== autoPress || !autoBox) return;
-          if (body && typeof body.auto === "boolean") return showAuto(body.auto);
+          // Ответ переключателя — значение от источника, как `hello`: доска, посчитанная до нажатия, его не откатывает
+          // (ревью К1.2 № 3; та же природа, что у узкого ревью № 15). Номер — последнего пришедшего сообщения ленты.
+          if (body && typeof body.auto === "boolean") {
+            srcAutoSeq = recvSeq;
+            firstBoardAfterSrc = 0;
+            return showAuto(body.auto);
+          }
           // Нет ответа (сеть) — не «отказано»: «стенд не ответил» (ревью Б2 № 4).
           if (body === null) {
             showAuto(undefined);
@@ -1520,9 +1541,13 @@
     renderCtl();
     renderInt();
     renderLog();
-    // Первая доска после `hello` — режим «Авто» из `hello` главнее (узкое ревью № 15); дальше — по доскам, как раньше.
-    if (autoFromHello) autoFromHello = false;
-    else showAuto(board.clientAuto);
+  }
+  /** Режим «Авто» по доске (К1.2): правило порядка прихода — доска, пришедшая раньше последнего значения от источника
+   *  (`hello` или ответ переключателя) либо первая после него, своего режима не ставит; следующие — ставят. Отдельной
+   *  функцией рядом с `applyBoard`, а не её параметром: пропущенный номер прихода молча отключал бы правило (ревью К1.2 № 5).
+   *  При `srcAutoSeq === 0` (значения от источника не было) условие истинно само: номера начинаются с 1 (ревью К1.2 № 4). */
+  function autoFromBoard(b, seq) {
+    if (seq > srcAutoSeq && seq !== firstBoardAfterSrc) showAuto(b.clientAuto);
   }
   // Пометка паузы — внутри строки статуса (`role="status"`): видна при любой вкладке и раскладке (П12).
   const pauseNote = el("span", " · " + label("status.paused"), "conn-paused");
@@ -1559,6 +1584,7 @@
       const b = pendingBoard;
       pendingBoard = null;
       applyBoard(b, pendingAt);
+      autoFromBoard(b, pendingSeq);
       return;
     }
     // Кнопки «Контроля» и «Собрать отчёт» — неактивны / снова активны на той же доске.
@@ -1574,24 +1600,34 @@
     } catch {
       return;
     }
+    // Номер прихода — им сверяется порядок `hello` и досок (К1.2); часы для этого не нужны.
+    const seq = ++recvSeq;
     if (e.type === "hello" || e.type === "status") setStatus(e.status);
     // Подключение (и переподключение EventSource после перезапуска стенда) — режим «Авто» заново у источника (ревью № 11).
     if (e.type === "hello" && faultsBox) {
       if (typeof e.clientAuto === "boolean") {
         showAuto(e.clientAuto);
-        autoFromHello = true;
+        srcAutoSeq = seq;
+        firstBoardAfterSrc = 0;
       } else {
-        // `hello` без режима (узкое ревью № 16): прежний «авто» не остаётся — «нет данных».
+        // `hello` без режима (узкое ревью № 16): прежний «авто» не остаётся — «нет данных»; режим снова ставят доски.
         autoKnown = undefined;
         showAuto(undefined);
-        autoFromHello = false;
+        srcAutoSeq = 0;
+        firstBoardAfterSrc = 0;
       }
     }
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
+      // Первая доска после `hello` запоминается при приходе: вытесненная из буфера паузы, она всё равно учтена (ревью Б2 № 3).
+      if (srcAutoSeq !== 0 && firstBoardAfterSrc === 0) firstBoardAfterSrc = seq;
       if (paused) {
         pendingBoard = e.board;
         pendingAt = Date.now();
-      } else applyBoard(e.board, Date.now());
+        pendingSeq = seq;
+      } else {
+        applyBoard(e.board, Date.now());
+        autoFromBoard(e.board, seq);
+      }
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если
