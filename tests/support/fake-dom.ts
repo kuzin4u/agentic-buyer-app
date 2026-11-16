@@ -21,12 +21,15 @@ export class FakeEvent {
   defaultPrevented = false;
   key?: string;
   isComposing?: boolean;
-  constructor(type: string, init: { bubbles?: boolean; detail?: unknown; key?: string; isComposing?: boolean } = {}) {
+  /** Кнопка мыши как в UI Events: 0 — основная, 1 — средняя, 2 — правая, 3 / 4 — «назад / вперёд» (К1.3, ревью № 4). */
+  button?: number;
+  constructor(type: string, init: { bubbles?: boolean; detail?: unknown; key?: string; isComposing?: boolean; button?: number } = {}) {
     this.type = type;
     this.bubbles = init.bubbles ?? false;
     this.detail = init.detail;
     if (init.key !== undefined) this.key = init.key;
     if (init.isComposing !== undefined) this.isComposing = init.isComposing;
+    if (init.button !== undefined) this.button = init.button;
   }
   preventDefault(): void {
     this.defaultPrevented = true;

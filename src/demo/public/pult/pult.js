@@ -1404,6 +1404,20 @@
       });
   }
   if (logBox) {
+    // Средняя кнопка по ссылке выгрузки шла мимо обычного пути: браузер открыл бы адрес сам, и при 409 человек получил бы
+    // ошибку загрузки или файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки «соберите заново» (К1.3, ревью Б2 № 7).
+    // Только средняя (`button === 1`): `auxclick` приходит на любую непервичную кнопку, и без этой проверки правый щелчок
+    // по ссылке отправлял бы запрос, скачивал файл и снимал ссылки с экрана — жест «посмотреть меню» становился действием
+    // (ревью К1.3 № 1; П12 — «смотреть, не действовать»). Правая кнопка и «назад / вперёд» остаются браузеру.
+    // Cmd / Ctrl + щелчок сюда не относится: это обычный `click` левой кнопкой, его перехватывает обработчик ниже.
+    // «Сохранить ссылку как» из контекстного меню события не даёт и остаётся за браузером — вопрос в PR, не обход.
+    logBox.addEventListener("auxclick", (ev) => {
+      if (ev.button !== 1) return;
+      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
+      if (!ea) return;
+      ev.preventDefault();
+      downloadExport(ea.getAttribute("href"));
+    });
     logBox.addEventListener("click", (ev) => {
       const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
       if (rb) return buildReport();
