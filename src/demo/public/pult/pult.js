@@ -742,6 +742,8 @@
     // Кнопка реакции с фокусом клавиатуры (Х4; повторное ревью Х2 № 3): после перестройки — на ту же кнопку, а при
     // начатом отзыве — на «Отмена», не на «Да, отозвать»: двойной Enter не отзывает мимо двух шагов (В4).
     const keepAct = active && ctlBody.contains(active) && active.dataset && active.dataset.actKey !== undefined ? active.dataset.actKey : undefined;
+    // Строка (покупка), в которой стоял фокус: при одном поручении на двух покупках `actKey` у кнопок одинаков (Х4а № 8).
+    const keepObj = keepAct !== undefined ? active.dataset.actObj : undefined;
     const wrap = document.createDocumentFragment();
     const due = dueWaits();
     ctlDueKey = dueKey(due);
@@ -766,7 +768,13 @@
       }
     }
     if (keepAct !== undefined) {
-      const same = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === keepAct && !b.hasAttribute("disabled"));
+      const all = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === keepAct && !b.hasAttribute("disabled"));
+      // Х4а № 8 (К1.5): фокус возвращается только в свою строку. Своей строки на экране не стало (покупка ушла, конфликт
+      // звеньев сделал её кнопки неактивными, Р-1542) — фокус в чужую строку не уходит: именно это и было переносом, а
+      // кнопки соседней покупки выглядят так же. Фокус тогда теряется (`body`), как и на паузе — это Х4а № 9, кирпич К1.6.
+      // У кнопок, где объект уже в ключе («Напомнить клиенту», «Передать на разбор»), признака строки нет и выбор прежний:
+      // такая кнопка на экране одна.
+      const same = keepObj !== undefined ? all.filter((b) => b.dataset.actObj === keepObj) : all;
       const target =
         actState.pending === keepAct
           ? same.find((b) => b.dataset.actCancel !== undefined)
@@ -971,6 +979,10 @@
       } else bar.appendChild(actButton(key, label("act.revoke"), "revoke", { mandate: intent }));
     }
     bar.appendChild(disabledButton(label("act.notify"), label("act.notify.none")));
+    // Х4а № 8 (К1.5): у «Отозвать поручение» ключ — поручение (`revoke:<намерение>`), и при одном намерении на двух покупках
+    // кнопки разных строк несут один `actKey`. Сам ключ не меняется — к нему привязаны начатый отзыв и ответ стенда, общие
+    // для поручения. Строка запоминается отдельным признаком: по нему фокус после перестройки возвращается в свою строку.
+    for (const b of bar.querySelectorAll("button[data-act-key]")) b.dataset.actObj = id;
     row.appendChild(bar);
     append(row, resultOf("stop:" + id));
     if (intent) append(row, resultOf("revoke:" + intent));
