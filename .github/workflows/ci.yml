@@ -15,12 +15,33 @@ jobs:
         node: ["20.19", "22"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Р-1574: checkout оставляет в конфигурации http.https://github.com/.extraheader с GITHUB_TOKEN. Этот заголовок
+          # перебивает подстановку insteadOf из шага ниже, и закрытый репозиторий проекта отвечает 404 при верном токене —
+          # снаружи выглядит как неверный секрет. Код репозитория из этой конфигурации не читается: checkout уже сделан.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Зависимости agentic-buyer-ref и agentic-ps-platform лежат в закрытых репозиториях проекта и ставятся по git+https.
+      # Без секрета шаг ничего не делает: форк и чужой PR секрета не получают, и красный шаг установки у них — ожидаемый,
+      # а не замаскированный отказ доступа.
+      - name: Доступ к закрытым репозиториям проекта (без секрета шаг ничего не делает)
+        env:
+          CORE_READ_TOKEN: ${{ secrets.CORE_READ_TOKEN }}
+        run: |
+          if [ -z "${CORE_READ_TOKEN}" ]; then
+            echo "секрета CORE_READ_TOKEN нет — подмены адресов не настраиваются"
+            exit 0
+          fi
+          # Р-1566: только --add. Без него каждая следующая подмена затирает предыдущую, и остаётся одна — последняя.
+          # Формы ssh обязательны: без них npm молча уходит на ssh, и настоящая причина прячется за отказом по ключу.
+          git config --global --add url."https://x-access-token:${CORE_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:${CORE_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://x-access-token:${CORE_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
       - name: Установка зависимостей
         run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Аудит зависимостей работающего кода
