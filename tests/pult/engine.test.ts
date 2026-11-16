@@ -6,7 +6,7 @@ import type { Interpretation, TxIds, Who } from "../../src/dashboards/interpret.
 import { evaluate, GUARANTEE_CODES, GUARANTEE_INFO, hasCardNumber, HIDDEN_RECORD, MERCHANT_STOP_CODES, stoppedBy, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
 import { PULT } from "../../src/pult/phrases.js";
 import { CHECKABLE_CONDITIONS, CONDITIONS, isCheckable, PARTIES, RULES89, ruleText } from "../../src/pult/rules89.js";
-import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
+import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
@@ -684,6 +684,33 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const w = withLog(items, [stray]);
     expect(w.objs.find((o) => o.id === id("CN1"))!.conds.R23.status).toBe("ok");
     expect(w.system.R23.status).toBe("bad");
+  });
+
+  it("П27 (К2.4, окно А — малая правка по Р-1493): витрина записи другая при том же номере заказа — не выше «ждёт»", () => {
+    // Случай **гипотетический**: ни одна нынешняя форма записи стенда не несёт `mandate_id` и `shop_id` вместе
+    // (`StandFaultForm`: у Н-02 — `mandate_id`, `merchant_id`, `order_ref`; у Н-01 — `shop_id`, `merchant_id`, `order_id`),
+    // поэтому запись строится не через типизированный `fault`, а через `entry`. Правило страхует смену формы у стенда:
+    // начнёт запись нести и поручение, и витрину — привязка к чужой покупке не станет точной молча (П27).
+    const items = purchase("P1"); // витрина покупки — SHOP-1, заказ — OP1 (см. `purchase`)
+    const model = buildTxModel(items);
+    const id = model.txs.find((t) => t.cartMandateId === "CP1")!.id;
+    const st = (log: StandLogEntry[]) => withLog(items, log).objs.find((o) => o.id === id)!.conds;
+    const rec2 = (ids: StandIds) => entry("SECOND_CREDENTIAL_ISSUED", ids, { test: "Н-02" });
+    // Витрина записи другая при том же номере заказа — конфликт звеньев, не выше «ждёт».
+    const other = rec2({ mandate_id: "CP1", shop_id: "SHOP-9", order_id: "OP1" });
+    expect(st([other]).R23).toMatchObject({ status: "wait", note: "order_mismatch", log: [other.seq] });
+    // Витрина совпадает — привязка точная, как была.
+    const same = rec2({ mandate_id: "CP1", shop_id: "SHOP-1", order_id: "OP1" });
+    expect(st([same]).R23).toMatchObject({ status: "bad", log: [same.seq] });
+    // Витрины в записи нет — противоречить нечему: обвинения по отсутствию данных не выносим (Р-1540).
+    expect(st([rec2({ mandate_id: "CP1", order_id: "OP1" })]).R23).toMatchObject({ status: "bad" });
+    // Витрина покупки для этого заказа неизвестна (обращения к витрине не было) — привязка точная. Это свойство **уровня
+    // заказа**: он сам берёт такие записи (`!t.shopsByOrder[ord]`), и до правила П27 дело не доходит — поэтому оговорка
+    // «витрина покупки неизвестна» в нём защитная и тестом не выражается (мутация `?? []` остаётся зелёной).
+    const noCall = purchase("P2", { skip: ["pay"] });
+    const idNo = buildTxModel(noCall).txs.find((t) => t.cartMandateId === "CP2")!.id;
+    const rec3 = entry("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CP2", shop_id: "SHOP-9", order_id: "OP2" }, { test: "Н-02" });
+    expect(withLog(noCall, [rec3]).objs.find((o) => o.id === idNo)!.conds.R23).toMatchObject({ status: "bad", log: [rec3.seq] });
   });
 
   it("Р-1540: совпадающий номер заказа — точно, «нарушено»; у покупки заказов нет — противоречить нечему, тоже точно", () => {

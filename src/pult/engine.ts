@@ -779,7 +779,20 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
     // Р-1540 (#issuecomment-6835884137): номер заказа в записи есть, у покупки есть заказы, но этого среди них нет —
     // противоречие звеньев, обвинение по половине доказательства: не выше «ждёт». Заказов у покупки нет — противоречить
     // нечему (как на уровне заказа при транзакции без поручений).
-    const mismatch = (c: readonly PultTx[]) => ord !== undefined && c.some((t) => t.orderIds.length > 0 && !t.orderIds.includes(ord));
+    // П27 (К2.4, решение владельца 16.11): витрина — такое же звено, как номер заказа. На уровне заказа витрина сверяется
+    // (`shopsByOrder`: номера заказов разных витрин могут совпасть), а на уровне поручения не сверялась — запись с
+    // `mandate_id`, `order_id` и `shop_id`, где заказ у покупки есть, но был у другой витрины, получала точную привязку.
+    // Витрина записи неизвестна — противоречить нечему, привязка остаётся точной (как при отсутствии заказов у покупки).
+    // Оговорка «витрина покупки неизвестна» (`shopsByOrder[ord] !== undefined`) защитная и сегодня недостижима: такие
+    // записи забирает уровень заказа выше (`!t.shopsByOrder[ord]` — кандидат остаётся), и до этого правила дело не доходит.
+    // Оставлена сознательно: без неё правило обвиняло бы по отсутствию данных, прямо против довода Р-1540.
+    const mismatch = (c: readonly PultTx[]) =>
+      ord !== undefined &&
+      c.some(
+        (t) =>
+          (t.orderIds.length > 0 && !t.orderIds.includes(ord)) ||
+          (sh !== undefined && t.shopsByOrder[ord] !== undefined && !t.shopsByOrder[ord]!.includes(sh)),
+      );
     for (const c of [levelCart, levelIntent])
       if (c.length > 0) {
         if (c.length > 1 || c.some((t) => t.linkConflict !== undefined)) return pack(c, true);
