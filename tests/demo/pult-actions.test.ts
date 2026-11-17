@@ -266,11 +266,16 @@ describe("кнопки реакции на живом стенде с насто
     await until(after(n, "upk.required"));
     // Только запрос подтверждения этого сюжета: запрос прошлого теста уже закрыт, его `confirmation.rejected` нашёлся бы сразу
     // и проверка П2 доп. 6 молча ослабла бы. Отличается запрос **не отсечкой по `seq`** (её запоздавшее событие прошлого теста
-    // перешагнёт — Б1, ревью Б1 № 10), а набором уже виденных номеров: берём первый незнакомый.
-    const ev = await until(() => events().find((e) => e.what === "confirmation.required" && !seen.has(String(e.ids.confirmation_id))));
+    // перешагнёт — Б1, ревью Б1 № 10), а **номером поручения корзины этого сюжета** — он уже на руках (`cw.params.mandate_id`).
+    // Набор виденных номеров остаётся второй страховкой. Одного «первого незнакомого» мало (ревью слияния PR #20, № 4): он
+    // возьмёт чужой незакрытый запрос, если тот создан не этим помощником, и вместо падения проверки будет таймаут `until`.
+    const cart = String(cw.params.mandate_id);
+    const ev = await until(() =>
+      events().find((e) => e.what === "confirmation.required" && String(e.ids.mandate_id) === cart && !seen.has(String(e.ids.confirmation_id))),
+    );
     const confirmation = String(ev.ids.confirmation_id);
     seen.add(confirmation);
-    return { n, intent: String(w.params.mandate_id), cart: String(cw.params.mandate_id), confirmation };
+    return { n, intent: String(w.params.mandate_id), cart, confirmation };
   }
   /** Событие — по номеру объекта, без отсечки по `seq` (Б1, ревью Б1 № 10): номер события выдаётся при приёме на шину. */
   const eventWith = (what: string, f: (e: MonitorEvent) => boolean) => () => events().find((e) => e.what === what && f(e));

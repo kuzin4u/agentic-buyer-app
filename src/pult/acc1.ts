@@ -96,8 +96,10 @@ export const KNOWN_NOTES: Partial<Readonly<Record<TestCode, KnownNote>>> = {
 };
 
 const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "client emulator: auto");
-/** Пометка провенанса У-01…У-04 (Б5): «да» автоматического прогона — готовность пульта, не пройденный тест оператора. */
-const OPERATOR_BY_TEST_LABEL: Phrase = p(
+/** Пометка провенанса У-01…У-04 (Б5): «да» автоматического прогона — готовность пульта, не пройденный тест оператора.
+ *  Экспортируется, чтобы тесты сверяли **эту** строку, а не её копию литералом: копия осталась бы зелёной на устаревшем
+ *  тексте или покраснела бы не там, где правка (ревью слияния PR #20, № 5). */
+export const OPERATOR_BY_TEST_LABEL: Phrase = p(
   "автоматический прогон: роль оператора играл тест — окончательное «да» ставит ручная приёмка владельца",
   "automated run: the operator's role was played by a test — the final \"yes\" is given by the owner's manual acceptance",
 );

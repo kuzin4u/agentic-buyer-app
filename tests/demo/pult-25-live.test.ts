@@ -270,9 +270,15 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
 
     // ——— отчёт и акт ———
     ownStandOrFail();
+    // Снимок акта собирается **маршрутом отчёта**, а не прямым `feed.report()` (ревью слияния PR #20, № 3): маршрут при
+    // сборке регистрирует провенанс этого снимка (`ActProvenance.shown`), и признак для акта берётся ниже по его номеру.
+    // При прямой сборке снимок в провенансе не зарегистрирован, `byTestAt` молча откатывается к нынешнему признаку — у
+    // акта появляется второй вход вместо одного (П26 п. 4), то есть блокер Б1 с третьей стороны. Тот же снимок берётся
+    // у ленты по номеру (`reportAt`): лента хранит последний собранный, нового маршрут больше не собирает.
     const r0 = performance.now();
-    const rep = feed.report();
+    const built = (await (await fetch(`${demo.monitor.url}/pult/report?format=json&lang=ru`)).json()) as { no: number };
     const reportMs = Math.round(performance.now() - r0);
+    const rep = feed.reportAt(String(built.no));
     expect(rep).toBeDefined();
     const at = rep!.builtAt;
     const commit = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
@@ -283,7 +289,9 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
     // Прежнее `operatorByTest: true` убрано — иначе прогон ставил бы пометку даже при неработающем признаке (ревью Б-К4,
     // блокер Б3). Считать по журналу реакций нельзя: окно последних нажатий вытесняет их в длинном прогоне (повторное
     // ревью, блокер 1) — источник признака один, и он здесь. Малая правка окна Б по Р-1493: **окну А — сверить**.
-    const opts = { operatorByTest: demo.monitor.provenance.byTest() } as const;
+    // Признак берётся **по номеру того снимка, по которому собран акт** (`byTestAt`), а не нынешний (`byTest`) — вход у
+    // акта один (П26 п. 4; ревью слияния PR #20, № 3). Снимок зарегистрирован маршрутом выше, поэтому отката здесь нет.
+    const opts = { operatorByTest: demo.monitor.provenance.byTestAt(String(built.no)) } as const;
     for (const lang of ["ru", "en"] as const) {
       writeFileSync(join(out, `acc1-${lang}.md`), acc1Markdown(rep!.table, lang, rep!.records, opts));
       writeFileSync(join(out, `acc1-${lang}.csv`), acc1Csv(rep!.table, lang, rep!.records, opts));
@@ -297,7 +305,7 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
       `- коммит прогона: ${commit}${dirty ? " (+ незакоммиченные правки в отслеживаемых файлах)" : ""}`,
       `- время сборки акта: ${at}`,
       `- длительность прогона: ${Math.round((Date.now() - t0) / 1000)} с`,
-      `- длительность report(): ${reportMs} мс (П-11.5а № 16: правка при > 1000 мс)`,
+      `- длительность сборки акта маршрутом отчёта: ${reportMs} мс (П-11.5а № 16: правка при > 1000 мс; с ревью слияния PR #20 № 3 сюда входит и обращение по HTTP, прежде мерился прямой \`feed.report()\`)`,
       `- записей на шине: ${demo.bus.history().length} (окно ленты — 20 000; П15 п. 3)`,
       `- объём доски: ${boardBytes} байт (Р-1521: > ≈ 200 КБ — строкой в STATUS)`,
       `- итог: ${JSON.stringify(rep!.table.totals)}`,

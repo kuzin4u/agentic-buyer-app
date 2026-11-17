@@ -3,15 +3,18 @@
 // строки оператора У-01…У-04 в акте и в ответе экрана «Отчёт». Отдельный файл — чтобы не пересекаться с `tests/pult/acc1.test.ts`,
 // где ожидания числа записей правит окно А (кирпич К3.1).
 import { describe, expect, it } from "vitest";
-import { acc1Csv, acc1Markdown, acc1Rows } from "../../src/pult/acc1.js";
+import { OPERATOR_BY_TEST_LABEL, acc1Csv, acc1Markdown, acc1Rows } from "../../src/pult/acc1.js";
 import { reportResponse, routeReport } from "../../src/demo/pult-report.js";
 import { createActProvenance, pultAct } from "../../src/demo/pult-act.js";
 import type { PultActions } from "../../src/pult/actions.js";
 import type { TestRow, TestTable } from "../../src/pult/testtable.js";
 
 const p = (ru: string, en: string) => ({ ru, en });
-/** Пометка провенанса — та же, что была у параметра сборки (`OPERATOR_BY_TEST_LABEL` в `acc1.ts`). */
-const MARK = "роль оператора играл тест";
+/** Пометка провенанса — **из источника** (`OPERATOR_BY_TEST_LABEL` в `acc1.ts`), а не копией литералом: копия осталась бы
+ *  зелёной на устаревшем тексте (ревью слияния PR #20, № 5). Ищется **хвост после двоеточия**: в md и csv акт экранирует
+ *  двоеточие (`<span>:</span>` — автоссылки GitHub), и целая строка в выгрузке буквально не встречается. Правку текста
+ *  после двоеточия тест поймает; правку слова до него — нет, и для этого есть проверка самой подписи на экране. */
+const MARK = OPERATOR_BY_TEST_LABEL.ru.slice(OPERATOR_BY_TEST_LABEL.ru.indexOf(": ") + 2);
 const row = (test: TestRow["test"], o: Partial<TestRow> = {}): TestRow => ({
   test,
   kind: "toward",
