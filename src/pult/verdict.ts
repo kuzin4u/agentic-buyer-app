@@ -141,6 +141,13 @@ export interface Verdict {
   readonly note?: "race_c28";
   /** Доказательства: seq записей шины. */
   readonly seqs: readonly number[];
+  /** Ключ остановки без объекта, названный движком (`SystemStop.stop`, `GuaranteeHit.stop`; П28, Р-1592). Им протокол ключует
+   *  запись, когда доказательств на шине у остановки нет: у условий журнала стенда их не бывает — журнал в ленту
+   *  интерпретаций не идёт, и `sysSeq = min(seqs)` не берётся (Р-1595). Границу остановки проводит движок, протокол несёт
+   *  названный ключ и сам ничего не решает — запрет «не обходом в протоколе» (ревью Б4) этим не нарушается. */
+  readonly stop?: string;
+  /** Доказательство присоединено к остановке правилом, а не идентификатором (П28, вариант (1)) — пометка в акт и «Причины». */
+  readonly attachedByRule?: true;
 }
 
 const nodeOf = (c: CheckableCondition): NodeId | undefined =>
@@ -179,10 +186,21 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
       const v = fromCond(c, o.conds[c], o.id);
       if (v) out.push(v);
     }
-  // Сводные «нарушено» / «сработало», которых нет ни у одного объекта, — записи журнала без объекта.
+  // Сводные «нарушено» / «сработало», которых нет ни у одного объекта, — записи журнала без объекта. Вердикт — по одному
+  // **на остановку** условия, а не на условие (К3.1, П28, Р-1592; ревью Б4 № 3, 7): прежде вторая остановка, пока
+  // доказательства первой в окне, приходила одним вердиктом с ними и попадала в ту же запись акта. Остановки выделяет
+  // движок (`systemStops`); не выделял (журнал стенда недоступен) — прежний сводный путь по `system[c]`.
   for (const c of CHECKABLE_CONDITIONS) {
     const s = view.system[c];
     if (out.some((v) => v.cond === c && (v.kind === "violation") === (s.status === "bad"))) continue;
+    const stops = (view.systemStops ?? []).filter((x) => x.cond === c);
+    if (stops.length > 0) {
+      for (const st of stops) {
+        const v = fromCond(c, st.res);
+        if (v) out.push({ ...v, ...(st.stop !== undefined && { stop: st.stop }), ...(st.attachedByRule === true && { attachedByRule: true as const }) });
+      }
+      continue;
+    }
     const v = fromCond(c, s);
     if (v) out.push(v);
   }
@@ -218,6 +236,10 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
       ...(row.violator && { violator: row.violator }),
       protector: g.protector,
       seqs: g.seqs,
+      // Ключ и пометка остановки — от движка (П28): у защиты без объекта доказательства на шине есть, и ключ протоколу не
+      // нужен, но он остаётся опознавателем остановки, когда доказательства уйдут из окна.
+      ...(g.stop !== undefined && { stop: g.stop }),
+      ...(g.attachedByRule === true && { attachedByRule: true as const }),
     });
   }
   const bySeq = new Map(items.map((x) => [x.seq, x] as const));

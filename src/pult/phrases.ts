@@ -145,6 +145,14 @@ export const PULT = {
   "int.none": p("Вердиктов пока нет", "No verdicts yet"),
   "int.tx.none": p("Вердиктов по транзакции нет", "No verdicts for the transaction"),
   "int.no_engine": p("Движок условий ещё не отработал", "The condition engine has not run yet"),
+  // Пометка привязки по правилу (П28, вариант (1), К3.1): единственный источник слов — отсюда их берут и «Причины», и акт
+  // ACC-1 (`ATTACHED_BY_RULE` движка), как провенанс нажатия в П26. Копия литералом разошлась бы с источником молча.
+  // Двоеточия в тексте нет умышленно: акт ACC-1 гасит его `<span>:</span>` против автоссылок GitHub, и в выгрузке пометка
+  // читалась бы с разметкой внутри фразы (ревью К3.1 № 9).
+  "int.attached_by_rule": p(
+    "доказательство отнесено к остановке правилом, а не идентификатором — своих идентификаторов у записи нет, другой остановки этого вида в окне не было",
+    "the evidence was attached to this stop by a rule rather than by an identifier — the record carries no identifiers of its own, and there was no other stop of this kind in the window",
+  ),
   "int.violator.none": p("нарушителя нет", "no violator"),
   "int.protector.none": p("защиты не было", "no protection"),
   "int.kind.violation": p("нарушение", "violation"),

@@ -9,6 +9,9 @@
 // ячейки. В строках — только идентификаторы, коды и подписи (инвариант 1).
 import { markdownCell } from "../dashboards/control-feed.js";
 import { STAND_TEST_KIND_LABEL } from "../dashboards/stand-tests.js";
+// Пометка привязки по правилу — из движка, одним источником с экраном «Причины» (П28): копия литералом разошлась бы с ним
+// молча (ревью слияния PR #20, № 5 — тот же довод, что у пометки провенанса).
+import { ATTACHED_BY_RULE } from "./engine.js";
 import type { PultActionKind } from "./actions.js";
 import { PULT, type Phrase } from "./phrases.js";
 import type { ProtoEntry, ProtoStatus } from "./protocol.js";
@@ -36,6 +39,10 @@ export interface Acc1Record {
   readonly action?: ProtoEntry["reaction"];
   /** Секунд от появления до реакции — `ProtoEntry.reactSec`. */
   readonly reactSec?: ProtoEntry["reactSec"];
+  /** Доказательство присоединено к остановке правилом, а не идентификатором — `ProtoEntry.attachedByRule` (П28, вариант (1)).
+   *  Пометка пишется в замечании строки теми же словами, что на экране «Причины» (`ATTACHED_BY_RULE` движка): читатель акта
+   *  видит, что привязка сделана правилом, а не номером. Акт её не вычисляет — только подписывает (инвариант 2). */
+  readonly attachedByRule?: true;
 }
 
 /** Подписи статусов и реакций — из словаря пульта окна А (один источник с панелью «Журнал»); `Record` по типу движка:
@@ -129,6 +136,8 @@ const recText = (x: Acc1Record): Phrase => {
   const parts = [ACC1_STATUS_LABEL[x.status]];
   if (x.action) parts.push(ACC1_ACTION_LABEL[x.action]);
   if (x.reactSec !== undefined) parts.push(joinP([PULT["log.react"], p(`${x.reactSec}`, `${x.reactSec}`), PULT["card.sec"]], " "));
+  // Пометка привязки — последней частью записи, теми же словами, что в «Причинах» (П28; `ATTACHED_BY_RULE` движка).
+  if (x.attachedByRule === true) parts.push(ATTACHED_BY_RULE);
   const head = `${x.id} (${x.at}) —`;
   return joinP([p(head, head), joinP(parts, ", ")], " ");
 };

@@ -327,6 +327,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         at: e.at,
         ...(e.reaction !== undefined && { action: e.reaction }),
         ...(e.reactSec !== undefined && { reactSec: e.reactSec }),
+        // Пометка привязки по правилу (П28, К3.1) — как есть из протокола: акт её не вычисляет.
+        ...(e.attachedByRule === true && { attachedByRule: true as const }),
       }));
       reportNo += 1;
       lastReport = { no: reportNo, builtAt, table, records };

@@ -1137,6 +1137,9 @@
     dtdd(dl, "violator", who(it.violator, "int.violator.none"));
     dtdd(dl, "protector", who(it.protector, "int.protector.none"));
     if (it.note === "race_c28") dl.appendChild(el("dd", label("ctl.race_c28"), "note"));
+    // Пометка привязки по правилу (П28, вариант (1), К3.1) — теми же словами, что в акте ACC-1: доказательство отнесено к
+    // остановке правилом, а не идентификатором, и экран не вправе показывать такую привязку как точную (довод Р-1540).
+    if (it.attachedByRule === true) dl.appendChild(el("dd", label("int.attached_by_rule"), "note"));
     if (deep) {
       const happened = el("div");
       for (const r of Array.isArray(it.happened) ? it.happened : []) happened.appendChild(recLine(r, "ha-r"));
@@ -1286,6 +1289,10 @@
         if (typeof e.reactSec === "number") parts.push(label("log.react") + " " + e.reactSec + " " + label("card.sec"));
         if (e.violator) parts.push(label("ctl.violator") + ": " + subj(e.violator));
         if (e.protector) parts.push(label("ctl.protector") + ": " + subj(e.protector));
+        // Пометка привязки по правилу (П28, К3.1) — и здесь, теми же словами, что в акте и в «Причинах»: записи системы без
+        // объекта в «Причины» не попадают (`causesView` строит только объекты с вердиктом), и без этой строки у остановок по
+        // журналу стенда пометка была бы видна лишь в выгруженном акте (ревью К3.1 № 4).
+        if (e.attachedByRule === true) parts.push(label("int.attached_by_rule"));
         const row = el("div", parts.filter((x) => x).join(" · "), "proto-row");
         row.dataset.status = e.status;
         wrap.appendChild(row);
