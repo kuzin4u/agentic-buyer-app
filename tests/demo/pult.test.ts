@@ -330,7 +330,9 @@ describe("пульт: режим сбоев DEMO_FAULTS=1 (П-1.3)", { timeout: 
     const html = await (await fetch(`${demo.monitor.url}/pult`)).text();
     expect(html).toContain('"actions":true');
     expect(html).not.toContain(`<strong>${PULT["mode.actions"].ru}</strong>`);
-    const r = await fetch(`${demo.monitor.url}/pult/act/revoke?mandate=MND-unknown`, { method: "POST", headers: { origin: demo.monitor.url } });
+    // `by=operator` — провенанс нажатия (П26): в режиме сбоев признак обязателен, без него маршрут отвечает 400 `BY_REQUIRED`,
+    // а не 409 стенда. Малая правка окна Б по Р-1493: **окну А — сверить**.
+    const r = await fetch(`${demo.monitor.url}/pult/act/revoke?mandate=MND-unknown&by=operator`, { method: "POST", headers: { origin: demo.monitor.url } });
     expect(r.status).toBe(409);
   });
 });

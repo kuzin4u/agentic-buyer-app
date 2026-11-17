@@ -927,7 +927,9 @@
       renderCtl();
       return;
     }
-    f("/pult/act/" + act + "?" + query, { method: "POST" })
+    // `by=operator` — провенанс нажатия (П26): у пульта нажимает человек, и он помечает себя сам; в режиме сбоев признак
+    // обязателен (без него маршрут отвечает 400 `BY_REQUIRED`). Малая правка окна Б по Р-1493: **окну А — сверить**.
+    f("/pult/act/" + act + "?" + (query ? query + "&" : "") + "by=operator", { method: "POST" })
       .then((r) => r.json())
       .then((body) => {
         actState.results[key] = describeReaction(body);
@@ -1253,7 +1255,9 @@
     wrap.appendChild(el("h3", label("log.actions"), "ctl-h"));
     const rows = [];
     for (const x of Array.isArray(board.reactions) ? board.reactions : [])
-      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) });
+      // Провенанс нажатия (П26 п. 4) — в строке журнала: помеченное отступление от инварианта 3 видно человеку.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) + (x.by === "test" || x.by === "operator" ? " · " + label("act.by." + x.by) : "") });
     for (const d of p && Array.isArray(p.decisions) ? p.decisions : [])
       rows.push({ at: d.at, text: (d.at ? clock(d.at) + " · " : "") + label("log.decision") + " · " + (d.obj || label("ctl.system")) + (d.cond ? " · " + d.cond : "") });
     rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
@@ -1319,31 +1323,52 @@
     const tot = [["yes", t.yes], ["no", t.no], ["no_case", t.noCase], ["unchecked", t.unchecked]].map(([k, n]) => txt(al[k]) + ": " + (typeof n === "number" ? n : 0));
     wrap.appendChild(el("p", tot.join(" · ") + " · " + label("report.tests") + ": " + (typeof t.tests === "number" ? t.tests : 0), "ctl-status"));
     for (const r of Array.isArray(d.rows) ? d.rows : []) {
-      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : ""].filter((x) => x);
+      // `report.by_test` — провенанс строки оператора (П26 п. 4): на экране «Отчёт» пометка та же, что в выгрузке акта.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : "", r.operatorByTest ? label("report.by_test") : ""].filter((x) => x);
       const parts = [r.test, txt(r.kind), txt(r.expected), txt(r.fact), txt(r.agreeLabel), txt(r.note), marks.join(" "), r.run].filter((x) => typeof x === "string" && x);
       const row = el("div", parts.join(" · "), "report-row");
       row.dataset.agree = typeof r.agree === "string" ? r.agree : "";
       wrap.appendChild(row);
     }
     if (typeof d.unlinked === "number" && d.unlinked > 0) wrap.appendChild(el("p", label("report.unlinked") + ": " + d.unlinked, "muted"));
-    // П13 (Р-1558): выгрузка — показанный снимок (`at` = его время сборки), сервер нового не собирает. На паузе ссылки
-    // неактивны (дополнение к П12: ссылка тоже отправляет запрос) — текстом без адреса, с пояснением.
-    // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — ссылок нет, подсказка «соберите заново».
+    // П13 (Р-1558): выгрузка — показанный снимок (`at` = его **номер**, К2.1; имя параметра историческое), сервер нового
+    // не собирает. На паузе кнопки выгрузки неактивны (дополнение к П12: выгрузка тоже отправляет запрос) — подписями
+    // без действия, с пояснением.
+    // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — кнопок нет, подсказка «соберите заново».
     const ex = el("p", label("report.export") + ": ", "report-export");
+    // Опознаватель показанного снимка. Сейчас — время сборки; после слияния с К2.1 окна А — его номер (`d.no`), имя параметра
+    // `at` остаётся историческим (его читает `server.ts`). Опознаватель — **только номер** снимка: шим окна Б с откатом
+    // на время сборки сведён к номеру при слиянии PR #20 (перечень сверки, п. 1) — лента и провенанс опознают снимок
+    // одним токеном `String(no)`, и откат на время дал бы сравнение «время против номера» с молчаливым 409 или чужим
+    // провенансом. Номер проверяется на годность — целое число или непустая строка; негодного нет: выгрузка показывается
+    // подписью без действия, как на паузе, а не адресом `at=` или `at=[object Object]` (ревью Б-К5 № 1; П12 — «смотреть,
+    // не действовать»: сервер на негодный токен ответил бы 409, но просить его об этом незачем).
+    // Годным считается **только** вид токена, который строит сервер (`String(PultReport.no)` — счётчик снимков): цифры
+    // без знака и точки. Прежняя проверка пропускала любую непустую строку и любое конечное число (`"abc"`, `-3`, `1.5`),
+    // и тогда негодный номер давал живой запрос с подсказкой «соберите заново» вместо отсутствия действия — то есть код
+    // расходился с обещанием выше (ревью слияния PR #20, № 1).
+    const okNo = (typeof d.no === "number" || typeof d.no === "string") && /^\d+$/.test(String(d.no));
+    const snapId = okNo ? String(d.no) : undefined;
     for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
-      if (paused || report.stale || typeof d.builtAt !== "string") {
+      if (paused || report.stale || snapId === undefined) {
         const off = el("span", e.label, "muted");
         off.setAttribute("aria-disabled", "true");
         ex.appendChild(off);
       } else {
-        const a = el("a", e.label);
-        // Опознаватель снимка — его номер (К2.1): по времени сборки два снимка совпали бы при двух вкладках в одну
-        // миллисекунду или при замороженных часах стенда. Имя параметра `at` историческое (его читает `server.ts`).
-        // Номера нет (ответ без него) — сервер ответит 409 «соберите заново»: безопасная сторона, чужой акт не отдаётся.
-        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.no) }).toString());
-        a.setAttribute("download", "");
-        a.dataset.export = "1";
-        ex.appendChild(a);
+        // Б-К5 (вторая половина ревью Б2 № 7; малая правка окна Б по Р-1493: **окну А — сверить**): выгрузка — **кнопка**,
+        // а не ссылка. У ссылки, пока у неё есть `href`, остаётся
+        // браузерный путь «сохранить ссылку как»: он события не даёт, `downloadExport` минует, и при 409 владелец получает
+        // файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки. Перехватить этот путь нечем — кнопка убирает причину:
+        // адреса в разметке нет, «сохранить как» не предлагается, запрос всегда идёт через `downloadExport` (fetch + Blob).
+        const b = el("button", e.label);
+        b.type = "button";
+        b.dataset.export = "1";
+        // Опознаватель снимка в `at` — его **номер** (К2.1, Х4б № 4): по времени сборки два снимка совпали бы при двух
+        // вкладках в одну миллисекунду или при замороженных часах стенда, и выгрузка отдала бы чужое содержимое. Имя
+        // параметра `at` историческое — его читает `server.ts` (файл окна Б).
+        b.dataset.exportUrl = "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: snapId }).toString();
+        ex.appendChild(b);
       }
       ex.appendChild(el("span", " "));
     }
@@ -1357,8 +1382,10 @@
     const f = window.fetch;
     // На паузе — без запроса (П12 п. 5, ревью Б2 № 5); только свой адрес выгрузки (ревью Б2 № 6).
     if (typeof f !== "function" || paused || typeof href !== "string" || href.indexOf("/pult/report?") !== 0) return;
-    // Снимок, к которому относится ссылка: ответ по уже заменённому снимку подсказку не ставит (ревью Б2 № 2).
-    const shownAt = report.data ? report.data.builtAt : undefined;
+    // Снимок, к которому относится запрос: ответ по уже заменённому снимку подсказку не ставит (ревью Б2 № 2). Сличение —
+    // по **номеру** снимка, а не по времени сборки (перечень сверки PR #20, п. 1): при замороженных часах стенда новый
+    // снимок получает новый номер, но то же время, и ответ по прежнему снимку ставил бы подсказку о чужом.
+    const shownNo = report.data ? report.data.no : undefined;
     f(href)
       .then((r) => {
         if (!r.ok) {
@@ -1366,7 +1393,7 @@
             .json()
             .catch(() => ({}))
             .then((body) => {
-              if (!report.data || report.data.builtAt !== shownAt) return;
+              if (!report.data || report.data.no !== shownNo) return;
               report.failed = body && typeof body.error === "string" ? body.error : "HTTP " + r.status;
               report.stale = true;
               renderLog();
@@ -1390,7 +1417,7 @@
         });
       })
       .catch(() => {
-        if (!report.data || report.data.builtAt !== shownAt) return;
+        if (!report.data || report.data.no !== shownNo) return;
         report.failed = label("report.no_answer");
         report.stale = true;
         renderLog();
@@ -1411,7 +1438,7 @@
           report.stale = false;
         } else {
           report.failed = body && typeof body.error === "string" ? body.error : "HTTP";
-          // Сервер мог успеть собрать новый снимок — ссылки прежнего снимка сняты (ответ чата, п. 2).
+          // Сервер мог успеть собрать новый снимок — кнопки выгрузки прежнего снимка сняты (ответ чата, п. 2).
           report.stale = report.data !== null;
         }
         renderLog();
@@ -1424,28 +1451,21 @@
       });
   }
   if (logBox) {
-    // Средняя кнопка по ссылке выгрузки шла мимо обычного пути: браузер открыл бы адрес сам, и при 409 человек получил бы
-    // ошибку загрузки или файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки «соберите заново» (К1.3, ревью Б2 № 7).
-    // Только средняя (`button === 1`): `auxclick` приходит на любую непервичную кнопку, и без этой проверки правый щелчок
-    // по ссылке отправлял бы запрос, скачивал файл и снимал ссылки с экрана — жест «посмотреть меню» становился действием
-    // (ревью К1.3 № 1; П12 — «смотреть, не действовать»). Правая кнопка и «назад / вперёд» остаются браузеру.
-    // Cmd / Ctrl + щелчок сюда не относится: это обычный `click` левой кнопкой, его перехватывает обработчик ниже.
-    // «Сохранить ссылку как» из контекстного меню события не даёт и остаётся за браузером — вопрос в PR, не обход.
-    logBox.addEventListener("auxclick", (ev) => {
-      if (ev.button !== 1) return;
-      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
-      if (!ea) return;
-      ev.preventDefault();
-      downloadExport(ea.getAttribute("href"));
-    });
+    // Перехвата `auxclick` для выгрузки здесь больше нет (К1.3 снят при слиянии PR #20, п. 3 перечня сверки): он ловил
+    // среднюю кнопку по **ссылке** выгрузки, у которой оставался браузерный путь мимо `downloadExport` — при 409 человек
+    // получал ошибку загрузки или файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки «соберите заново» (ревью Б2 № 7).
+    // Б-К5 убрало причину, а не след: выгрузка — кнопка, адреса в разметке нет, «открыть в новой вкладке» и «сохранить
+    // ссылку как» не предлагаются, запрос всегда идёт через `downloadExport`. Обработчик без предмета остался бы ложной
+    // защитой: `a[data-export]` в разметке не появляется, и проверка `button === 1` защищала бы несуществующий путь.
     logBox.addEventListener("click", (ev) => {
       const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
       if (rb) return buildReport();
-      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
-      if (ea) {
-        ev.preventDefault();
-        return downloadExport(ea.getAttribute("href"));
-      }
+      // Выгрузка — кнопка (Б-К5): отменять нечего, навигации у кнопки нет; адрес берётся из её данных, а не из `href`.
+      // Три пункта сверки окна Б закрыты при слиянии PR #20: (1) обработчик `auxclick` убран — предмета нет;
+      // (2) опознаватель снимка у кнопок — номер, шим `snapId` сведён к нему; (3) `shownNo` и признак устаревшего снимка
+      // в `downloadExport` сличаются по номеру, а не по времени сборки (коллизия Х4б № 4 — ревью Б-К5 № 3).
+      const ea = ev.target instanceof Element ? ev.target.closest("button[data-export]") : null;
+      if (ea) return downloadExport(ea.dataset.exportUrl);
       const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
       if (!b) return;
       logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";

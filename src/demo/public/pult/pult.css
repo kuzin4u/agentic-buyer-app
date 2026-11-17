@@ -27,6 +27,10 @@ header a { color: var(--brand-on-primary); }
 .faults-mode { margin: 0; padding: 2px 8px; border: 2px solid var(--alert); border-radius: 6px; color: var(--alert); }
 .layout button, .tabbar button, .pane .icon { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 2px 9px; font: inherit; color: inherit; cursor: pointer; }
 .layout button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+/* Выгрузки акта — кнопки, а не ссылки (Б-К5, вторая половина ревью Б2 № 7). Вид — кнопки, а не ссылки: подчёркивание
+   обещало бы «средний щелчок», «открыть в новой вкладке» и «сохранить ссылку как», которых у кнопки нет (ревью Б-К5 № 7).
+   Малая правка окна Б по Р-1493: **окну А — сверить**. */
+.report-export button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font: inherit; color: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--brand-accent); outline-offset: 2px; }
 main { padding: 10px 16px 24px; }
 .subtitle, .status, .empty, .hint { color: var(--muted); }

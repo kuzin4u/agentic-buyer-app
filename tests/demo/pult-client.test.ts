@@ -850,7 +850,10 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     btn(env, "revoke")[0]!.click();
     const second = btn(env, "revoke").find((b) => b.dataset.second === "1")!;
     second.click();
-    expect(calls).toEqual(["/pult/act/revoke?mandate=IT1"]);
+    // `by=operator` — провенанс нажатия (П26): у пульта нажимает человек, и он помечает себя сам; в режиме сбоев признак
+    // обязателен, иначе маршрут отвечает 400 `BY_REQUIRED`. Признак есть у каждого запроса кнопки, в том числе у «напомнено»
+    // без стенда (`remind_note`): запись журнала реакций одинаково говорит, кто нажал.
+    expect(calls).toEqual(["/pult/act/revoke?mandate=IT1&by=operator"]);
     // Условие 1: ответ стенда «отказано» — на экране отказ с кодом, не «сделано».
     await new Promise((r) => setTimeout(r, 0));
     const res = $(env, "b-ctl").querySelectorAll(".act-result").map((x) => x.textContent).join(" ");
@@ -876,7 +879,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
         env.sources[0]!.send(msg);
         expect(btn(env, "stop")[0]).toBe(stop);
       });
-      expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+      expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
     });
 
     it("бегущие секунды прошли, доска та же — узел прежний (секунды — вне сравнения, перечень CTL_TICKING)", () => {
@@ -896,7 +899,7 @@ describe("кнопки реакции пульта (П-8.1)", () => {
           env.sources[0]!.send(msg);
           expect(btn(env, "stop")[0]).toBe(stop);
         });
-        expect(calls).toEqual(["/pult/act/stop?cart=CT1"]);
+        expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
       } finally {
         now.mockRestore();
       }
@@ -1042,6 +1045,39 @@ describe("кнопки реакции пульта (П-8.1)", () => {
       expect(after.some((t) => t.includes(PULT["act.paused"][lang])), lang).toBe(false);
       expect(btn(env, "remind").length, lang).toBe(1);
     }
+  });
+
+  it("Х1 № 6 (П12 п. 5): отказ `sendAct` на паузе — подстраховка держится и при кнопке с `data-act` в разметке, которой на паузе быть не должно", () => {
+    const env = start({ actions: true });
+    const calls = withFetch(env);
+    const pause = pauseOf(env);
+    env.sources[0]!.send(msg);
+    const live = btn(env, "stop")[0]!;
+    // Кнопка той же формы, что строит `actButton`: щелчок пойдёт тем же делегированным обработчиком «Контроля».
+    const params = live.dataset.params;
+    const key = live.dataset.actKey;
+    expect(params).toBeTruthy();
+    pause(true);
+    // На паузе кнопок с `data-act` нет — экранный рубеж П12 (уже проверено выше). Подкладываем такую кнопку сами: так выглядит
+    // устаревшая разметка (щелчок по кнопке, нарисованной до паузы, или вмешательство расширения браузера). Второй рубеж —
+    // отказ в `sendAct` — должен держаться: запрос по замороженной доске не уходит.
+    const box = $(env, "b-ctl");
+    expect(box.querySelectorAll("button[data-act]")).toEqual([]);
+    const stale = env.document.createElement("button");
+    stale.dataset.act = "stop";
+    stale.dataset.actKey = key!;
+    stale.dataset.params = params!;
+    box.appendChild(stale);
+    stale.click();
+    expect(calls).toEqual([]);
+    // И следа «отправляем» в результатах действий нет: состояние кнопок пауза не меняет.
+    expect(box.textContent).not.toContain(ru("act.sending"));
+    // Контрольная часть: после снятия паузы **та же подложенная** кнопка отправляет запрос — значит отказ был именно из-за
+    // паузы, а не из-за формы кнопки (ревью Б-К2 № 4: `btn(env, "stop")[0]` после перерисовки — уже другая, живая кнопка).
+    pause(false);
+    expect(btn(env, "stop")).toHaveLength(2);
+    stale.click();
+    expect(calls).toEqual(["/pult/act/stop?cart=CT1&by=operator"]);
   });
 
   it("П12, ревью Х1 № 4: на паузе «Контроль», «Интерпретатор» («Причины») и «Журнал» стоят на прежней доске, после снятия — новая", () => {
@@ -1231,9 +1267,9 @@ describe("кнопки реакции пульта (П-8.1)", () => {
     const reminds = btn(env, "remind_note");
     expect(reminds).toHaveLength(1);
     reminds[0]!.click();
-    expect(calls).toEqual(["/pult/act/remind_note?obj=IM1&cond=R08"]);
+    expect(calls).toEqual(["/pult/act/remind_note?obj=IM1&cond=R08&by=operator"]);
     btn(env, "remind")[0]!.click();
-    expect(calls[1]).toBe("/pult/act/remind?confirmation=Q1");
+    expect(calls[1]).toBe("/pult/act/remind?confirmation=Q1&by=operator");
     const off = $(env, "b-ctl").querySelectorAll("button[disabled]").map((b) => b.textContent);
     expect(off).toEqual(expect.arrayContaining([ru("act.notify"), ru("act.review")]));
     expect($(env, "b-ctl").textContent).toContain(ru("act.notify.none"));
@@ -1491,10 +1527,11 @@ describe("панель «Журнал» (П-6.1а)", () => {
     }
   });
 
-  it("Б2 (П13; ответ чата #issuecomment-6881016969, п. 2): сборка не удалась после показанного снимка — ссылок нет, «соберите заново»; щелчок по ссылке — 409 (собран новый, в т. ч. в другой вкладке) — то же; ru/en", async () => {
+  it("Б2 (П13; ответ чата #issuecomment-6881016969, п. 2): сборка не удалась после показанного снимка — кнопок выгрузки нет, «соберите заново»; щелчок по кнопке — 409 (собран новый, в т. ч. в другой вкладке) — то же; ru/en", async () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });
-      const body = { builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
+      // Номер снимка — опознаватель выгрузки после слияния PR #20; живой ответ его несёт всегда.
+      const body = { no: 3, builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
       let next: () => Promise<unknown> = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
       const calls: string[] = [];
       env.window.fetch = (url: string) => {
@@ -1506,29 +1543,33 @@ describe("панель «Журнал» (П-6.1а)", () => {
       const build = () => box.querySelectorAll("button[data-report]")[0]!.click();
       build();
       await new Promise((r) => setTimeout(r, 0));
-      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
-      // повторная сборка не удалась (сервер мог успеть собрать новый снимок) — ссылки прежнего сняты, подсказка
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
+      // повторная сборка не удалась (сервер мог успеть собрать новый снимок) — кнопки прежнего снимка сняты, подсказка
       next = () => Promise.reject(new Error("обрыв"));
       build();
       await new Promise((r) => setTimeout(r, 0));
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
+      // И ссылки не появляются вместо кнопок: перехватывать «сохранить ссылку как» стало нечего (Б-К5).
       expect(box.querySelectorAll("a"), lang).toEqual([]);
       expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
-      // удачная сборка — ссылки снова
+      // удачная сборка — кнопки снова
       next = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
       build();
       await new Promise((r) => setTimeout(r, 0));
-      expect(box.querySelectorAll("a[data-export]").length, lang).toBe(3);
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
       expect(box.textContent, lang).not.toContain(PULT["report.rebuild"][lang]);
-      // щелчок по ссылке: сервер — 409 SNAPSHOT_GONE — подсказка на экране, а не загрузка JSON
+      // щелчок по кнопке выгрузки: сервер — 409 SNAPSHOT_GONE — подсказка на экране, а не загрузка JSON
       next = () => Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
-      const link = box.querySelectorAll("a[data-export]")[0]!;
-      const href = link.getAttribute("href")!;
+      const btn0 = box.querySelectorAll("button[data-export]")[0]!;
+      const url = btn0.dataset.exportUrl!;
+      // Б-К5: адреса в разметке нет — отменять навигацию не нужно, и «сохранить ссылку как» браузер не предложит.
+      expect(btn0.getAttribute("href"), lang).toBe(null);
       const click = new FakeEvent("click", { bubbles: true });
-      link.dispatchEvent(click);
-      expect(click.defaultPrevented, lang).toBe(true);
+      btn0.dispatchEvent(click);
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
-      expect(calls.at(-1), lang).toBe(href);
+      expect(calls.at(-1), lang).toBe(url);
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
       expect(box.querySelectorAll("a"), lang).toEqual([]);
       expect(box.textContent, lang).toContain(PULT["report.rebuild"][lang]);
       expect(box.textContent, lang).toContain("SNAPSHOT_GONE");
@@ -1537,7 +1578,11 @@ describe("панель «Журнал» (П-6.1а)", () => {
 
   it("Б2 (ревью Б2 № 1, 2, 5, 6): удачная выгрузка — файл через Blob с именем из ответа, адрес отзывается не сразу; ответ по заменённому снимку подсказку не ставит; на паузе — без запроса", async () => {
     const env = start();
-    const body = { builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
+    // Номер снимка (`no`) живой ответ `GET /pult/report?format=json` несёт всегда (`src/demo/pult-report.ts`), и после
+    // слияния PR #20 он единственный опознаватель: кнопки выгрузки строят от него адрес, по нему же сличается «ответ по
+    // заменённому снимку». Номера у разных снимков разные — иначе подмена снимка в этом тесте не ловилась бы (правило
+    // CLAUDE.md о фикстурах: разные сущности — разные значения).
+    const body = { no: 4, builtAt: "2026-11-14T20:00:00.000Z", totals: { tests: 25 }, agreeLabels: {}, rows: [], unlinked: 0 };
     const calls: string[] = [];
     let next: () => Promise<unknown> = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
     env.window.fetch = (url: string) => {
@@ -1556,15 +1601,17 @@ describe("панель «Журнал» (П-6.1а)", () => {
     box.querySelectorAll("button[data-report]")[0]!.click();
     await new Promise((r) => setTimeout(r, 0));
     next = () => Promise.resolve({ ok: true, blob: () => Promise.resolve("акт"), headers: { get: () => 'attachment; filename="acc1-2026-11-14T20-00-ru.md"' } });
-    box.querySelectorAll("a[data-export]")[0]!.click();
+    box.querySelectorAll("button[data-export]")[0]!.click();
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     expect(clicked).toEqual([{ href: "blob:acc1", download: "acc1-2026-11-14T20-00-ru.md" }]);
     expect(revoked).toEqual([]); // не сразу после click
-    // ответ 409 по ссылке пришёл, когда уже собран новый снимок — подсказку не ставит
+    // ответ 409 по кнопке пришёл, когда уже собран новый снимок — подсказку не ставит
     let late!: (v: unknown) => void;
     next = () => new Promise((ok) => (late = ok));
-    box.querySelectorAll("a[data-export]")[0]!.click();
-    const fresh = { ...body, builtAt: "2026-11-14T20:05:00.000Z" };
+    box.querySelectorAll("button[data-export]")[0]!.click();
+    // Новый снимок — другой номер (и другое время): сличение в `downloadExport` идёт по номеру, и при одном номере
+    // запоздалый 409 по прежнему снимку поставил бы подсказку о чужом.
+    const fresh = { ...body, no: 5, builtAt: "2026-11-14T20:05:00.000Z" };
     const after = () => Promise.resolve({ ok: true, json: () => Promise.resolve(fresh) });
     const pendingFetch = next;
     next = after;
@@ -1573,22 +1620,23 @@ describe("панель «Журнал» (П-6.1а)", () => {
     await new Promise((r) => setTimeout(r, 0));
     late({ ok: false, status: 409, json: () => Promise.resolve({ error: "SNAPSHOT_GONE" }) });
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
-    expect(box.querySelectorAll("a[data-export]").length).toBe(3);
+    expect(box.querySelectorAll("button[data-export]").length).toBe(3);
     expect(box.textContent).not.toContain(PULT["report.rebuild"].ru);
     // на паузе — без запроса (ссылок нет, но и прямой вызов не шлёт)
     const before = calls.length;
     env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
-    expect(box.querySelectorAll("a[data-export]")).toEqual([]);
+    expect(box.querySelectorAll("button[data-export]")).toEqual([]);
     expect(calls.length).toBe(before);
   });
 
-  it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки ссылками на файл; отказ — с кодом; ru/en", async () => {
+  it("П-6.2 «Отчёт»: по кнопке — запрос json, время сборки, итоги и строки акта текстом, три выгрузки кнопками (Б-К5: адреса в разметке нет); отказ — с кодом; ru/en", async () => {
     for (const lang of ["ru", "en"] as const) {
       const env = start({ lang });
       const calls: string[] = [];
       const body = {
         // Номер снимка — опознаватель выгрузки (Х4б № 4, К2.1 окна А, малая правка по Р-1493): по времени сборки два
-        // снимка совпали бы при замороженных часах стенда или двух вкладках в одну миллисекунду.
+        // снимка совпали бы при замороженных часах стенда или двух вкладках в одну миллисекунду. Кнопки Б-К5 строят
+        // адрес от него; он же — токен ленты (`PultFeed.reportAt`) и провенанса акта (`ActProvenance.shown`).
         no: 7,
         builtAt: "2026-11-13T20:55:07.000Z",
         totals: { tests: 25, yes: 1, no: 1, noCase: 0, unchecked: 23 },
@@ -1620,24 +1668,67 @@ describe("панель «Журнал» (П-6.1а)", () => {
       expect(rows[0]!.textContent, lang).toContain("<b>x</b>");
       expect(rows[1]!.textContent, lang).toContain(PULT["report.violator"][lang]);
       expect(box.textContent, lang).toContain(`${PULT["report.unlinked"][lang]}: 2`);
-      const links = box.querySelectorAll("a");
-      // П13: ссылка просит показанный снимок — в `at` его номер (имя параметра историческое; К2.1 окна А)
-      const atQ = new URLSearchParams({ at: String(body.no) }).toString();
-      expect(links.map((a) => a.getAttribute("href")), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&${atQ}`));
-      expect(links.map((a) => a.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
-      // П12, дополнение (Р-1558): на паузе ссылок нет — подписи текстом без адреса, с пояснением; после снятия — снова ссылки
-      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+      // Б-К5: выгрузки — кнопки, адреса в разметке нет (у ссылки оставался путь «сохранить ссылку как», минующий
+      // `downloadExport`). Опознаватель показанного снимка — его **номер** (`no`, К2.1 окна А), имя параметра `at`
+      // историческое. Шим окна Б с откатом на время сборки сведён к номеру при слиянии PR #20: номера в ответе нет —
+      // выгрузка показывается подписью без действия, как на паузе, а чужой снимок не запрашивается.
+      const outs = box.querySelectorAll("button[data-export]");
+      // Номер снимка в адресе — литералом, а не той же развилкой, что в коде (ревью Б-К5 № 9): фикстура несёт `no: 7`.
+      expect(outs.map((b) => b.dataset.exportUrl), lang).toEqual(["md", "csv", "csv_excel"].map((f) => `/pult/report?format=${f}&lang=${lang}&at=7`));
+      expect(outs.map((b) => b.getAttribute("href")), lang).toEqual([null, null, null]);
+      expect(outs.map((b) => b.getAttribute("type")), lang).toEqual(["button", "button", "button"]);
+      expect(outs.map((b) => b.textContent), lang).toEqual(ACC1_EXPORTS.map((f) => ACC1_EXPORT_LABEL[f][lang]));
+      // Ни одной ссылки в панели «Журнал» больше нет: перехватывать «сохранить ссылку как» стало нечего, и обработчик
+      // `auxclick` из К1.3 убран при слиянии как оставшийся без предмета.
       expect(box.querySelectorAll("a"), lang).toEqual([]);
+      // П12, дополнение (Р-1558): на паузе кнопок нет — подписи текстом без адреса, с пояснением; после снятия — снова кнопки
+      env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: true } }));
+      expect(box.querySelectorAll("button[data-export]"), lang).toEqual([]);
       const ex = box.querySelector(".report-export")!;
       expect(ex.textContent, lang).toContain(PULT["act.paused"][lang]);
       for (const f of ACC1_EXPORTS) expect(ex.textContent, lang).toContain(ACC1_EXPORT_LABEL[f][lang]);
       env.document.dispatchEvent(new FakeEvent("pult:pause", { detail: { paused: false } }));
-      expect(box.querySelectorAll("a").length, lang).toBe(3);
+      expect(box.querySelectorAll("button[data-export]").length, lang).toBe(3);
       // Отказ сервера — «не собран» с кодом.
       env.window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "NO_ENGINE" }) });
       box.querySelectorAll("button[data-report]")[0]!.click();
       await new Promise((r) => setTimeout(r, 0));
       expect(box.textContent, lang).toContain(`${PULT["report.failed"][lang]} · NO_ENGINE`);
+    }
+  });
+
+  it("П26 п. 4: провенанс нажатия виден человеку — в строке журнала реакций и у строки оператора в отчёте; ru и en", async () => {
+    for (const lang of ["ru", "en"] as const) {
+      // Журнал реакций: у каждого нажатия — кто нажал. Отступление от инварианта 3 помечено на экране, как у П5 и П7.
+      const env = start({ lang });
+      const by = (x: string) => ({ at: T(20), action: "remind", obj: "Q" + x, cond: "R21", outcome: "done", result: { ok: true, status: 200 }, link: { state: "unavailable" }, by: x });
+      env.sources[0]!.send({ type: "board", board: { now: NOW, cards: [], jumps: [], reactions: [by("test"), by("operator"), { ...by("x"), by: undefined }] } });
+      const rows = $(env, "b-log").querySelectorAll(".log-row").map((r) => r.textContent);
+      expect(rows[0], lang).toContain(PULT["act.by.test"][lang]);
+      expect(rows[1], lang).toContain(PULT["act.by.operator"][lang]);
+      // Признака нет (нажатие вне режима сбоев) — и в строке его нет: пустой пометки на экране не появляется.
+      expect(rows[2], lang).not.toContain(PULT["act.by.operator"][lang]);
+      expect(rows[2], lang).not.toContain(PULT["act.by.test"][lang]);
+
+      // Экран «Отчёт»: пометка у строки оператора — та же, что в выгрузке акта.
+      const e2 = start({ lang });
+      const body = {
+        builtAt: "2026-11-16T12:00:00.000Z",
+        totals: { tests: 25, yes: 1, no: 0, noCase: 0, unchecked: 24 },
+        agreeLabels: { yes: { ru: "да", en: "yes" } },
+        rows: [
+          { test: "У-01", kind: { ru: "идёт к нарушению", en: "toward" }, expected: { ru: "о", en: "e" }, fact: { ru: "ф", en: "f" }, agree: "yes", agreeLabel: { ru: "да", en: "yes" }, note: { ru: "", en: "" }, auto: false, violatorDriver: false, operatorByTest: true, run: "run.intent 1/1" },
+          { test: "П-01", kind: { ru: "правильный", en: "correct" }, expected: { ru: "о", en: "e" }, fact: { ru: "ф", en: "f" }, agree: "yes", agreeLabel: { ru: "да", en: "yes" }, note: { ru: "", en: "" }, auto: false, violatorDriver: false, operatorByTest: false, run: "run.purchase 1/1" },
+        ],
+        unlinked: 0,
+      };
+      e2.window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+      e2.sources[0]!.send(boardMsg([]));
+      $(e2, "b-log").querySelectorAll("button[data-report]")[0]!.click();
+      await new Promise((r) => setTimeout(r, 0));
+      const report = $(e2, "b-log").querySelectorAll(".report-row").map((r) => r.textContent);
+      expect(report[0], lang).toContain(PULT["report.by_test"][lang]);
+      expect(report[1], lang).not.toContain(PULT["report.by_test"][lang]);
     }
   });
 

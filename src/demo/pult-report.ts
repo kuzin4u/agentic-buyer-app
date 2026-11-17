@@ -2,6 +2,7 @@
 // `json` — строки акта и итоги для экрана; `md`, `csv`, `csv_excel` — выгрузки акта ACC-1 окна Б как есть (`acc1.ts`: свои
 // тексты и экранирование — там, здесь только отдача файлом). Только чтение; данных витрин и реквизитов в акте нет.
 import { ACC1_EXPORTS, acc1Csv, acc1CsvExcel, acc1Markdown, acc1Rows, acc1Unlinked, type Acc1Export } from "../pult/acc1.js";
+import type { ActProvenance } from "./pult-act.js";
 import type { PultReport } from "../pult/feed.js";
 import { AGREE_LABEL } from "../pult/testtable.js";
 
@@ -33,37 +34,55 @@ const stamp = (iso: string) => iso.slice(0, 16).replace(":", "-");
  *  снимка (`PultReport.no`), а не время сборки: по времени два снимка совпали бы при двух вкладках в одну миллисекунду
  *  или при замороженных часах стенда, и выгрузка отдала бы чужое содержимое (Х4б № 4, К2.1). */
 export function routeReport(
-  feed: { report(): PultReport | undefined; reportAt(builtAt: string): PultReport | undefined },
+  feed: { report(): PultReport | undefined; reportAt(token: string): PultReport | undefined },
   format: string | null,
   at: string | null,
   lang: "ru" | "en",
+  provenance?: ActProvenance,
 ): ReportResponse {
-  if (!isFormat(format) || format === "json") return reportResponse(isFormat(format) ? feed.report() : undefined, format, lang);
+  // Провенанс прогона (П26) — липкий признак сборки демо-стенда (`ActProvenance`), а не подсчёт по окну журнала реакций:
+  // окно последних 50 нажатий вытеснило бы нажатия теста в длинном прогоне (ревью Б-К4, блокер Б1).
+  if (!isFormat(format) || format === "json") {
+    const report = isFormat(format) ? feed.report() : undefined;
+    // Снимок собран и показан — провенанс этого снимка запоминается: выгрузка отдаст тот же, что видел владелец.
+    // Опознаватель — **номер** снимка (`String(no)`), тот же токен, по которому выгрузку ищет `PultFeed.reportAt`:
+    // окно Б запоминало время сборки, и сравнение в `byTestAt` шло «номер против времени» — пометка прогона молча
+    // уходила бы к нынешнему признаку вместо признака показанного снимка (перечень сверки PR #20, п. 1).
+    if (report !== undefined) provenance?.shown(String(report.no));
+    return reportResponse(report, format, lang, provenance?.byTest() === true);
+  }
   const json = (status: number, error: string): ReportResponse => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify({ error }) });
   if (at === null || at === "") return json(400, "NO_SNAPSHOT");
   const snap = feed.reportAt(at);
-  return snap === undefined ? json(409, "SNAPSHOT_GONE") : reportResponse(snap, format, lang);
+  // Провенанс — того снимка, что показан на экране (П13, Х4б): нажатие теста после сборки задним числом её не помечает.
+  return snap === undefined ? json(409, "SNAPSHOT_GONE") : reportResponse(snap, format, lang, provenance?.byTestAt(at) === true);
 }
 
-export function reportResponse(report: PultReport | undefined, format: string | null, lang: "ru" | "en"): ReportResponse {
+export function reportResponse(
+  report: PultReport | undefined,
+  format: string | null,
+  lang: "ru" | "en",
+  byTest = false,
+): ReportResponse {
   const json = (status: number, body: unknown): ReportResponse => ({ status, type: "application/json; charset=utf-8", body: JSON.stringify(body) });
   if (!isFormat(format)) return json(400, { error: "BAD_FORMAT" });
   // Движок ещё не отработал — отчёта нет (не пустой акт).
   if (report === undefined) return json(409, { error: "NO_ENGINE" });
   const { table, records, builtAt, no } = report;
+  const opts = { operatorByTest: byTest };
   if (format === "json") {
     return json(200, {
       // Номер снимка — им экран просит выгрузку именно показанного снимка (Х4б № 4, К2.1).
       no,
       builtAt,
       totals: table.totals,
-      rows: acc1Rows(table, records).map((r) => ({ ...r, agreeLabel: AGREE_LABEL[r.agree] })),
+      rows: acc1Rows(table, records, opts).map((r) => ({ ...r, agreeLabel: AGREE_LABEL[r.agree] })),
       unlinked: acc1Unlinked(table, records).length,
       // Подписи «сходится» — окна Б (`AGREE_LABEL`): итоги на экране теми же словами, что в акте.
       agreeLabels: AGREE_LABEL,
     });
   }
-  const body = format === "md" ? acc1Markdown(table, lang, records) : format === "csv" ? acc1Csv(table, lang, records) : acc1CsvExcel(table, lang, records);
+  const body = format === "md" ? acc1Markdown(table, lang, records, opts) : format === "csv" ? acc1Csv(table, lang, records, opts) : acc1CsvExcel(table, lang, records, opts);
   const suffix = format === "csv_excel" ? "-excel" : "";
   return { status: 200, type: FILE[format].type, body, filename: `acc1-${stamp(builtAt)}-${lang}${suffix}.${FILE[format].ext}` };
 }
