@@ -3,7 +3,7 @@
 // строки оператора У-01…У-04 в акте и в ответе экрана «Отчёт». Отдельный файл — чтобы не пересекаться с `tests/pult/acc1.test.ts`,
 // где ожидания числа записей правит окно А (кирпич К3.1).
 import { describe, expect, it } from "vitest";
-import { OPERATOR_BY_TEST_LABEL, acc1Csv, acc1Markdown, acc1Rows } from "../../src/pult/acc1.js";
+import { OPERATOR_BY_TEST_LABEL, acc1Csv, acc1CsvCell, acc1Markdown, acc1MdCell, acc1Rows } from "../../src/pult/acc1.js";
 import { reportResponse, routeReport } from "../../src/demo/pult-report.js";
 import { createActProvenance, pultAct } from "../../src/demo/pult-act.js";
 import type { PultActions } from "../../src/pult/actions.js";
@@ -11,10 +11,14 @@ import type { TestRow, TestTable } from "../../src/pult/testtable.js";
 
 const p = (ru: string, en: string) => ({ ru, en });
 /** Пометка провенанса — **из источника** (`OPERATOR_BY_TEST_LABEL` в `acc1.ts`), а не копией литералом: копия осталась бы
- *  зелёной на устаревшем тексте (ревью слияния PR #20, № 5). Ищется **хвост после двоеточия**: в md и csv акт экранирует
- *  двоеточие (`<span>:</span>` — автоссылки GitHub), и целая строка в выгрузке буквально не встречается. Правку текста
- *  после двоеточия тест поймает; правку слова до него — нет, и для этого есть проверка самой подписи на экране. */
-const MARK = OPERATOR_BY_TEST_LABEL.ru.slice(OPERATOR_BY_TEST_LABEL.ru.indexOf(": ") + 2);
+ *  зелёной на устаревшем тексте (ревью слияния PR #20, № 5). Сверяется **целиком**, обеими половинами: «автоматический
+ *  прогон» говорит читателю акта, что за пультом был не человек, хвост после двоеточия описывает следствие — испортят
+ *  первую половину, и акт промолчит. Ожидаемая строка строится тем же экранированием, которым её экранирует сам акт
+ *  (`acc1MdCell` — двоеточие → `<span>:</span>` против автоссылок GitHub; `acc1CsvCell` — правила RFC 4180), поэтому
+ *  оговорок об одной половине метки не нужно (замечание владельца 17.11 по К3.0а № 5). */
+const MARK_SRC = OPERATOR_BY_TEST_LABEL.ru;
+const MARK = acc1MdCell(MARK_SRC);
+const MARK_CSV = acc1CsvCell(MARK_SRC);
 const row = (test: TestRow["test"], o: Partial<TestRow> = {}): TestRow => ({
   test,
   kind: "toward",
@@ -60,7 +64,7 @@ describe("провенанс нажатия в акте ACC-1 (П26)", () => {
     const md = acc1Markdown(t, "ru", [], { operatorByTest: true });
     expect(md).toContain(MARK);
     expect(acc1Markdown(t, "en", [], { operatorByTest: true })).toContain("the operator's role was played by a test");
-    expect(acc1Csv(t, "ru", [], { operatorByTest: true })).toContain(MARK);
+    expect(acc1Csv(t, "ru", [], { operatorByTest: true })).toContain(MARK_CSV);
     // Акт без признака пометку не несёт — иначе ручная приёмка выглядела бы автоматическим прогоном.
     expect(acc1Markdown(t, "ru", [], {})).not.toContain(MARK);
   });
