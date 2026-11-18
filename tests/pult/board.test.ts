@@ -514,21 +514,41 @@ describe("лента пульта (П-2.1)", () => {
     p.close();
   });
 
-  it("П13 (ревью Х4б № 1): снимок отчёта — по `reportAt` только последний; после сброса источника (перезапуск стенда) прежний не отдаётся", async () => {
+  it("П13 (ревью Х4б № 1): снимок отчёта — по номеру только последний; после сброса источника (перезапуск стенда) прежний не отдаётся", async () => {
     let t = Date.UTC(2026, 10, 14, 17, 0, 0);
     const f = fakeFeed();
     const p = createPultFeed(f.feed, { now: () => new Date(t), debounceMs: 0 });
     f.push(step("cart.created", { mandate_id: "CS", intent_id: "IS" }, { stage: "cart" }));
     await tick();
     const a = p.report()!;
-    expect(p.reportAt(a.builtAt)).toBe(a);
+    expect(p.reportAt(String(a.no))).toBe(a);
     t += 1000;
     const b = p.report()!;
-    expect(p.reportAt(a.builtAt)).toBeUndefined();
-    expect(p.reportAt(b.builtAt)).toBe(b);
+    expect(p.reportAt(String(a.no))).toBeUndefined();
+    expect(p.reportAt(String(b.no))).toBe(b);
     f.reset();
     await tick();
-    expect(p.reportAt(b.builtAt)).toBeUndefined();
+    expect(p.reportAt(String(b.no))).toBeUndefined();
+    p.close();
+  });
+
+  it("Х4б № 4 (К2.1): часы стенда стоят — снимки различаются номером; по времени сборки выгрузка отдала бы чужой", async () => {
+    // Замороженные часы (`setClock` стенда) или две вкладки в одну миллисекунду дают одинаковый `builtAt`.
+    const t = Date.UTC(2026, 10, 16, 18, 0, 0);
+    const f = fakeFeed();
+    const p = createPultFeed(f.feed, { now: () => new Date(t), debounceMs: 0 });
+    f.push(step("cart.created", { mandate_id: "CS", intent_id: "IS" }, { stage: "cart" }));
+    await tick();
+    const a = p.report()!;
+    const b = p.report()!;
+    expect(b.builtAt).toBe(a.builtAt); // время сборки совпало
+    expect(b.no).not.toBe(a.no); // номер — нет
+    expect(p.reportAt(String(b.no))).toBe(b);
+    // Прежний снимок по своему номеру больше не отдаётся — экран получит 409 и соберёт заново.
+    expect(p.reportAt(String(a.no))).toBeUndefined();
+    // Номер не число или пустой — тоже отказ, а не «последний подойдёт».
+    expect(p.reportAt(a.builtAt)).toBeUndefined();
+    expect(p.reportAt("")).toBeUndefined();
     p.close();
   });
 

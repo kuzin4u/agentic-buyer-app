@@ -10,7 +10,7 @@ import { buildTxModel } from "../../src/pult/tx.js";
 import { driver } from "./drive.js";
 
 const BUILT = "2026-11-13T20:55:07.000Z";
-const empty = (): PultReport => ({ builtAt: BUILT, table: testTable({ items: [], model: buildTxModel([]), verdicts: [], now: BUILT }), records: [] });
+const empty = (): PultReport => ({ no: 1, builtAt: BUILT, table: testTable({ items: [], model: buildTxModel([]), verdicts: [], now: BUILT }), records: [] });
 
 describe("«Отчёт»: ответ маршрута по снимку (П-6.2)", () => {
   it("перечень форматов — json и три выгрузки окна Б как есть; неизвестный формат — 400; движок не отработал — 409", () => {
@@ -57,41 +57,43 @@ describe("П13 (Р-1558): выгрузка отдаёт показанный с�
     let last: PultReport | undefined;
     return {
       report: () => {
-        const builtAt = new Date(Date.UTC(2026, 10, 14, 16, 40, n++)).toISOString();
-        last = { builtAt, table: testTable({ items: [], model: buildTxModel([]), verdicts: [], now: builtAt }), records: [] };
+        // Часы стенда нарочно стоят: два снимка с одним `builtAt` различаются только номером (Х4б № 4, К2.1).
+        const builtAt = new Date(Date.UTC(2026, 10, 14, 16, 40, 0)).toISOString();
+        n += 1;
+        last = { no: n, builtAt, table: testTable({ items: [], model: buildTxModel([]), verdicts: [], now: builtAt }), records: [] };
         return last;
       },
-      reportAt: (at: string) => (last !== undefined && last.builtAt === at ? last : undefined),
+      reportAt: (token: string) => (last !== undefined && String(last.no) === token ? last : undefined),
     };
   };
 
-  it("json — собрать снимок; md, csv, csv для Excel по `at` показанного — время сборки внутри акта то же, что на экране", () => {
+  it("json — собрать снимок; md, csv, csv для Excel по номеру показанного — время сборки внутри акта то же, что на экране", () => {
     const f = feedOf();
-    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
+    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { no: number; builtAt: string };
     for (const fmt of ACC1_EXPORTS) {
-      const r = routeReport(f, fmt, shown.builtAt, "ru");
+      const r = routeReport(f, fmt, String(shown.no), "ru");
       expect(r.status, fmt).toBe(200);
       const line = acc1BuiltAt(shown.builtAt, "ru");
       expect(r.body, fmt).toContain(fmt === "md" ? acc1MdCell(line) : line);
     }
   });
 
-  it("`at` нет — 400 NO_SNAPSHOT; собран новый — выгрузка прежнего 409 SNAPSHOT_GONE; неизвестный формат — 400 BAD_FORMAT, снимок не собирается", () => {
+  it("опознавателя нет — 400 NO_SNAPSHOT; собран новый — выгрузка прежнего 409 SNAPSHOT_GONE; неизвестный формат — 400 BAD_FORMAT, снимок не собирается", () => {
     const f = feedOf();
-    const first = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
+    const first = JSON.parse(routeReport(f, "json", null, "ru").body) as { no: number; builtAt: string };
     expect(routeReport(f, "md", null, "ru")).toMatchObject({ status: 400, body: JSON.stringify({ error: "NO_SNAPSHOT" }) });
     expect(routeReport(f, "md", "", "ru")).toMatchObject({ status: 400 });
     routeReport(f, "json", null, "ru");
-    expect(routeReport(f, "csv", first.builtAt, "ru")).toMatchObject({ status: 409, body: JSON.stringify({ error: "SNAPSHOT_GONE" }) });
-    expect(routeReport(f, "pdf", first.builtAt, "ru")).toMatchObject({ status: 400, body: JSON.stringify({ error: "BAD_FORMAT" }) });
+    expect(routeReport(f, "csv", String(first.no), "ru")).toMatchObject({ status: 409, body: JSON.stringify({ error: "SNAPSHOT_GONE" }) });
+    expect(routeReport(f, "pdf", String(first.no), "ru")).toMatchObject({ status: 400, body: JSON.stringify({ error: "BAD_FORMAT" }) });
   });
 
   it("поломка С3 по смыслу: выгрузка, собравшая новый снимок, дала бы другое время — здесь его нет", () => {
     const f = feedOf();
-    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { builtAt: string };
-    const md = routeReport(f, "md", shown.builtAt, "en").body;
+    const shown = JSON.parse(routeReport(f, "json", null, "ru").body) as { no: number; builtAt: string };
+    const md = routeReport(f, "md", String(shown.no), "en").body;
     // ещё одна выгрузка — тот же снимок, то же время: новый не собирался
-    expect(routeReport(f, "md", shown.builtAt, "en").body).toBe(md);
+    expect(routeReport(f, "md", String(shown.no), "en").body).toBe(md);
   });
 });
 
@@ -136,7 +138,7 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(rs.slice(-5).map((r) => [r.name, r.result?.state])).toEqual(rs.slice(-5).map((r) => [r.name, "accepted"]));
     const rep = await fetch(`${demo.monitor.url}/pult/report?format=json&lang=ru`);
     expect(rep.status).toBe(200);
-    const body = (await rep.json()) as { builtAt: string; totals: { no: number }; unlinked: number; rows: { test: string; agree: string }[] };
+    const body = (await rep.json()) as { no: number; builtAt: string; totals: { no: number }; unlinked: number; rows: { test: string; agree: string }[] };
     expect(Number.isFinite(Date.parse(body.builtAt))).toBe(true);
     const agree = Object.fromEntries(body.rows.map((r) => [r.test, r.agree]));
     expect([agree["П-01"], agree["П-05"], agree["П-02"], agree["П-08"]]).toEqual(["yes", "yes", "yes", "yes"]);
@@ -145,8 +147,10 @@ describe("«Отчёт» на живом стенде: сюжеты 1–5 схо
     expect(body.totals.no).toBe(0);
     expect(body.rows.filter((r) => r.test.startsWith("У-")).map((r) => r.agree)).toEqual(["unchecked", "unchecked", "unchecked", "unchecked"]);
     expect(typeof body.unlinked).toBe("number");
-    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3). П13: показанный снимок — по `at`.
-    const at = encodeURIComponent(body.builtAt);
+    // Выгрузка — файлом, заголовки — общие (CSP, nosniff, no-store; ревью № 3). П13: показанный снимок — по его номеру
+    // в параметре `at` (имя историческое; К2.1, Х4б № 4: по времени сборки два снимка совпали бы при замороженных часах).
+    expect(typeof body.no).toBe("number");
+    const at = encodeURIComponent(String(body.no));
     const md = await fetch(`${demo.monitor.url}/pult/report?format=md&lang=ru&at=${at}`);
     expect(md.headers.get("content-disposition")).toMatch(/^attachment; filename="acc1-.*-ru\.md"$/);
     expect(md.headers.get("content-type")).toBe("text/markdown; charset=utf-8");

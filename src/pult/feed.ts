@@ -80,6 +80,10 @@ export type PultFeedEvent =
 /** Отчёт (П-6.2, Р-1552): снимок на момент сборки — таблица 25 тестов (`testTable`, окно Б) и записи протокола П-6.1 для акта
  *  ACC-1 (`Acc1Record`). Собирается по запросу (кнопка «Собрать отчёт», выгрузка), не на каждый пересчёт. */
 export interface PultReport {
+  /** Номер снимка — опознаватель для выгрузки (Х4б № 4, К2.1). Растёт на каждую сборку, поэтому два снимка не совпадают
+   *  никогда: по времени сборки они совпали бы при двух вкладках в одну миллисекунду или при замороженных часах стенда
+   *  (`setClock`), и выгрузка отдала бы чужое содержимое. */
+  readonly no: number;
   /** Когда собран — по часам шины (Р-1552: на приёмке видно, какому моменту отчёт соответствует). */
   readonly builtAt: string;
   readonly table: TestTable;
@@ -91,9 +95,10 @@ export interface PultFeed {
   /** Собрать отчёт по входу последнего пересчёта; движок ещё не отработал — undefined. Собранный снимок запоминается —
    *  последний, один (П13). */
   report(): PultReport | undefined;
-  /** Последний собранный снимок, если его время сборки — `builtAt` (П13, Р-1558: выгрузка отдаёт показанный на экране
-   *  снимок, а не собирает новый); другой или не собирался — undefined. */
-  reportAt(builtAt: string): PultReport | undefined;
+  /** Последний собранный снимок, если его номер — `token` (П13, Р-1558: выгрузка отдаёт показанный на экране снимок, а не
+   *  собирает новый); другой номер, не число или снимка не было — undefined. Опознаватель — номер, а не время сборки
+   *  (Х4б № 4, К2.1): по времени два снимка могли совпасть. */
+  reportAt(token: string): PultReport | undefined;
   /** Записать реакцию (кнопку пульта) и разослать доску. Пересчёт движка не нужен: реакция — не запись шины. */
   react(r: Reaction): void;
   subscribe(l: (e: PultFeedEvent) => void): () => void;
@@ -153,6 +158,8 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
   let protoIn: Omit<ProtocolInput, "reactions"> | undefined;
   /** Последний собранный снимок отчёта — выгрузка отдаёт его (П13). */
   let lastReport: PultReport | undefined;
+  /** Номер последней сборки отчёта: опознаватель снимка для выгрузки (Х4б № 4, К2.1). Часы для него не нужны. */
+  let reportNo = 0;
   // Сбой шага протокола не трогает доску, «Контроль» и маршрут кнопки: остаётся прежний протокол (ревью П-6.1а № 10).
   const protoStep = (prevView: ProtocolView | undefined, fresh = false): ProtocolView | undefined => {
     if (!protoIn) return prevView;
@@ -320,11 +327,14 @@ export function createPultFeed(feed: InterpretFeed, o: PultFeedOptions): PultFee
         at: e.at,
         ...(e.reaction !== undefined && { action: e.reaction }),
         ...(e.reactSec !== undefined && { reactSec: e.reactSec }),
+        // Пометка привязки по правилу (П28, К3.1) — как есть из протокола: акт её не вычисляет.
+        ...(e.attachedByRule === true && { attachedByRule: true as const }),
       }));
-      lastReport = { builtAt, table, records };
+      reportNo += 1;
+      lastReport = { no: reportNo, builtAt, table, records };
       return lastReport;
     },
-    reportAt: (builtAt) => (lastReport !== undefined && lastReport.builtAt === builtAt ? lastReport : undefined),
+    reportAt: (token) => (lastReport !== undefined && String(lastReport.no) === token ? lastReport : undefined),
     react(r) {
       reactions = [...reactions, r].slice(-REACTIONS_KEPT);
       const protocol = protoStep(state.protocol, true);

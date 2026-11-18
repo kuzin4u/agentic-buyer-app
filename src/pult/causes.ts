@@ -92,6 +92,9 @@ export interface CauseItem {
   readonly title: Phrase;
   readonly node?: NodeId;
   readonly note?: "race_c28";
+  /** Доказательство присоединено к остановке правилом, а не идентификатором (П28, вариант (1)): экран говорит это теми же
+   *  словами, что акт ACC-1 (`int.attached_by_rule`). */
+  readonly attachedByRule?: true;
   /** 1. Что случилось — до 4 последних записей-доказательств (нет доказательств — последние записи объекта). */
   readonly happened: readonly ChainRecord[];
   /** 2. Кто нарушил и кто защитил; «none» — нарушителя нет / защиты не было. */
@@ -170,6 +173,7 @@ function item(v: Verdict, own: readonly Verdict[], objRecs: readonly Interpretat
     title,
     ...(v.node !== undefined && { node: v.node }),
     ...(v.note !== undefined && { note: v.note }),
+    ...(v.attachedByRule === true && { attachedByRule: true as const }),
     happened,
     violator: v.violator ?? "none",
     protector: v.protector ?? "none",

@@ -192,6 +192,8 @@
   let pausedAt = 0;
   let pendingBoard = null;
   let pendingAt = 0;
+  /** Номер прихода накопленной на паузе доски: по нему она сверяется с `hello` при показе (К1.2). */
+  let pendingSeq = 0;
   const clockNow = () => (paused ? pausedAt : Date.now());
 
   const el = (tag, text, cls) => {
@@ -740,6 +742,8 @@
     // Кнопка реакции с фокусом клавиатуры (Х4; повторное ревью Х2 № 3): после перестройки — на ту же кнопку, а при
     // начатом отзыве — на «Отмена», не на «Да, отозвать»: двойной Enter не отзывает мимо двух шагов (В4).
     const keepAct = active && ctlBody.contains(active) && active.dataset && active.dataset.actKey !== undefined ? active.dataset.actKey : undefined;
+    // Строка (покупка), в которой стоял фокус: при одном поручении на двух покупках `actKey` у кнопок одинаков (Х4а № 8).
+    const keepObj = keepAct !== undefined ? active.dataset.actObj : undefined;
     const wrap = document.createDocumentFragment();
     const due = dueWaits();
     ctlDueKey = dueKey(due);
@@ -764,11 +768,7 @@
       }
     }
     if (keepAct !== undefined) {
-      const same = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === keepAct && !b.hasAttribute("disabled"));
-      const target =
-        actState.pending === keepAct
-          ? same.find((b) => b.dataset.actCancel !== undefined)
-          : same.find((b) => b.dataset.second === undefined && b.dataset.actCancel === undefined);
+      const target = actFocusTarget(keepAct, keepObj);
       if (target) target.focus();
     }
   }
@@ -839,6 +839,21 @@
   const ACTIONS = cfg.actions === true;
   const actState = { pending: "", results: {} };
   const VIOLATOR = { agent: "AGENT", merchant: "MERCHANT", bank: "BANK", platform: "PLATFORM", operator: "OPERATOR" };
+  /** Кнопка того же действия, на которую возвращается клавиатурный фокус. Одно правило на оба случая возврата — после
+   *  перестройки «Контроля» (Х4а № 8, К1.5) и после снятия паузы (Х4а № 9, К1.6): два места с одним правилом разошлись бы
+   *  молча, и разошлась бы именно привязка фокуса к В4 (ревью К1.6 № 3).
+   *  - Только своя строка (`data-act-obj`): кнопка соседней покупки выглядит так же, и действие ушло бы по другой покупке;
+   *    своей строки на экране нет (покупка ушла, конфликт звеньев погасил кнопки — Р-1542) — цели нет, фокус не ставим.
+   *  - У кнопок, где объект уже в ключе («Напомнить клиенту», «Передать на разбор»), признака строки нет: такая кнопка одна.
+   *  - При начатом отзыве цель — «Отмена», иначе первый шаг: «Да, отозвать» под Enter не попадает (В4). Это же правило
+   *    страхует возврат после паузы, если пауза когда-нибудь перестанет снимать начатый отзыв (Х1 № 7). */
+  function actFocusTarget(key, obj) {
+    const all = Array.from(ctlBody.querySelectorAll("button[data-act-key]")).filter((b) => b.dataset.actKey === key && !b.hasAttribute("disabled"));
+    const same = obj !== undefined ? all.filter((b) => b.dataset.actObj === obj) : all;
+    return actState.pending === key
+      ? same.find((b) => b.dataset.actCancel !== undefined)
+      : same.find((b) => b.dataset.second === undefined && b.dataset.actCancel === undefined);
+  }
   function actButton(key, text, act, params, cls) {
     // П12: на паузе кнопка реакции неактивна с пояснением — запрос по замороженной доске не уходит.
     if (paused) return disabledButton(text, label("act.paused"));
@@ -912,7 +927,9 @@
       renderCtl();
       return;
     }
-    f("/pult/act/" + act + "?" + query, { method: "POST" })
+    // `by=operator` — провенанс нажатия (П26): у пульта нажимает человек, и он помечает себя сам; в режиме сбоев признак
+    // обязателен (без него маршрут отвечает 400 `BY_REQUIRED`). Малая правка окна Б по Р-1493: **окну А — сверить**.
+    f("/pult/act/" + act + "?" + (query ? query + "&" : "") + "by=operator", { method: "POST" })
       .then((r) => r.json())
       .then((body) => {
         actState.results[key] = describeReaction(body);
@@ -969,6 +986,10 @@
       } else bar.appendChild(actButton(key, label("act.revoke"), "revoke", { mandate: intent }));
     }
     bar.appendChild(disabledButton(label("act.notify"), label("act.notify.none")));
+    // Х4а № 8 (К1.5): у «Отозвать поручение» ключ — поручение (`revoke:<намерение>`), и при одном намерении на двух покупках
+    // кнопки разных строк несут один `actKey`. Сам ключ не меняется — к нему привязаны начатый отзыв и ответ стенда, общие
+    // для поручения. Строка запоминается отдельным признаком: по нему фокус после перестройки возвращается в свою строку.
+    for (const b of bar.querySelectorAll("button[data-act-key]")) b.dataset.actObj = id;
     row.appendChild(bar);
     append(row, resultOf("stop:" + id));
     if (intent) append(row, resultOf("revoke:" + intent));
@@ -1116,6 +1137,9 @@
     dtdd(dl, "violator", who(it.violator, "int.violator.none"));
     dtdd(dl, "protector", who(it.protector, "int.protector.none"));
     if (it.note === "race_c28") dl.appendChild(el("dd", label("ctl.race_c28"), "note"));
+    // Пометка привязки по правилу (П28, вариант (1), К3.1) — теми же словами, что в акте ACC-1: доказательство отнесено к
+    // остановке правилом, а не идентификатором, и экран не вправе показывать такую привязку как точную (довод Р-1540).
+    if (it.attachedByRule === true) dl.appendChild(el("dd", label("int.attached_by_rule"), "note"));
     if (deep) {
       const happened = el("div");
       for (const r of Array.isArray(it.happened) ? it.happened : []) happened.appendChild(recLine(r, "ha-r"));
@@ -1234,7 +1258,9 @@
     wrap.appendChild(el("h3", label("log.actions"), "ctl-h"));
     const rows = [];
     for (const x of Array.isArray(board.reactions) ? board.reactions : [])
-      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) });
+      // Провенанс нажатия (П26 п. 4) — в строке журнала: помеченное отступление от инварианта 3 видно человеку.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      rows.push({ at: x.at, text: clock(x.at) + " · " + label("act.kind." + x.action) + " · " + x.obj + (x.cond ? " · " + x.cond : "") + " · " + describeReaction(x) + linkText(x.link) + (x.by === "test" || x.by === "operator" ? " · " + label("act.by." + x.by) : "") });
     for (const d of p && Array.isArray(p.decisions) ? p.decisions : [])
       rows.push({ at: d.at, text: (d.at ? clock(d.at) + " · " : "") + label("log.decision") + " · " + (d.obj || label("ctl.system")) + (d.cond ? " · " + d.cond : "") });
     rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
@@ -1263,6 +1289,10 @@
         if (typeof e.reactSec === "number") parts.push(label("log.react") + " " + e.reactSec + " " + label("card.sec"));
         if (e.violator) parts.push(label("ctl.violator") + ": " + subj(e.violator));
         if (e.protector) parts.push(label("ctl.protector") + ": " + subj(e.protector));
+        // Пометка привязки по правилу (П28, К3.1) — и здесь, теми же словами, что в акте и в «Причинах»: записи системы без
+        // объекта в «Причины» не попадают (`causesView` строит только объекты с вердиктом), и без этой строки у остановок по
+        // журналу стенда пометка была бы видна лишь в выгруженном акте (ревью К3.1 № 4).
+        if (e.attachedByRule === true) parts.push(label("int.attached_by_rule"));
         const row = el("div", parts.filter((x) => x).join(" · "), "proto-row");
         row.dataset.status = e.status;
         wrap.appendChild(row);
@@ -1300,28 +1330,52 @@
     const tot = [["yes", t.yes], ["no", t.no], ["no_case", t.noCase], ["unchecked", t.unchecked]].map(([k, n]) => txt(al[k]) + ": " + (typeof n === "number" ? n : 0));
     wrap.appendChild(el("p", tot.join(" · ") + " · " + label("report.tests") + ": " + (typeof t.tests === "number" ? t.tests : 0), "ctl-status"));
     for (const r of Array.isArray(d.rows) ? d.rows : []) {
-      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : ""].filter((x) => x);
+      // `report.by_test` — провенанс строки оператора (П26 п. 4): на экране «Отчёт» пометка та же, что в выгрузке акта.
+      // Малая правка окна Б по Р-1493: **окну А — сверить**.
+      const marks = [r.auto ? label("report.auto") : "", r.violatorDriver ? label("report.violator") : "", r.operatorByTest ? label("report.by_test") : ""].filter((x) => x);
       const parts = [r.test, txt(r.kind), txt(r.expected), txt(r.fact), txt(r.agreeLabel), txt(r.note), marks.join(" "), r.run].filter((x) => typeof x === "string" && x);
       const row = el("div", parts.join(" · "), "report-row");
       row.dataset.agree = typeof r.agree === "string" ? r.agree : "";
       wrap.appendChild(row);
     }
     if (typeof d.unlinked === "number" && d.unlinked > 0) wrap.appendChild(el("p", label("report.unlinked") + ": " + d.unlinked, "muted"));
-    // П13 (Р-1558): выгрузка — показанный снимок (`at` = его время сборки), сервер нового не собирает. На паузе ссылки
-    // неактивны (дополнение к П12: ссылка тоже отправляет запрос) — текстом без адреса, с пояснением.
-    // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — ссылок нет, подсказка «соберите заново».
+    // П13 (Р-1558): выгрузка — показанный снимок (`at` = его **номер**, К2.1; имя параметра историческое), сервер нового
+    // не собирает. На паузе кнопки выгрузки неактивны (дополнение к П12: выгрузка тоже отправляет запрос) — подписями
+    // без действия, с пояснением.
+    // Б2: снимок устарел (сборка не удалась или сервер ответил 409 — собран новый) — кнопок нет, подсказка «соберите заново».
     const ex = el("p", label("report.export") + ": ", "report-export");
+    // Опознаватель показанного снимка. Сейчас — время сборки; после слияния с К2.1 окна А — его номер (`d.no`), имя параметра
+    // `at` остаётся историческим (его читает `server.ts`). Опознаватель — **только номер** снимка: шим окна Б с откатом
+    // на время сборки сведён к номеру при слиянии PR #20 (перечень сверки, п. 1) — лента и провенанс опознают снимок
+    // одним токеном `String(no)`, и откат на время дал бы сравнение «время против номера» с молчаливым 409 или чужим
+    // провенансом. Номер проверяется на годность — целое число или непустая строка; негодного нет: выгрузка показывается
+    // подписью без действия, как на паузе, а не адресом `at=` или `at=[object Object]` (ревью Б-К5 № 1; П12 — «смотреть,
+    // не действовать»: сервер на негодный токен ответил бы 409, но просить его об этом незачем).
+    // Годным считается **только** вид токена, который строит сервер (`String(PultReport.no)` — счётчик снимков): цифры
+    // без знака и точки. Прежняя проверка пропускала любую непустую строку и любое конечное число (`"abc"`, `-3`, `1.5`),
+    // и тогда негодный номер давал живой запрос с подсказкой «соберите заново» вместо отсутствия действия — то есть код
+    // расходился с обещанием выше (ревью слияния PR #20, № 1).
+    const okNo = (typeof d.no === "number" || typeof d.no === "string") && /^\d+$/.test(String(d.no));
+    const snapId = okNo ? String(d.no) : undefined;
     for (const e of Array.isArray(ACC1.exports) ? ACC1.exports : []) {
-      if (paused || report.stale || typeof d.builtAt !== "string") {
+      if (paused || report.stale || snapId === undefined) {
         const off = el("span", e.label, "muted");
         off.setAttribute("aria-disabled", "true");
         ex.appendChild(off);
       } else {
-        const a = el("a", e.label);
-        a.setAttribute("href", "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: String(d.builtAt) }).toString());
-        a.setAttribute("download", "");
-        a.dataset.export = "1";
-        ex.appendChild(a);
+        // Б-К5 (вторая половина ревью Б2 № 7; малая правка окна Б по Р-1493: **окну А — сверить**): выгрузка — **кнопка**,
+        // а не ссылка. У ссылки, пока у неё есть `href`, остаётся
+        // браузерный путь «сохранить ссылку как»: он события не даёт, `downloadExport` минует, и при 409 владелец получает
+        // файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки. Перехватить этот путь нечем — кнопка убирает причину:
+        // адреса в разметке нет, «сохранить как» не предлагается, запрос всегда идёт через `downloadExport` (fetch + Blob).
+        const b = el("button", e.label);
+        b.type = "button";
+        b.dataset.export = "1";
+        // Опознаватель снимка в `at` — его **номер** (К2.1, Х4б № 4): по времени сборки два снимка совпали бы при двух
+        // вкладках в одну миллисекунду или при замороженных часах стенда, и выгрузка отдала бы чужое содержимое. Имя
+        // параметра `at` историческое — его читает `server.ts` (файл окна Б).
+        b.dataset.exportUrl = "/pult/report?" + new URLSearchParams({ format: e.format, lang: lang, at: snapId }).toString();
+        ex.appendChild(b);
       }
       ex.appendChild(el("span", " "));
     }
@@ -1335,8 +1389,10 @@
     const f = window.fetch;
     // На паузе — без запроса (П12 п. 5, ревью Б2 № 5); только свой адрес выгрузки (ревью Б2 № 6).
     if (typeof f !== "function" || paused || typeof href !== "string" || href.indexOf("/pult/report?") !== 0) return;
-    // Снимок, к которому относится ссылка: ответ по уже заменённому снимку подсказку не ставит (ревью Б2 № 2).
-    const shownAt = report.data ? report.data.builtAt : undefined;
+    // Снимок, к которому относится запрос: ответ по уже заменённому снимку подсказку не ставит (ревью Б2 № 2). Сличение —
+    // по **номеру** снимка, а не по времени сборки (перечень сверки PR #20, п. 1): при замороженных часах стенда новый
+    // снимок получает новый номер, но то же время, и ответ по прежнему снимку ставил бы подсказку о чужом.
+    const shownNo = report.data ? report.data.no : undefined;
     f(href)
       .then((r) => {
         if (!r.ok) {
@@ -1344,7 +1400,7 @@
             .json()
             .catch(() => ({}))
             .then((body) => {
-              if (!report.data || report.data.builtAt !== shownAt) return;
+              if (!report.data || report.data.no !== shownNo) return;
               report.failed = body && typeof body.error === "string" ? body.error : "HTTP " + r.status;
               report.stale = true;
               renderLog();
@@ -1368,7 +1424,7 @@
         });
       })
       .catch(() => {
-        if (!report.data || report.data.builtAt !== shownAt) return;
+        if (!report.data || report.data.no !== shownNo) return;
         report.failed = label("report.no_answer");
         report.stale = true;
         renderLog();
@@ -1389,7 +1445,7 @@
           report.stale = false;
         } else {
           report.failed = body && typeof body.error === "string" ? body.error : "HTTP";
-          // Сервер мог успеть собрать новый снимок — ссылки прежнего снимка сняты (ответ чата, п. 2).
+          // Сервер мог успеть собрать новый снимок — кнопки выгрузки прежнего снимка сняты (ответ чата, п. 2).
           report.stale = report.data !== null;
         }
         renderLog();
@@ -1402,14 +1458,21 @@
       });
   }
   if (logBox) {
+    // Перехвата `auxclick` для выгрузки здесь больше нет (К1.3 снят при слиянии PR #20, п. 3 перечня сверки): он ловил
+    // среднюю кнопку по **ссылке** выгрузки, у которой оставался браузерный путь мимо `downloadExport` — при 409 человек
+    // получал ошибку загрузки или файл с `{"error":"SNAPSHOT_GONE"}` вместо подсказки «соберите заново» (ревью Б2 № 7).
+    // Б-К5 убрало причину, а не след: выгрузка — кнопка, адреса в разметке нет, «открыть в новой вкладке» и «сохранить
+    // ссылку как» не предлагаются, запрос всегда идёт через `downloadExport`. Обработчик без предмета остался бы ложной
+    // защитой: `a[data-export]` в разметке не появляется, и проверка `button === 1` защищала бы несуществующий путь.
     logBox.addEventListener("click", (ev) => {
       const rb = ev.target instanceof Element ? ev.target.closest("button[data-report]") : null;
       if (rb) return buildReport();
-      const ea = ev.target instanceof Element ? ev.target.closest("a[data-export]") : null;
-      if (ea) {
-        ev.preventDefault();
-        return downloadExport(ea.getAttribute("href"));
-      }
+      // Выгрузка — кнопка (Б-К5): отменять нечего, навигации у кнопки нет; адрес берётся из её данных, а не из `href`.
+      // Три пункта сверки окна Б закрыты при слиянии PR #20: (1) обработчик `auxclick` убран — предмета нет;
+      // (2) опознаватель снимка у кнопок — номер, шим `snapId` сведён к нему; (3) `shownNo` и признак устаревшего снимка
+      // в `downloadExport` сличаются по номеру, а не по времени сборки (коллизия Х4б № 4 — ревью Б-К5 № 3).
+      const ea = ev.target instanceof Element ? ev.target.closest("button[data-export]") : null;
+      if (ea) return downloadExport(ea.dataset.exportUrl);
       const b = ev.target instanceof Element ? ev.target.closest("button[data-proto-filter]") : null;
       if (!b) return;
       logFilter = PROTO_ST.indexOf(b.dataset.protoFilter) >= 0 ? b.dataset.protoFilter : "";
@@ -1450,9 +1513,22 @@
   const lastPress = {};
   // Б2 (видимая часть № 12): у переключателя «Авто» — тот же счётчик нажатий, ответ — только на последнее; отказ — виден.
   let autoPress = 0;
-  // Б2 (узкое ревью № 11, № 15): после `hello` первая доска могла быть посчитана до него (пауза пересчёта 200 мс) — её режим
-  // «Авто» прежний и свежий режим из `hello` не перекрывает.
-  let autoFromHello = false;
+  // Режим «Авто» приходит двумя путями: **от источника** — `hello` подключения и ответ переключателя (состояние эмулятора) —
+  // и **доской**, которая пересказывает шаг режима на шине. Сервер считает доску с паузой пересчёта, поэтому посчитанной до
+  // значения от источника может быть только одна доска — первая пришедшая после него (узкое ревью № 15); остальные посчитаны
+  // позже и свой режим ставят. Правило — по номерам прихода сообщений ленты (`recvSeq`), `srcAutoSeq` — номер последнего
+  // значения от источника, `firstBoardAfterSrc` — номер первой доски после него:
+  //  - значения от источника ещё не было — режим ставит доска, как раньше;
+  //  - доска пришла раньше него (накопилась на паузе до переподключения или до нажатия) — не ставит: значение от источника
+  //    свежее (ревью Х1 № 9 — прежде такая доска возвращала старое значение; ревью К1.2 № 3 — то же у переключателя);
+  //  - доска первая после него — могла быть посчитана до него, значение от источника главнее (узкое ревью № 15);
+  //  - любая следующая — ставит свой режим, в том числе когда на паузе накопились две и показана последняя (ревью Б2 № 3:
+  //    прежде одноразовый флаг снимался именно ею, и режим из `hello` держался до следующей доски).
+  // Счётчик прихода растёт на каждое сообщение, поэтому ничьей нет и часы стенда (в том числе замороженные `setClock`) в
+  // правиле не участвуют. Доски, вытесненные из буфера паузы, в счёте учтены: номер присваивается при приходе, не при показе.
+  let recvSeq = 0;
+  let srcAutoSeq = 0;
+  let firstBoardAfterSrc = 0;
   if (faultsBox) {
     showAuto(undefined);
     faultsBox.addEventListener("click", (ev) => {
@@ -1462,7 +1538,13 @@
         const n = ++autoPress;
         post("/client/auto/" + b.dataset.auto, (body) => {
           if (n !== autoPress || !autoBox) return;
-          if (body && typeof body.auto === "boolean") return showAuto(body.auto);
+          // Ответ переключателя — значение от источника, как `hello`: доска, посчитанная до нажатия, его не откатывает
+          // (ревью К1.2 № 3; та же природа, что у узкого ревью № 15). Номер — последнего пришедшего сообщения ленты.
+          if (body && typeof body.auto === "boolean") {
+            srcAutoSeq = recvSeq;
+            firstBoardAfterSrc = 0;
+            return showAuto(body.auto);
+          }
           // Нет ответа (сеть) — не «отказано»: «стенд не ответил» (ревью Б2 № 4).
           if (body === null) {
             showAuto(undefined);
@@ -1520,9 +1602,13 @@
     renderCtl();
     renderInt();
     renderLog();
-    // Первая доска после `hello` — режим «Авто» из `hello` главнее (узкое ревью № 15); дальше — по доскам, как раньше.
-    if (autoFromHello) autoFromHello = false;
-    else showAuto(board.clientAuto);
+  }
+  /** Режим «Авто» по доске (К1.2): правило порядка прихода — доска, пришедшая раньше последнего значения от источника
+   *  (`hello` или ответ переключателя) либо первая после него, своего режима не ставит; следующие — ставят. Отдельной
+   *  функцией рядом с `applyBoard`, а не её параметром: пропущенный номер прихода молча отключал бы правило (ревью К1.2 № 5).
+   *  При `srcAutoSeq === 0` (значения от источника не было) условие истинно само: номера начинаются с 1 (ревью К1.2 № 4). */
+  function autoFromBoard(b, seq) {
+    if (seq > srcAutoSeq && seq !== firstBoardAfterSrc) showAuto(b.clientAuto);
   }
   // Пометка паузы — внутри строки статуса (`role="status"`): видна при любой вкладке и раскладке (П12).
   const pauseNote = el("span", " · " + label("status.paused"), "conn-paused");
@@ -1543,6 +1629,13 @@
     }
     if (faultsPaused) faultsPaused.hidden = !off;
   }
+  // Х4а № 9, вторая половина («при паузе фокус уходит на `body` и после снятия не возвращается») — **не воспроизводится при
+  // текущей раскладке** (решение владельца 16.11, вариант (б); К1.6б): единственный источник `pult:pause` — пробел, а на
+  // нажимаемом элементе он паузу не ставит (`keys.js`), значит фокус не может стоять на кнопке реакции в момент паузы.
+  // Кода возврата здесь нет намеренно: удобство под случай, которого у человека не бывает, — тот же долг, что перенос.
+  // Инвариант держит тест `tests/demo/pult-focus-actions.test.ts` («пробел на кнопке реакции паузу не ставит») вместе с
+  // `tests/demo/keys-client.test.ts`: появится второй источник паузы (кнопка) — тест покраснеет, и возврат нужно будет
+  // сделать заново, по правилу `actFocusTarget`.
   document.addEventListener("pult:pause", (ev) => {
     const next = Boolean(ev && ev.detail && ev.detail.paused === true);
     if (next === paused) return;
@@ -1559,6 +1652,7 @@
       const b = pendingBoard;
       pendingBoard = null;
       applyBoard(b, pendingAt);
+      autoFromBoard(b, pendingSeq);
       return;
     }
     // Кнопки «Контроля» и «Собрать отчёт» — неактивны / снова активны на той же доске.
@@ -1574,24 +1668,34 @@
     } catch {
       return;
     }
+    // Номер прихода — им сверяется порядок `hello` и досок (К1.2); часы для этого не нужны.
+    const seq = ++recvSeq;
     if (e.type === "hello" || e.type === "status") setStatus(e.status);
     // Подключение (и переподключение EventSource после перезапуска стенда) — режим «Авто» заново у источника (ревью № 11).
     if (e.type === "hello" && faultsBox) {
       if (typeof e.clientAuto === "boolean") {
         showAuto(e.clientAuto);
-        autoFromHello = true;
+        srcAutoSeq = seq;
+        firstBoardAfterSrc = 0;
       } else {
-        // `hello` без режима (узкое ревью № 16): прежний «авто» не остаётся — «нет данных».
+        // `hello` без режима (узкое ревью № 16): прежний «авто» не остаётся — «нет данных»; режим снова ставят доски.
         autoKnown = undefined;
         showAuto(undefined);
-        autoFromHello = false;
+        srcAutoSeq = 0;
+        firstBoardAfterSrc = 0;
       }
     }
     else if (e.type === "board" && e.board && Array.isArray(e.board.cards)) {
+      // Первая доска после `hello` запоминается при приходе: вытесненная из буфера паузы, она всё равно учтена (ревью Б2 № 3).
+      if (srcAutoSeq !== 0 && firstBoardAfterSrc === 0) firstBoardAfterSrc = seq;
       if (paused) {
         pendingBoard = e.board;
         pendingAt = Date.now();
-      } else applyBoard(e.board, Date.now());
+        pendingSeq = seq;
+      } else {
+        applyBoard(e.board, Date.now());
+        autoFromBoard(e.board, seq);
+      }
     }
   };
   // Обрыв связи пульта с сервером — не то же, что отключение шины у источника; EventSource переподключится сам. Если

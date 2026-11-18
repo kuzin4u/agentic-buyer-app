@@ -51,6 +51,9 @@ export interface ProtoEntry {
   readonly endedAt?: string;
   readonly violator?: Subject;
   readonly protector?: Party | "undetermined";
+  /** Доказательство присоединено к остановке правилом, а не идентификатором (П28, вариант (1); `engine.ts`
+   *  `ATTACHED_BY_RULE`): пометка идёт в акт ACC-1 и в «Причины» — акт не вправе утверждать точную привязку, которой нет. */
+  readonly attachedByRule?: true;
 }
 
 /** Решение клиента — строкой «Журнала действий» (В1 (а)). */
@@ -107,8 +110,13 @@ export const UNCONDITIONED_REACT_MS = 15_000;
  *  запись, ревью № 2); у записи системы — ещё первое доказательство при появлении. Узнаётся запись системы не по ключу, а по
  *  пересечению доказательств (`sysSeqs`, Б4): ключ — для `index` и `gone`. */
 const keyOf = (type: ProtoType, cond: string | undefined, obj: string, sub?: string) => `${type}|${cond ?? ""}|${obj}${sub !== undefined ? `#${sub}` : ""}`;
-const entryKey = (e: Pick<ProtoEntry, "type" | "cond" | "guarantee" | "obj" | "confirmationId"> & { readonly sysSeq?: number }) =>
-  keyOf(e.type, e.cond ?? e.guarantee, e.obj, e.confirmationId ?? (e.sysSeq !== undefined ? String(e.sysSeq) : undefined));
+/** `stop` — ключ остановки, **названный движком** (`Verdict.stop`; П28, Р-1595): у условий журнала стенда без объекта
+ *  доказательств на шине нет (журнал в ленту интерпретаций не идёт), `sysSeq = min(seqs)` не берётся, и без этого ключа все
+ *  остановки одного условия получали бы одну запись. Запрет ревью Б4 «правка в движке пульта, не обходом в протоколе» этим не
+ *  нарушается: протокол не определяет границу остановки сам — ни по времени, ни по форме записей, ни по догадке; границу
+ *  провёл движок, а здесь запись лишь ключуется тем, что передали. */
+const entryKey = (e: Pick<ProtoEntry, "type" | "cond" | "guarantee" | "obj" | "confirmationId"> & { readonly sysSeq?: number; readonly stop?: string }) =>
+  keyOf(e.type, e.cond ?? e.guarantee, e.obj, e.confirmationId ?? e.stop ?? (e.sysSeq !== undefined ? String(e.sysSeq) : undefined));
 const nodeOf = (cond: string | undefined): NodeId | undefined =>
   cond === undefined ? undefined : (Object.keys(NODES) as NodeId[]).find((n) => (NODES[n].conds as readonly string[]).includes(cond));
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -127,7 +135,7 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
     return ms.length > 0 ? iso(Math.max(...ms)) : input.now;
   };
   // `sysSeqs` — доказательства записи системы (для узнавания той же остановки при сдвиге окна и при появлении объекта, Б4).
-  type Entry = ProtoEntry & { readonly sysSeq?: number; readonly sysSeqs?: readonly number[] };
+  type Entry = ProtoEntry & { readonly sysSeq?: number; readonly sysSeqs?: readonly number[]; readonly stop?: string };
   const entries: Entry[] = [...(prev.entries as readonly Entry[])];
   const index = new Set(entries.map(entryKey));
   const gone = new Set(prev.gone);
@@ -141,7 +149,16 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
   const merged = (have: readonly number[] | undefined, seqs: readonly number[]) => [...new Set([...(have ?? []).filter((s) => bySeq.has(s)), ...seqs])];
   // Субъект записи — по последнему вердикту той же остановки, в обеих ветках (ревью Б4 № 5).
   const subjects = (e: Pick<ProtoEntry, "violator" | "protector">) => ({ ...(e.violator !== undefined && { violator: e.violator }), ...(e.protector !== undefined && { protector: e.protector }) });
-  const add = (e: Omit<ProtoEntry, "no" | "status"> & { readonly sysSeq?: number; readonly seqs?: readonly number[] }) => {
+  /** Пометка привязки — свойство **нынешнего** вердикта, а не момента создания записи (ревью К3.1 № 2). Присоединение по
+   *  правилу могло появиться после записи (остановка с ключом была раньше безликой группы) и могло отмениться, когда в окне
+   *  стало две остановки этого вида. Поэтому она ставится и **снимается** на каждом шаге: иначе акт показывал бы привязку
+   *  правилом как точную — или держал бы снятую, то есть оговаривал бы доказательство, которое доказано. */
+  const withMark = (x: Entry, on: boolean): Entry => {
+    const { attachedByRule: _a, ...rest } = x;
+    void _a;
+    return on ? { ...rest, attachedByRule: true } : rest;
+  };
+  const add = (e: Omit<ProtoEntry, "no" | "status"> & { readonly sysSeq?: number; readonly seqs?: readonly number[]; readonly stop?: string }) => {
     const seqs = e.seqs ?? [];
     const { seqs: _drop, ...rest } = e;
     void _drop;
@@ -152,7 +169,7 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
       const j = entries.findIndex((x) => sameKind(x, e) && overlaps(x.sysSeqs, seqs));
       if (j >= 0) {
         const x = entries[j]!;
-        entries[j] = { ...x, ...(x.obj === "" && subjects(e)), sysSeqs: merged(x.sysSeqs, seqs) };
+        entries[j] = withMark({ ...x, ...(x.obj === "" && subjects(e)), sysSeqs: merged(x.sysSeqs, seqs) }, e.attachedByRule === true);
         return;
       }
       const g = goneSys.findIndex((x) => x.kind === kindOf(e) && overlaps(x.seqs, seqs));
@@ -170,16 +187,45 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
       if (j >= 0 && !index.has(target) && !gone.has(target)) {
         const x = entries[j]!;
         index.delete(entryKey(x));
-        const { sysSeq: _s, ...plain } = x;
+        // Ключ остановки — опознаватель записи **системы**; на объекте запись ключуется объектом, и `stop` снимается вместе
+        // с `sysSeq`: иначе ключ перенесённой записи не совпал бы с ключом, по которому её ищут (`target`).
+        const { sysSeq: _s, stop: _st, ...plain } = x;
         void _s;
-        const moved: Entry = { ...plain, obj: e.obj, ...subjects(e), sysSeqs: merged(x.sysSeqs, seqs) };
+        void _st;
+        const moved: Entry = withMark({ ...plain, obj: e.obj, ...subjects(e), sysSeqs: merged(x.sysSeqs, seqs) }, e.attachedByRule === true);
         index.add(entryKey(moved));
         entries[j] = moved;
         return;
       }
     }
+    // Безликая группа присоединилась к остановке по правилу — движок назвал ей ключ (П28, вариант (1)). Запись переключается
+    // на новый ключ: номер `П-NNN` и время появления прежние, второй записи нет. Иначе одна остановка давала бы **две**
+    // записи акта, и первая, безликая, оставалась бы «открыто» навсегда. Порядок именно такой и приходит со стенда: первая
+    // запись журнала об одной остановке несёт только витрину (`merchant_id`, `shop_id`) — идентификаторов остановки в ней
+    // нет, — и лишь следующая несёт поручение корзины, то есть безликая запись рождается **раньше** ключевой (ревью К3.1
+    // № 1; формы записей — `src/pult/standlog.ts`).
+    // Границу остановки по-прежнему проводит движок: признак присоединения приходит от него, протокол лишь узнаёт в безликой
+    // записи ту же остановку — безликая запись одного вида по построению одна.
+    if (e.obj === "" && e.stop !== undefined && e.attachedByRule === true) {
+      const j = entries.findIndex((x) => x.obj === "" && sameKind(x, e) && x.stop === undefined);
+      const target = entryKey(rest);
+      if (j >= 0 && !index.has(target) && !gone.has(target)) {
+        const x = entries[j]!;
+        index.delete(entryKey(x));
+        const keyed: Entry = withMark({ ...x, stop: e.stop, sysSeqs: merged(x.sysSeqs, seqs) }, true);
+        index.add(entryKey(keyed));
+        entries[j] = keyed;
+        return;
+      }
+    }
     const k = entryKey(rest);
-    if (index.has(k) || gone.has(k)) return;
+    if (index.has(k) || gone.has(k)) {
+      // Запись уже есть — заводить вторую нельзя, но пометку привязки надо привести к нынешнему вердикту: присоединение
+      // могло появиться позже записи или отмениться (`withMark`, ревью К3.1 № 2).
+      const j = entries.findIndex((x) => entryKey(x) === k);
+      if (j >= 0 && (entries[j]!.attachedByRule === true) !== (e.attachedByRule === true)) entries[j] = withMark(entries[j]!, e.attachedByRule === true);
+      return;
+    }
     // Номер — идентификатор записи модели 1.23 («П-NNN»), одинаковый в ru и en (запись в GLOSSARY — STATUS «Открыто», № 8).
     const no = `П-${String(++seq).padStart(3, "0")}`;
     index.add(k);
@@ -197,6 +243,9 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
       ...(v.guarantee !== undefined && { guarantee: v.guarantee, guaranteeText: GUARANTEE_INFO[v.guarantee].name }),
       obj: v.obj ?? "",
       ...(v.obj === undefined && v.seqs.length > 0 && { sysSeq: Math.min(...v.seqs) }),
+      // Ключ остановки — только у записи системы: запись с объектом ключуется объектом.
+      ...(v.obj === undefined && v.stop !== undefined && { stop: v.stop }),
+      ...(v.attachedByRule === true && { attachedByRule: true as const }),
       seqs: v.seqs,
       at: evidenceAt(v.seqs),
       ...(v.violator !== undefined && { violator: v.violator }),
@@ -280,11 +329,17 @@ export function protocolStep(prev: ProtocolState, input: ProtocolInput): Protoco
   return { entries, seq, gone: [...gone].slice(-GONE_KEPT), goneSys: goneSysKept.slice(-GONE_SYS_KEPT) };
 }
 
-/** Запись для экрана — без служебных полей узнавания записи системы (ревью Б4 № 8). */
+/** Запись для экрана — без служебных полей узнавания записи системы (ревью Б4 № 8): ключ остановки (`stop`) тоже служебный —
+ *  человеку он ничего не говорит, а пометка привязки (`attachedByRule`) говорит и остаётся. */
 const shown = (e: ProtoEntry): ProtoEntry => {
-  const { sysSeq: _s, sysSeqs: _ss, ...rest } = e as ProtoEntry & { readonly sysSeq?: number; readonly sysSeqs?: readonly number[] };
+  const { sysSeq: _s, sysSeqs: _ss, stop: _st, ...rest } = e as ProtoEntry & {
+    readonly sysSeq?: number;
+    readonly sysSeqs?: readonly number[];
+    readonly stop?: string;
+  };
   void _s;
   void _ss;
+  void _st;
   return rest;
 };
 

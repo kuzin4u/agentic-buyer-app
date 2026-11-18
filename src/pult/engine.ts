@@ -11,7 +11,7 @@
 // переданного аргументом.
 import { FAULT_OUTCOMES } from "../dashboards/control.js";
 import { STOP_STEPS, type Interpretation } from "../dashboards/interpret.js";
-import type { Phrase } from "./phrases.js";
+import { PULT, type Phrase } from "./phrases.js";
 import { CHECKABLE_CONDITIONS, isCheckable, type CheckableCondition, type Party, type Rule89 } from "./rules89.js";
 import { STAND_DELAY_MAX_MS, type StandLogEntry, type StandLogWhat, type StandTest } from "./standlog.js";
 
@@ -141,7 +141,10 @@ export const RULE_CAUSES = [
 export type RuleCause = (typeof RULE_CAUSES)[number];
 export type Cause =
   | { readonly kind: "rule"; readonly rule: RuleCause }
-  | { readonly kind: "fault"; readonly what: StandLogWhat }
+  // Сбой «П» стенда: код записи и тест, в котором он взведён. Тест — чтобы вердикт привязывался к строке таблицы 25 тестов
+  // по тесту, а не по коду: у двух тестов код может совпасть, и тогда привязка по коду разъехалась бы (Б5 № 7, К2.6).
+  // Записи без теста (служебные, пометки без кода) `test` не несут — привязка по коду остаётся запасным путём.
+  | { readonly kind: "fault"; readonly what: StandLogWhat; readonly test?: StandTest }
   // Пометка «ПР» доказывает попытку нарушения; `bus` — причина по шине того же условия, если была (Н-08: защитник
   // «Платформа» — только при отказе MANDATE_SCOPE на шине; решение владельца по П-3.3, 1).
   | { readonly kind: "mark"; readonly test: StandTest; readonly bus?: RuleCause };
@@ -221,12 +224,35 @@ export interface GuaranteeHit {
   readonly protector: Stopper;
   /** Транзакция или поручение, где сработала защита; нет — запись вне транзакций. */
   readonly obj?: string;
+  /** Ключ остановки без объекта (`stopKeyOf`, П28, Р-1592): им протокол ключует запись, когда доказательств на шине у
+   *  остановки нет (Р-1595). У остановки с объектом ключа нет — её ключует объект. */
+  readonly stop?: string;
+  /** Доказательство присоединено к остановке **правилом**, а не идентификатором (П28, вариант (1)): у записи нет ни одного
+   *  идентификатора, а другой остановки этого вида в окне не было. Пометка идёт в акт ACC-1 и в «Причины» (`ATTACHED_BY_RULE`):
+   *  привязка не доказана номером, и акт не вправе утверждать её как точную (довод Р-1540). */
+  readonly attachedByRule?: true;
+}
+
+/** Остановка системы по условию (К3.1, П28): записи без объекта, разложенные по остановкам, — вердикт создаётся по одному
+ *  **на остановку**, а не на условие (`verdict.ts`). Сводный `system[c]` при этом не меняется: плитки узлов и статусы правил
+ *  справочника читают худший статус условия. */
+export interface SystemStop {
+  readonly cond: CheckableCondition;
+  /** Условие по доказательствам **только этой** остановки: статус, доказательства, пометка, причина. */
+  readonly res: CondResult;
+  readonly stop?: string;
+  readonly attachedByRule?: true;
 }
 
 export interface ObjCheck {
   readonly id: string;
   readonly kind: "tx" | "mandate";
   readonly conds: CondResults;
+  /** К объекту точно привязана пометка «ПР» (`markPendingOf`): приложение заявляет о нарушении. По этому признаку «решение
+   *  клиента» не выносится ни в одном из трёх мест, где оно рождается: условия (`stopCause`), вердикт П-03 и ветка
+   *  сработавших защит (`verdict.ts`, К2.5) — иначе один и тот же запрет жил бы в разных понятиях пометки, а у П-03 — в
+   *  более узком (ревью Б4а № 12, ревью К2.5 № 1, 2). Ставится и транзакциям, и поручениям без покупки. Нет пометки — ключа нет. */
+  readonly marked?: true;
 }
 export interface EngineView {
   readonly objs: readonly ObjCheck[];
@@ -235,6 +261,9 @@ export interface EngineView {
   /** Своя часть системы: записи журнала стенда без объекта, поднявшие условие до его итогового статуса (номера записей).
    *  Нет ключа условия — своей части нет (Х2). */
   readonly systemOwn?: Partial<Record<CheckableCondition, readonly number[]>>;
+  /** Остановки системы по условиям журнала стенда (К3.1, П28, Р-1592): по одной на остановку, а не одной сводкой на условие.
+   *  Нет — движок остановок не выделял (журнал стенда недоступен): вердикт системы — прежним сводным путём. */
+  readonly systemStops?: readonly SystemStop[];
   readonly guarantees: readonly GuaranteeHit[];
 }
 
@@ -266,7 +295,11 @@ const r = (status: CondStatus, seqs: readonly number[] = [], note?: Note, log?: 
 const rc = (status: "bad" | "fired", rule: RuleCause, seqs: readonly number[] = [], log?: readonly number[]): CondResult =>
   r(status, seqs, undefined, log, { kind: "rule", rule });
 const causeOf = (e: StandLogEntry): Cause | undefined =>
-  e.what === "MARKED" ? (e.test !== undefined ? { kind: "mark", test: e.test } : undefined) : { kind: "fault", what: e.what };
+  e.what === "MARKED"
+    ? e.test !== undefined
+      ? { kind: "mark", test: e.test }
+      : undefined
+    : { kind: "fault", what: e.what, ...(e.test !== undefined && { test: e.test }) };
 
 /** Сбой стенда или пометка «ПР» → условия и статус. Срок R31 — отдельно (`r31`): «итог есть» — «соблюдено». */
 const FAULT_EFFECT: Partial<Record<StandLogWhat, readonly (readonly [CheckableCondition, CondStatus])[]>> = {
@@ -488,7 +521,10 @@ function txConds(
     // по самой пометке): иначе между
     // ответом Платформы и шагом итога на миг выносилось бы «решение клиента», и протокол заводил бы по нему запись — запись
     // акта зависела бы от того, попал ли пересчёт в долю секунды (Б4а, повторное ревью № 10 (1), вариант (а), П15).
-    const marked = markPending || (log ?? []).some((e) => e.what === "MARKED" && !(weak?.has(e.seq) ?? false));
+    // Точно привязанная пометка «ПР» — один признак на весь движок: `markPendingOf` (К2.5, ревью К2.5 № 1). Отдельная
+    // проверка «MARKED в журнале объекта и не `weak`» была бы вторым понятием и к тому же мёртвой: запись попадает в журнал
+    // объекта только когда `objsOfEntry` дал этот объект, а `weak` получает её ровно при неточной привязке.
+    const marked = markPending;
     const why = marked
       ? codes.has("MANDATE_EXPIRED")
         ? "expired"
@@ -779,7 +815,20 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
     // Р-1540 (#issuecomment-6835884137): номер заказа в записи есть, у покупки есть заказы, но этого среди них нет —
     // противоречие звеньев, обвинение по половине доказательства: не выше «ждёт». Заказов у покупки нет — противоречить
     // нечему (как на уровне заказа при транзакции без поручений).
-    const mismatch = (c: readonly PultTx[]) => ord !== undefined && c.some((t) => t.orderIds.length > 0 && !t.orderIds.includes(ord));
+    // П27 (К2.4, решение владельца 16.11): витрина — такое же звено, как номер заказа. На уровне заказа витрина сверяется
+    // (`shopsByOrder`: номера заказов разных витрин могут совпасть), а на уровне поручения не сверялась — запись с
+    // `mandate_id`, `order_id` и `shop_id`, где заказ у покупки есть, но был у другой витрины, получала точную привязку.
+    // Витрина записи неизвестна — противоречить нечему, привязка остаётся точной (как при отсутствии заказов у покупки).
+    // Оговорка «витрина покупки неизвестна» (`shopsByOrder[ord] !== undefined`) защитная и сегодня недостижима: такие
+    // записи забирает уровень заказа выше (`!t.shopsByOrder[ord]` — кандидат остаётся), и до этого правила дело не доходит.
+    // Оставлена сознательно: без неё правило обвиняло бы по отсутствию данных, прямо против довода Р-1540.
+    const mismatch = (c: readonly PultTx[]) =>
+      ord !== undefined &&
+      c.some(
+        (t) =>
+          (t.orderIds.length > 0 && !t.orderIds.includes(ord)) ||
+          (sh !== undefined && t.shopsByOrder[ord] !== undefined && !t.shopsByOrder[ord]!.includes(sh)),
+      );
     for (const c of [levelCart, levelIntent])
       if (c.length > 0) {
         if (c.length > 1 || c.some((t) => t.linkConflict !== undefined)) return pack(c, true);
@@ -790,15 +839,57 @@ function objsOfEntry(e: StandLogEntry, model: TxModel): { readonly ids: readonly
   return { ids: [] };
 }
 
+/** Пометка присоединения по правилу (П28, вариант (1); решение владельца 17.11.2026) — одними словами в акте ACC-1 и в
+ *  «Причинах», из одного источника, как провенанс в П26. Присоединение не доказано идентификатором, а выведено из того, что
+ *  другого кандидата в окне нет: без пометки акт утверждал бы точную привязку, которой нет, — обвинение по половине
+ *  доказательства, против чего стоит Р-1540. */
+export const ATTACHED_BY_RULE: Phrase = PULT["int.attached_by_rule"];
+
+/** Идентификаторы, по которым различаются остановки без объекта (П28, Р-1592), — **от широкого звена к узкому**: поручение
+ *  (`mandate_id`, `intent_id`) → заказ (`order_id`, `order_ref` — то же звено, как в `objsOfEntry`) → операция (`op_ref`) →
+ *  запрос подтверждения (`confirmation_id`).
+ *
+ *  Направление именно такое: широкий идентификатор первым **склеивает** записи одной сущности, узкий первым расщепил бы одну
+ *  остановку, записи которой несут разные номера операций. По п. 4 карточки П28 лишняя запись акта дороже недосчитанной
+ *  (ложная запись о нарушении в акте приёмки, П10), поэтому при сомнении записи остаются вместе.
+ *  Приоритет `objsOfEntry` (op_ref → confirmation_id → заказ → поручение) обратный и опорой здесь **не служит**: там задача —
+ *  привязать запись к самому узкому кандидату, а не задать тождество остановки.
+ *  Витрина (`merchant_id`, `shop_id`) в ключ не входит: у одной витрины остановок много — это не остановка. */
+const STOP_ID_KEYS = ["mandate_id", "intent_id", "order_id", "order_ref", "op_ref", "confirmation_id"] as const;
+/** Ключ остановки по идентификаторам самой записи; идентификаторов нет вовсе — ключа нет (тогда вариант (1): присоединение
+ *  к единственной остановке того же вида или общая группа «без идентификаторов»). */
+const stopKeyOf = (ids: Readonly<Partial<Record<string, string>>> | undefined): string | undefined => {
+  for (const k of STOP_ID_KEYS) {
+    const v = ids?.[k];
+    if (v !== undefined && v !== "") return `${k}=${v}`;
+  }
+  return undefined;
+};
+
 /** Сработавшие защиты: записи одной остановки — один вид защиты в одном объекте — склеиваются в одну (ревью П-3.2б № 4:
  *  ответ 403, журнал агента и шаг `failed` иначе дали бы тройной счёт в «Журнале» и «Отчёте»). Кто остановил — `stoppedBy`;
- *  лимит клиента — банк (отказ банка, о котором сообщает событие Платформы). */
+ *  лимит клиента — банк (отказ банка, о котором сообщает событие Платформы).
+ *
+ *  Остановки **без объекта** различаются ключом по идентификаторам записи (`stopKeyOf`; К3.1, П28, Р-1592): прежде ключ был
+ *  `` `${kind}|` `` на все такие записи, и две разные остановки одного вида давали одну сработавшую защиту и одну запись акта
+ *  (ревью Б4 № 3, 7). */
 function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<number, string>): GuaranteeHit[] {
-  const groups = new Map<string, { kind: Guarantee; obj?: string; recs: Interpretation[] }>();
+  interface Group {
+    kind: Guarantee;
+    obj?: string;
+    stop?: string;
+    /** Свои записи остановки — те, что отнесены к ней объектом или идентификатором. */
+    recs: Interpretation[];
+    /** Записи, присоединённые правилом (П28, вариант (1)): они идут в доказательства, но не в субъект и не в часы. */
+    joined?: Interpretation[];
+  }
+  const groups = new Map<string, Group>();
+  const LOOSE = (kind: Guarantee) => `${kind}|`;
   const add = (kind: Guarantee, x: Interpretation) => {
     const obj = objOf.get(x.seq);
-    const key = `${kind}|${obj ?? ""}`;
-    const g = groups.get(key) ?? { kind, ...(obj !== undefined && { obj }), recs: [] };
+    const stop = obj === undefined ? stopKeyOf(x.ids) : undefined;
+    const key = obj !== undefined ? `${kind}|${obj}` : stop !== undefined ? `${kind}|#${stop}` : LOOSE(kind);
+    const g = groups.get(key) ?? { kind, ...(obj !== undefined && { obj }), ...(stop !== undefined && { stop }), recs: [] };
     g.recs.push(x);
     groups.set(key, g);
   };
@@ -813,14 +904,35 @@ function guaranteesOf(items: readonly Interpretation[], objOf: ReadonlyMap<numbe
     // Р-1524: только ответ витрины на запрос оплаты нашего агента — запись сюжета или пометка «ПР» защиты не дают.
     else if (x.ref === PAY_CALL && merchantAnswer(x, new Set(CODES.pay_refused))) add("pay_refused", x);
   }
+  // Вариант (1) П28: запись без ни одного идентификатора присоединяется к единственной остановке того же вида в окне — с
+  // пометкой, что доказательство отнесено правилом. Остановок того же вида больше одной (или нет вовсе) — запись остаётся
+  // общей группой «без идентификаторов»: иначе пришлось бы угадывать, к которой она относится.
+  for (const kind of GUARANTEES) {
+    const loose = groups.get(LOOSE(kind));
+    if (loose === undefined) continue;
+    const hosts = [...groups.values()].filter((g) => g.kind === kind && g !== loose);
+    if (hosts.length !== 1) continue;
+    hosts[0]!.joined = loose.recs;
+    groups.delete(LOOSE(kind));
+  }
   return [...groups.values()]
-    .map((g): GuaranteeHit => ({
-      kind: g.kind,
-      seq: g.recs[0]!.seq,
-      seqs: g.recs.map((x) => x.seq),
-      protector: g.kind === "limit_client" ? "bank" : stoppedBy(g.recs, CODES[g.kind]),
-      ...(g.obj !== undefined && { obj: g.obj }),
-    }))
+    .map((g): GuaranteeHit => {
+      const own = [...g.recs].sort((a, b) => a.seq - b.seq);
+      // Присоединённая запись могла прийти раньше своих — порядок доказательств по шине, а не по группам.
+      const all = [...g.recs, ...(g.joined ?? [])].sort((a, b) => a.seq - b.seq);
+      return {
+        kind: g.kind,
+        // Первая запись и «кто защитил» — только по **своим** записям остановки (ревью К3.1 № 5): привязка правилом не
+        // доказана идентификатором, и выводить из неё защитника или время появления остановки нельзя — это обвинение по
+        // половине доказательства, против чего стоит Р-1540. В доказательствах присоединённая запись при этом видна.
+        seq: own[0]!.seq,
+        seqs: all.map((x) => x.seq),
+        protector: g.kind === "limit_client" ? "bank" : stoppedBy(own, CODES[g.kind]),
+        ...(g.obj !== undefined && { obj: g.obj }),
+        ...(g.stop !== undefined && { stop: g.stop }),
+        ...(g.joined !== undefined && { attachedByRule: true as const }),
+      };
+    })
     .sort((a, b) => a.seq - b.seq);
 }
 
@@ -865,9 +977,12 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // транзакции R17 «нарушено», и протокол заводит открытую запись рядом с «сработало» (живой тест протокола по префиксам
   // ленты). Вердикт по пометке выносится к итогу прогона — на секунды позже.
   const entries = (o.standLog ?? []).filter((e) => inWindow(e) && (e.what !== "MARKED" || e.test === undefined || outcomeOf(e) !== undefined));
-  /** Транзакции и поручения с точно привязанной пометкой «ПР» — для запрета «решения клиента» (Б4а, № 10 (1)): по всему
-   *  журналу стенда — и без итога прогона, и старше окна. Запрет ведёт только к «не определён», поэтому окно и итог его не
-   *  снимают (ревью Б4а № 1: иначе на краю окна правила (1) и (4) давали бы «решение клиента»). */
+  /** Транзакции и поручения с точно привязанной пометкой «ПР» — **единственный признак пометки** для запрета «решения
+   *  клиента» (Б4а, № 10 (1); К2.5): по всему журналу стенда — и без итога прогона, и старше окна. Запрет ведёт только к
+   *  «не определён», поэтому окно и итог его не снимают (ревью Б4а № 1: иначе на краю окна правила (1) и (4) давали бы
+   *  «решение клиента»). Неточная привязка (`weak`: конфликт звеньев, чужой номер заказа) пометкой здесь не считается — она
+   *  не прячет «решение клиента» чужой покупки (ревью № 10 № 6). Отсюда признак идёт в `ObjCheck.marked` и в `stopCause`:
+   *  второго понятия пометки в движке нет (ревью К2.5 № 1). */
   const markPendingOf = new Set(
     // Пометка и без кода теста (формат журнала её допускает) — тоже: иначе она старше окна выпадала бы из запрета (повторное
     // ревью Б4а № 1).
@@ -904,16 +1019,25 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   const objs: ObjCheck[] = [];
   for (const t of model.txs) {
     const intent = t.intentId !== undefined ? mandateById.get(t.intentId) : undefined;
-    objs.push({ id: t.id, kind: "tx", conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id), markPendingOf.has(t.id)) });
+    objs.push({
+      id: t.id,
+      kind: "tx",
+      conds: txConds(t, recsOf(t.seqs), intent ? recsOf(intent.seqs) : [], own(t.id), o, weakOf.get(t.id), markPendingOf.has(t.id)),
+      ...(markPendingOf.has(t.id) && { marked: true }),
+    });
     for (const s of t.seqs) objOf.set(s, t.id);
   }
   for (const m of model.mandates) {
     for (const s of m.seqs) if (!objOf.has(s)) objOf.set(s, m.id);
     if (m.txIds.length > 0) continue;
-    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs), own(m.id)) });
+    // Поручение без покупки — тоже с признаком пометки: по нему идёт ветка сработавших защит (`revoke`), и там «решение
+    // клиента» запрещается тем же признаком (ревью К2.5 № 2).
+    objs.push({ id: m.id, kind: "mandate", conds: mandateConds(m, recsOf(m.seqs), own(m.id)), ...(markPendingOf.has(m.id) && { marked: true }) });
   }
   const logOn = o.standLog !== undefined;
   const system: Partial<Record<CheckableCondition, CondResult>> = {};
+  /** Остановки системы по условиям журнала стенда (К3.1, П28) — по одной на остановку. */
+  const systemStops: SystemStop[] = [];
   /** Записи журнала без объекта и их фактический статус по условию — для `systemOwn` (Х2). */
   const sysRaised: [CheckableCondition, number, CondStatus][] = [];
   for (const c of CHECKABLE_CONDITIONS) {
@@ -945,24 +1069,87 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
     // транзакция могла уйти из окна, «нет на шине» тогда ложно (повторное ревью П-3.2в № A).
     // Записи позднего итога без `op_ref` после срока: судить не по чему — не «ждёт» навсегда, а пометка (Р-1537; повторное
     // ревью П-3.2в № D). Статус условия — от объектов и других записей («соблюдено» или «не применяется»), не выше.
-    const unlinked: number[] = [];
-    for (const e of systemLog) {
-      for (const [c, st] of effectsOf(e)) sysRaised.push([c, e.seq, raise(system, c, st, e)]);
-      if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
-      const p = e.ids.op_ref;
-      const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
-      if (p === undefined && overdue) {
-        unlinked.push(e.seq);
-        continue;
+    /** Записи журнала без объекта → условия. Одно правило на два применения (К3.1): им считается и сводка по условию
+     *  (`system`), и каждая остановка отдельно (`systemStops`) — иначе правила разошлись бы двумя копиями. `onRaise` —
+     *  фактический статус записи для `systemOwn` (Х2); возвращает номера записей позднего итога без `op_ref`. */
+    const raiseLog = (
+      out: Partial<Record<CheckableCondition, CondResult>>,
+      es: readonly StandLogEntry[],
+      onRaise?: (c: CheckableCondition, seq: number, st: CondStatus) => void,
+    ): number[] => {
+      const free: number[] = [];
+      for (const e of es) {
+        // `raise` вызывается до `onRaise`, а не аргументом в `onRaise?.(…)`: при необязательном вызове аргументы не
+        // вычисляются вовсе, и без `onRaise` (расчёт одной остановки) условие не поднималось бы совсем.
+        for (const [c, st] of effectsOf(e)) {
+          const got = raise(out, c, st, e);
+          onRaise?.(c, e.seq, got);
+        }
+        if (!LATE.has(e.what) || (windowFrom !== undefined && Date.parse(e.at) < windowFrom)) continue;
+        const p = e.ids.op_ref;
+        const overdue = o.now !== undefined && Date.parse(o.now) - Date.parse(e.at) > (o.lateMs ?? LATE_MS);
+        if (p === undefined && overdue) {
+          free.push(e.seq);
+          continue;
+        }
+        const lost = p !== undefined && overdue && !seenOps.has(p);
+        const got = raise(out, "R31", lost ? "bad" : "wait", e);
+        onRaise?.("R31", e.seq, got);
+        // Причина R31 «нарушено» — потерянный итог (пульт), а не сам сбой задержки стенда.
+        if (lost && out.R31!.status === "bad") out.R31 = { ...out.R31!, cause: { kind: "rule", rule: "late_lost" } };
       }
-      const lost = p !== undefined && overdue && !seenOps.has(p);
-      sysRaised.push(["R31", e.seq, raise(system, "R31", lost ? "bad" : "wait", e)]);
-      // Причина R31 «нарушено» — потерянный итог (пульт), а не сам сбой задержки стенда.
-      if (lost && system.R31!.status === "bad") system.R31 = { ...system.R31!, cause: { kind: "rule", rule: "late_lost" } };
-    }
+      return free;
+    };
+    const unlinked = raiseLog(system, systemLog, (c, seq, st) => sysRaised.push([c, seq, st]));
     // Записи — в доказательствах при любом статусе; пометка — только когда статус лучше «ждёт» (ревью блока № 6).
     const r31 = system.R31!;
     if (unlinked.length > 0) system.R31 = { ...r31, ...(RANK[r31.status] > RANK.wait && { note: "late_unlinked" as const }), log: [...(r31.log ?? []), ...unlinked] };
+
+    // Остановки системы по условиям (К3.1, П28, Р-1592): записи журнала без объекта — по группам остановок, а не одной
+    // сводкой на условие. Прежде вторая остановка того же условия приходила одним вердиктом с первой и попадала в ту же
+    // запись акта (ревью Б4 № 3, 7). Остановка берётся только «нарушено» и «сработало»: вердикты бывают лишь по ним.
+    const byStop = new Map<string, StandLogEntry[]>();
+    for (const e of systemLog) {
+      const k = stopKeyOf(e.ids) ?? "";
+      byStop.set(k, [...(byStop.get(k) ?? []), e]);
+    }
+    const loose = byStop.get("") ?? [];
+    const ident = [...byStop].filter(([k]) => k !== "");
+    const stops = (res: Partial<Record<CheckableCondition, CondResult>>, c: CheckableCondition) =>
+      res[c] !== undefined && (res[c]!.status === "bad" || res[c]!.status === "fired");
+    const identRes = new Map<string, Partial<Record<CheckableCondition, CondResult>>>();
+    for (const [k, es] of ident) {
+      const per: Partial<Record<CheckableCondition, CondResult>> = {};
+      raiseLog(per, es);
+      identRes.set(k, per);
+    }
+    const looseRes: Partial<Record<CheckableCondition, CondResult>> = {};
+    if (loose.length > 0) raiseLog(looseRes, loose);
+    // Возврат `raiseLog` (поздние итоги без `op_ref`, Р-1537) в расчёте остановки не нужен и отбрасывается: такая запись
+    // статус не поднимает, а пометка `late_unlinked` — свойство сводки условия, не остановки. Сегодня это и недостижимо:
+    // формы стенда `OUTCOME_EVENT_DELAYED` и `OUTCOME_EVENTS_REORDERED` несут только `op_ref` (`standlog.ts`), и запись без
+    // него уходит в группу «без идентификаторов», у которой остановки R31 не возникает (ревью К3.1 № 7).
+    for (const c of CHECKABLE_CONDITIONS) {
+      const hosts = ident.filter(([k]) => stops(identRes.get(k)!, c));
+      const looseStop = loose.length > 0 && stops(looseRes, c);
+      // Вариант (1) П28: запись без ни одного идентификатора присоединяется к единственной остановке этого условия в окне —
+      // доказательства считаются заново по объединённому набору, пометка говорит, что привязка сделана правилом.
+      // Субъект остановки присоединённая запись изменить не может (в отличие от ветки защит, где это пришлось запретить
+      // явно — ревью К3.1 № 5): у одного условия журнала источник причины один — `MARK_EFFECT` отдаёт каждому тесту своё
+      // условие, `FAULT_EFFECT` каждому условию — свой код сбоя. Появится условие с двумя источниками причины — правило
+      // пересмотреть: тогда причину считать по своим записям, а объединять только доказательства.
+      if (looseStop && hosts.length === 1) {
+        const [k, es] = hosts[0]!;
+        const per: Partial<Record<CheckableCondition, CondResult>> = {};
+        raiseLog(per, [...es, ...loose].sort((a, b) => a.seq - b.seq));
+        systemStops.push({ cond: c, res: per[c]!, stop: k, attachedByRule: true });
+        continue;
+      }
+      for (const [k] of hosts) systemStops.push({ cond: c, res: identRes.get(k)![c]!, stop: k });
+      // Остановок этого вида больше одной (или нет вовсе) — записи без идентификаторов остаются общей группой: угадывать,
+      // к которой они относятся, пульт не вправе (инвариант 2).
+      if (looseStop) systemStops.push({ cond: c, res: looseRes[c]! });
+    }
   }
   // Остановка, записанная по поручению-намерению с одной покупкой, — остановка этой покупки: одна остановка — одна защита
   // (ревью П-5.1 № 2).
@@ -972,7 +1159,13 @@ export function evaluate(model: TxModel, items: readonly Interpretation[], o: En
   // условие до его итогового статуса. Поздние итоги без `op_ref` (Р-1537) статус не поднимают и сюда не входят.
   const systemOwn: Partial<Record<CheckableCondition, number[]>> = {};
   for (const [c, seq, st] of sysRaised) if (st === system[c]!.status) (systemOwn[c] ??= []).push(seq);
-  return { objs, system: system as CondResults, systemOwn, guarantees: guaranteesOf(items, guaranteeObj) };
+  return {
+    objs,
+    system: system as CondResults,
+    systemOwn,
+    ...(logOn && { systemStops }),
+    guarantees: guaranteesOf(items, guaranteeObj),
+  };
 }
 
 /** Статус правила справочника по статусам его проверяемых условий; без проверяемых — «на стенде не проверяется», а

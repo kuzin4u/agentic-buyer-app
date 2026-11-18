@@ -9,6 +9,9 @@
 // ячейки. В строках — только идентификаторы, коды и подписи (инвариант 1).
 import { markdownCell } from "../dashboards/control-feed.js";
 import { STAND_TEST_KIND_LABEL } from "../dashboards/stand-tests.js";
+// Пометка привязки по правилу — из движка, одним источником с экраном «Причины» (П28): копия литералом разошлась бы с ним
+// молча (ревью слияния PR #20, № 5 — тот же довод, что у пометки провенанса).
+import { ATTACHED_BY_RULE } from "./engine.js";
 import type { PultActionKind } from "./actions.js";
 import { PULT, type Phrase } from "./phrases.js";
 import type { ProtoEntry, ProtoStatus } from "./protocol.js";
@@ -36,6 +39,10 @@ export interface Acc1Record {
   readonly action?: ProtoEntry["reaction"];
   /** Секунд от появления до реакции — `ProtoEntry.reactSec`. */
   readonly reactSec?: ProtoEntry["reactSec"];
+  /** Доказательство присоединено к остановке правилом, а не идентификатором — `ProtoEntry.attachedByRule` (П28, вариант (1)).
+   *  Пометка пишется в замечании строки теми же словами, что на экране «Причины» (`ATTACHED_BY_RULE` движка): читатель акта
+   *  видит, что привязка сделана правилом, а не номером. Акт её не вычисляет — только подписывает (инвариант 2). */
+  readonly attachedByRule?: true;
 }
 
 /** Подписи статусов и реакций — из словаря пульта окна А (один источник с панелью «Журнал»); `Record` по типу движка:
@@ -96,15 +103,24 @@ export const KNOWN_NOTES: Partial<Readonly<Record<TestCode, KnownNote>>> = {
 };
 
 const AUTO_LABEL: Phrase = p("эмулятор клиента: авто", "client emulator: auto");
-/** Пометка провенанса У-01…У-04 (Б5): «да» автоматического прогона — готовность пульта, не пройденный тест оператора. */
-const OPERATOR_BY_TEST_LABEL: Phrase = p(
+/** Пометка провенанса У-01…У-04 (Б5): «да» автоматического прогона — готовность пульта, не пройденный тест оператора.
+ *  Экспортируется, чтобы тесты сверяли **эту** строку, а не её копию литералом: копия осталась бы зелёной на устаревшем
+ *  тексте или покраснела бы не там, где правка (ревью слияния PR #20, № 5). */
+export const OPERATOR_BY_TEST_LABEL: Phrase = p(
   "автоматический прогон: роль оператора играл тест — окончательное «да» ставит ручная приёмка владельца",
   "automated run: the operator's role was played by a test — the final \"yes\" is given by the owner's manual acceptance",
 );
 
 /** Параметры акта. `known` — известные причины (по умолчанию `KNOWN_NOTES`; подмена — для теста границы замечаний, ревью
  *  К8 № 1). `operatorByTest` — акт собран автоматическим прогоном 25 тестов (П-11.5б): у строк оператора (У-01…У-04) с
- *  прогоном — пометка провенанса. Акт с экрана «Отчёт» собирается без неё: там оператор — человек. */
+ *  прогоном — пометка провенанса.
+ *
+ *  **Откуда берётся `operatorByTest` (П26, Б5 № 1 вариант (б)).** Из провенанса прогона — липкого признака сборки
+ *  демо-стенда (`ActProvenance` в `src/demo/pult-act.ts`): нажатие, пришедшее с `by=test`, поднимает его на весь прогон.
+ *  Так помечается и акт, собранный кнопкой «Собрать отчёт» на том же стенде (прежде он провенанса не несла вовсе: параметр
+ *  умел ставить только файл теста), и акт автоматического прогона 25 тестов. Считать признак по журналу реакций нельзя:
+ *  журнал — окно последних нажатий, и в длинном прогоне нажатия теста из него вытесняются (повторное ревью Б-К4, блокер 1).
+ *  Источник признака один — поэтому поля `reactions` у акта нет. */
 export interface Acc1Opts {
   readonly known?: Partial<Readonly<Record<TestCode, KnownNote>>>;
   readonly operatorByTest?: boolean;
@@ -120,6 +136,8 @@ const recText = (x: Acc1Record): Phrase => {
   const parts = [ACC1_STATUS_LABEL[x.status]];
   if (x.action) parts.push(ACC1_ACTION_LABEL[x.action]);
   if (x.reactSec !== undefined) parts.push(joinP([PULT["log.react"], p(`${x.reactSec}`, `${x.reactSec}`), PULT["card.sec"]], " "));
+  // Пометка привязки — последней частью записи, теми же словами, что в «Причинах» (П28; `ATTACHED_BY_RULE` движка).
+  if (x.attachedByRule === true) parts.push(ATTACHED_BY_RULE);
   const head = `${x.id} (${x.at}) —`;
   return joinP([p(head, head), joinP(parts, ", ")], " ");
 };

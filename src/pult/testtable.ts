@@ -793,7 +793,10 @@ export function testTable(input: TestTableInput): TestTable {
           !mine.includes(v) &&
           v.cause !== undefined &&
           ((v.cause.kind === "mark" && v.cause.test === spec.test) ||
-            (v.cause.kind === "fault" && what.includes(v.cause.what)) ||
+            // Б5 № 7 (К2.6 окна А): тест записи знает сам вердикт — сверка по нему, а не по коду. У двух тестов код может
+            // совпасть, и привязка по коду отдала бы вердикт чужой строке. Тест в причине есть не у всех записей (служебные
+            // его не несут) — тогда остаётся прежний путь по коду (`FAULT_WHAT`).
+            (v.cause.kind === "fault" && (v.cause.test !== undefined ? v.cause.test === spec.test : what.includes(v.cause.what))) ||
             (spec.test === "Н-12" && v.cause.kind === "rule" && v.cause.rule === "late_lost")),
       );
       mine = [...mine, ...extra];

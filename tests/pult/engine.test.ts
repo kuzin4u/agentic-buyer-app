@@ -6,11 +6,11 @@ import type { Interpretation, TxIds, Who } from "../../src/dashboards/interpret.
 import { evaluate, GUARANTEE_CODES, GUARANTEE_INFO, hasCardNumber, HIDDEN_RECORD, MERCHANT_STOP_CODES, stoppedBy, LATE_MS, NOTE_LABEL, ruleStatus, STATUS_LABEL, STATUSES, worstStatus, type CondResults } from "../../src/pult/engine.js";
 import { PULT } from "../../src/pult/phrases.js";
 import { CHECKABLE_CONDITIONS, CONDITIONS, isCheckable, PARTIES, RULES89, ruleText } from "../../src/pult/rules89.js";
-import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
+import { STAND_DELAY_MAX_MS, STAND_TESTS, type StandFaultForm, type StandFaultIds, type StandIds, type StandLogEntry, type StandLogWhat, type StandTest } from "../../src/pult/standlog.js";
 import { buildTxModel } from "../../src/pult/tx.js";
 import { subjectsOf, verdicts, type Verdict } from "../../src/pult/verdict.js";
 import { controlView, dueWaits, hasPassport, passports, WAIT_MS, waits } from "../../src/pult/control.js";
-import { conditionsView } from "../../src/pult/conditions.js";
+import { conditionsView, rulesForPage } from "../../src/pult/conditions.js";
 import { cardLikeNumber } from "../support/card-like.js";
 import { buildDiagSnapshot } from "../../src/demo/diag.js";
 import { causesView, DECISION_TODO, GUARANTEE_TODO, KIND_CONSEQUENCES, NO_GUARD_NEEDED, NODE_CONSEQUENCES, SCOPE_NO_CART_TITLE, SCOPE_NO_CART_TODO, STOPPED_CONSEQUENCES, type CauseItem } from "../../src/pult/causes.js";
@@ -516,6 +516,50 @@ describe("№ 10 (Р-1548): корзина драйвера «ПР» — тра�
     const r = judgeLog(items, weak).vs.filter((v) => v.cond === "R09" && v.obj === "CDB1");
     expect(r.map((v) => v.kind)).toEqual(["client_decision"]);
   });
+  it("Б4а № 12 (К2.5): пометка «ПР» запрещает «решение клиента» и на пути П-03 — отказ от корзины без остановки", () => {
+    // Путь П-03 в `verdict.ts` выносит «решение клиента» по одному событию `mandate.rejected`, без остановки и без условия
+    // R09, поэтому запрет пометкой через `stopCause` его не касался (ревью Б4а № 12). Теперь признак — один: `ObjCheck.marked`.
+    const items = purchase("DC1", { skip: ["signed", "order", "start", "pay", "done"], at: { end: () => [event("mandate.rejected", { mandate_id: "CDC1" })] } });
+    const plain = judgeLog(items, []).vs.filter((v) => v.kind === "client_decision");
+    expect(plain).toHaveLength(1); // без пометки — как раньше
+    expect(judgeLog(items, []).ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    // Пометка «ПР» этой корзины — приложение заявляет о нарушении: «решение клиента» не выносится.
+    const mark = [entry("MARKED", { mandate_id: "CDC1" }, { test: "Н-06" })];
+    const withMark = judgeLog(items, mark);
+    expect(withMark.ev.objs.find((o) => o.kind === "tx")!.marked).toBe(true);
+    expect(withMark.vs.filter((v) => v.kind === "client_decision")).toEqual([]);
+    // Неточная пометка запрета не даёт — она не об этой покупке (ревью № 10 № 6). Для неточности у покупки должны быть
+    // заказы, а номер заказа в записи — другой (Р-1540): без заказов привязка по поручению точная, и запрет сработал бы.
+    const withOrder = purchase("DC3", { skip: ["signed", "start", "pay", "done"], at: { end: () => [event("mandate.rejected", { mandate_id: "CDC3" })] } });
+    const weak = [entry("MARKED", { mandate_id: "CDC3", order_ref: "O-чужой" }, { test: "Н-02" })];
+    const w = judgeLog(withOrder, weak);
+    expect(w.ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    expect(w.vs.filter((v) => v.kind === "client_decision")).toHaveLength(1);
+    // То же с разыгранным прогоном (у пометки есть шаг итога): неточность по-прежнему снимает запрет — иначе ложное
+    // «нарушение» прятало бы отказ клиента чужой покупки. Признак пометки один и тот же (`markPendingOf`), поэтому оба
+    // случая проходят через него (ревью К2.5 № 1, № 4).
+    const wPlayed = judgeLog([...withOrder, outcome("fault.marked", "Н-02", 1)], weak);
+    expect(wPlayed.ev.objs.find((o) => o.kind === "tx")!.marked).toBeUndefined();
+    expect(wPlayed.vs.filter((v) => v.kind === "client_decision")).toHaveLength(1);
+  });
+  it("ревью К2.5 № 2: пометка «ПР» запрещает «решение клиента» и в ветке сработавших защит — поручение без покупки", () => {
+    // Третье место, где рождается «решение клиента»: вердикт по сработавшей защите `revoke` у поручения без покупки.
+    // Прежде пометку смотрели только условия и П-03, и здесь при точной пометке выносилось «решение клиента».
+    const items = [
+      step("intent.awaiting_signature", { mandate_id: "IPR" }, { stage: "mandate" }),
+      event("mandate.signed", { mandate_id: "IPR" }),
+      event("mandate.revoked", { mandate_id: "IPR" }, { stage: "revoke" }),
+      step("revoke.refused", { mandate_id: "IPR" }, { code: "MANDATE_REVOKED" }),
+    ];
+    const plain = judgeLog(items, []).vs.filter((v) => v.guarantee === "revoke");
+    expect(plain).toMatchObject([{ kind: "client_decision", violator: "client_decision", protector: "undetermined" }]);
+    // Точная пометка «ПР» по этому поручению — защита остаётся, нарушитель «не определён» (как `inactive_*` в `stopCause`).
+    const mark = [entry("MARKED", { mandate_id: "IPR" }, { test: "Н-06" })];
+    const r = judgeLog(items, mark);
+    expect(r.ev.objs.find((o) => o.kind === "mandate")!.marked).toBe(true);
+    expect(r.vs.filter((v) => v.guarantee === "revoke")).toMatchObject([{ kind: "protection", violator: "undetermined", protector: "undetermined" }]);
+    expect(r.vs.filter((v) => v.kind === "client_decision")).toEqual([]);
+  });
   it("ревью Б4а № 1: пометка «ПР» старше окна не судится, но «решение клиента» по-прежнему прячет (запрет — по всему журналу)", () => {
     const shape = purchase("DB3", {
       skip: ["order", "start", "pay", "done"],
@@ -647,6 +691,17 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     ];
     const leak = fault("UPK_CODE_LEAKED", { confirmation_id: "QL2" }, "Н-11");
     expect(txOf(withLog(purchase("L2", { at: { start: () => q("L2") } }), [leak])).R20).toMatchObject({ status: "bad", log: [leak.seq] });
+    // Б5 № 7 (К2.6): причина сбоя несёт и тест записи — по нему вердикт привязывается к строке таблицы 25 тестов, а не по
+    // коду (у двух тестов код может совпасть). Запись без теста — причина без него, привязка по коду остаётся.
+    expect(txOf(withLog(purchase("L2c", { at: { start: () => q("L2c") } }), [fault("UPK_CODE_LEAKED", { confirmation_id: "QL2c" }, "Н-11")])).R20.cause).toEqual({
+      kind: "fault",
+      what: "UPK_CODE_LEAKED",
+      test: "Н-11",
+    });
+    expect(txOf(withLog(purchase("L2d", { at: { start: () => q("L2d") } }), [entry("UPK_CODE_LEAKED", { confirmation_id: "QL2d" })])).R20.cause).toEqual({
+      kind: "fault",
+      what: "UPK_CODE_LEAKED",
+    });
     expect(txOf(withLog(purchase("L2b", { at: { start: () => q("L2b") } }), [])).R20.status).toBe("ok");
     // Н-02 — форма стенда: поручение корзины, продавец, номер заказа в запросе реквизита (`order_ref`).
     const second = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CL3", merchant_id: "MER-1", order_ref: "OL3" }, "Н-02");
@@ -684,6 +739,33 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const w = withLog(items, [stray]);
     expect(w.objs.find((o) => o.id === id("CN1"))!.conds.R23.status).toBe("ok");
     expect(w.system.R23.status).toBe("bad");
+  });
+
+  it("П27 (К2.4, окно А — малая правка по Р-1493): витрина записи другая при том же номере заказа — не выше «ждёт»", () => {
+    // Случай **гипотетический**: ни одна нынешняя форма записи стенда не несёт `mandate_id` и `shop_id` вместе
+    // (`StandFaultForm`: у Н-02 — `mandate_id`, `merchant_id`, `order_ref`; у Н-01 — `shop_id`, `merchant_id`, `order_id`),
+    // поэтому запись строится не через типизированный `fault`, а через `entry`. Правило страхует смену формы у стенда:
+    // начнёт запись нести и поручение, и витрину — привязка к чужой покупке не станет точной молча (П27).
+    const items = purchase("P1"); // витрина покупки — SHOP-1, заказ — OP1 (см. `purchase`)
+    const model = buildTxModel(items);
+    const id = model.txs.find((t) => t.cartMandateId === "CP1")!.id;
+    const st = (log: StandLogEntry[]) => withLog(items, log).objs.find((o) => o.id === id)!.conds;
+    const rec2 = (ids: StandIds) => entry("SECOND_CREDENTIAL_ISSUED", ids, { test: "Н-02" });
+    // Витрина записи другая при том же номере заказа — конфликт звеньев, не выше «ждёт».
+    const other = rec2({ mandate_id: "CP1", shop_id: "SHOP-9", order_id: "OP1" });
+    expect(st([other]).R23).toMatchObject({ status: "wait", note: "order_mismatch", log: [other.seq] });
+    // Витрина совпадает — привязка точная, как была.
+    const same = rec2({ mandate_id: "CP1", shop_id: "SHOP-1", order_id: "OP1" });
+    expect(st([same]).R23).toMatchObject({ status: "bad", log: [same.seq] });
+    // Витрины в записи нет — противоречить нечему: обвинения по отсутствию данных не выносим (Р-1540).
+    expect(st([rec2({ mandate_id: "CP1", order_id: "OP1" })]).R23).toMatchObject({ status: "bad" });
+    // Витрина покупки для этого заказа неизвестна (обращения к витрине не было) — привязка точная. Это свойство **уровня
+    // заказа**: он сам берёт такие записи (`!t.shopsByOrder[ord]`), и до правила П27 дело не доходит — поэтому оговорка
+    // «витрина покупки неизвестна» в нём защитная и тестом не выражается (мутация `?? []` остаётся зелёной).
+    const noCall = purchase("P2", { skip: ["pay"] });
+    const idNo = buildTxModel(noCall).txs.find((t) => t.cartMandateId === "CP2")!.id;
+    const rec3 = entry("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CP2", shop_id: "SHOP-9", order_id: "OP2" }, { test: "Н-02" });
+    expect(withLog(noCall, [rec3]).objs.find((o) => o.id === idNo)!.conds.R23).toMatchObject({ status: "bad", log: [rec3.seq] });
   });
 
   it("Р-1540: совпадающий номер заказа — точно, «нарушено»; у покупки заказов нет — противоречить нечему, тоже точно", () => {
@@ -725,6 +807,46 @@ describe("журнал сбоев стенда и пометки «ПР» (П-3.
     const e = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "IK", merchant_id: "MER-1", order_ref: "O-other" }, "Н-02");
     const v = withLog(items, [e]);
     for (const id of ids) expect(v.objs.find((o) => o.id === id)!.conds.R23).toMatchObject({ status: "wait", note: "link_conflict" });
+  });
+
+  it("Р-1540 (ревью № 3 (б)): пометка `order_mismatch` доходит до плитки узла — её несёт и сводка условия, и объект того же статуса", () => {
+    // Тот же случай, что в тесте Н-02 выше: запись по поручению чужой покупки, а номер заказа в ней — нашей. У объекта это
+    // «ждёт» с пометкой; проверяется **путь пометки до экрана**, который до сих пор не был проверен. Путей два, и оба
+    // открываются статусом сводки: плитка берёт пометку у сводки условия (`conditions.ts:89`) и у объектов в статусе плитки
+    // (`:92`), но только у условий, чья сводка в статусе плитки (`:88`). Ниже закреплены оба и нижний случай, где пометку
+    // несёт **только** сводка (ревью Б-К3 № 1).
+    const items = [...purchase("B1"), ...purchase("B2")];
+    const model = buildTxModel(items);
+    const id = (cart: string) => model.txs.find((t) => t.cartMandateId === cart)!.id;
+    const e = fault("SECOND_CREDENTIAL_ISSUED", { mandate_id: "CB2", merchant_id: "MER-1", order_ref: "OB1" }, "Н-02");
+    const v = withLog(items, [e]);
+    expect(v.objs.find((o) => o.id === id("CB2"))!.conds.R23).toMatchObject({ status: "wait", note: "order_mismatch" });
+    // Сводка условия несёт тот же статус и ту же пометку — первое звено пути.
+    expect(v.system.R23).toMatchObject({ status: "wait", note: "order_mismatch" });
+    // Плитка узла У2: статус «ждёт» и пометка в перечне плитки.
+    const view = conditionsView(v);
+    const tile = view.nodes.find((n) => n.id === "У2")!;
+    expect(tile.status).toBe("wait");
+    expect(tile.notes).toContain("order_mismatch");
+    // Объектов на плитке при «ждёт» не показывают вовсе — обвинять некого (`conditions.ts:82` заполняет их только у «нарушено»
+    // и «сработало»); своя покупка здесь ни при чём: у неё условие «соблюдено» и пометки нет.
+    expect(tile.objs).toEqual([]);
+    const own = v.objs.find((o) => o.id === id("CB1"))!.conds.R23;
+    expect(own.status).toBe("ok");
+    expect(own.note).toBeUndefined();
+    // Ключ пометки доходит до полезной нагрузки страницы (`rulesForPage` — то, что кладётся в страницу один раз): на плитке
+    // пометка читается словами, и ru с en разные. Сам текст словаря закреплён в тесте Н-02 выше.
+    for (const lang of ["ru", "en"] as const) expect(rulesForPage(lang).notes.order_mismatch, lang).toBeTruthy();
+    expect(rulesForPage("ru").notes.order_mismatch).not.toBe(rulesForPage("en").notes.order_mismatch);
+    // И обратная сторона того же звена — рубеж статуса (`conditions.ts:88`): пометка условия, чья сводка **не** в статусе
+    // плитки, на плитку не попадает. Журнала стенда нет вовсе — у R23 сводка «не применяется» с пометкой `stand_log`
+    // (`engine.ts:924`), но статус плитки У2 определяет R46, и пометки на плитке нет. Уберут рубеж — пометка «журнала стенда
+    // нет» полезет на плитку, статус которой о журнале ничего не говорит.
+    const noLog = run(items);
+    expect(noLog.system.R23).toMatchObject({ status: "none", note: "stand_log" });
+    const noLogTile = conditionsView(noLog).nodes.find((n) => n.id === "У2")!;
+    expect(noLogTile.status).not.toBe("none");
+    expect(noLogTile.notes).not.toContain("stand_log");
   });
 
   it("повтор запроса отклонён Платформой (IDEMPOTENCY_CONFLICT) — R23 и R25 «сработало»", () => {

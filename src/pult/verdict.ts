@@ -141,6 +141,13 @@ export interface Verdict {
   readonly note?: "race_c28";
   /** Доказательства: seq записей шины. */
   readonly seqs: readonly number[];
+  /** Ключ остановки без объекта, названный движком (`SystemStop.stop`, `GuaranteeHit.stop`; П28, Р-1592). Им протокол ключует
+   *  запись, когда доказательств на шине у остановки нет: у условий журнала стенда их не бывает — журнал в ленту
+   *  интерпретаций не идёт, и `sysSeq = min(seqs)` не берётся (Р-1595). Границу остановки проводит движок, протокол несёт
+   *  названный ключ и сам ничего не решает — запрет «не обходом в протоколе» (ревью Б4) этим не нарушается. */
+  readonly stop?: string;
+  /** Доказательство присоединено к остановке правилом, а не идентификатором (П28, вариант (1)) — пометка в акт и «Причины». */
+  readonly attachedByRule?: true;
 }
 
 const nodeOf = (c: CheckableCondition): NodeId | undefined =>
@@ -179,10 +186,21 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
       const v = fromCond(c, o.conds[c], o.id);
       if (v) out.push(v);
     }
-  // Сводные «нарушено» / «сработало», которых нет ни у одного объекта, — записи журнала без объекта.
+  // Сводные «нарушено» / «сработало», которых нет ни у одного объекта, — записи журнала без объекта. Вердикт — по одному
+  // **на остановку** условия, а не на условие (К3.1, П28, Р-1592; ревью Б4 № 3, 7): прежде вторая остановка, пока
+  // доказательства первой в окне, приходила одним вердиктом с ними и попадала в ту же запись акта. Остановки выделяет
+  // движок (`systemStops`); не выделял (журнал стенда недоступен) — прежний сводный путь по `system[c]`.
   for (const c of CHECKABLE_CONDITIONS) {
     const s = view.system[c];
     if (out.some((v) => v.cond === c && (v.kind === "violation") === (s.status === "bad"))) continue;
+    const stops = (view.systemStops ?? []).filter((x) => x.cond === c);
+    if (stops.length > 0) {
+      for (const st of stops) {
+        const v = fromCond(c, st.res);
+        if (v) out.push({ ...v, ...(st.stop !== undefined && { stop: st.stop }), ...(st.attachedByRule === true && { attachedByRule: true as const }) });
+      }
+      continue;
+    }
     const v = fromCond(c, s);
     if (v) out.push(v);
   }
@@ -198,13 +216,19 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
     pay_refused: [],
   };
   const bySeqG = new Map(items.map((x) => [x.seq, x] as const));
+  // Объекты с точно привязанной пометкой «ПР» (`ObjCheck.marked`, К2.5): транзакции и поручения без покупки.
+  const marked = new Set(view.objs.filter((o) => o.marked === true).map((o) => o.id));
   for (const g of view.guarantees) {
     if (out.some((v) => v.obj === g.obj && v.cond !== undefined && COVERED[g.kind].includes(v.cond))) continue;
     // Отзыв или не действует — субъект по коду, как у R09 (`stopCause`; повторное ревью П-5.1 № 4): отзыв — решение
     // клиента; срок — нарушителя нет; один MANDATE_NOT_ACTIVE — не определён.
     const codes = new Set(g.seqs.map((s) => bySeqG.get(s)).flatMap((x) => (x?.who?.code !== undefined ? [x.who.code] : x?.ref === "revoke.refused" ? ["MANDATE_REVOKED"] : [])));
-    const row =
+    const row0 =
       g.kind !== "revoke" ? BY_GUARANTEE[g.kind] : codes.has("MANDATE_REVOKED") ? BY_GUARANTEE.revoke : codes.has("MANDATE_EXPIRED") ? {} : { violator: "undetermined" as const };
+    // Пометка «ПР» у объекта запрещает «решение клиента» и здесь — тем же правилом, что в условиях и у П-03: приложение
+    // заявило о нарушении, и отзыв его не объясняет. Защита при этом остаётся (остановка была), нарушитель — «не определён»,
+    // как у `inactive_*` в `stopCause` (ревью К2.5 № 2).
+    const row = row0.violator === "client_decision" && g.obj !== undefined && marked.has(g.obj) ? { violator: "undetermined" as const } : row0;
     out.push({
       kind: row.violator === "client_decision" ? "client_decision" : "protection",
       ...(g.obj !== undefined && { obj: g.obj }),
@@ -212,6 +236,10 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
       ...(row.violator && { violator: row.violator }),
       protector: g.protector,
       seqs: g.seqs,
+      // Ключ и пометка остановки — от движка (П28): у защиты без объекта доказательства на шине есть, и ключ протоколу не
+      // нужен, но он остаётся опознавателем остановки, когда доказательства уйдут из окна.
+      ...(g.stop !== undefined && { stop: g.stop }),
+      ...(g.attachedByRule === true && { attachedByRule: true as const }),
     });
   }
   const bySeq = new Map(items.map((x) => [x.seq, x] as const));
@@ -220,7 +248,11 @@ export function verdicts(view: EngineView, model: TxModel, items: readonly Inter
     const rej = t.seqs.map((s) => bySeq.get(s)).find((x) => x?.source === "pao_event" && x.ref === "mandate.rejected" && x.ids?.mandate_id === t.cartMandateId);
     // Остановка после отказа уже дала R09 «решение клиента» (Р-1538) — тот же отказ второй раз не считается.
     const viaR09 = out.some((v) => v.obj === t.id && v.cond === "R09" && v.cause?.kind === "rule" && v.cause.rule.startsWith("rejected_"));
-    if (rej && !viaR09) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
+    // Пометка «ПР» в транзакции запрещает «решение клиента» — то же правило, что у условий (`stopCause`): отказ клиента не
+    // объясняет остановку, о которой приложение заявило как о нарушении. Прежде этот путь запрет не учитывал, и при пометке
+    // рядом с отказом клиента «решение клиента» показывалось в «Причинах» и в столбце решения таблицы 25 тестов
+    // (в протокол «решение клиента» не идёт — `protocol.ts`; поправка по ревью К2.5 № 3). Ревью Б4а № 12, К2.5.
+    if (rej && !viaR09 && !marked.has(t.id)) out.push({ kind: "client_decision", obj: t.id, violator: "client_decision", seqs: [rej.seq] });
   }
   return out;
 }

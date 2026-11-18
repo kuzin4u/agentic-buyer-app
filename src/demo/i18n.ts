@@ -67,6 +67,9 @@ const ru = {
   "cli.stop": "Остановка — Ctrl+C.",
   "cli.stop_failed": "демо-стенд: ошибка при остановке",
   "cli.release_failed": "демо-стенд: ресурсы освобождены не полностью",
+  // Журнал сервера о сбое действия пульта (Б1, ревью Б1 № 3): {what} — вид действия (`PultActionKind` или «unknown»),
+  // {kind} — вид ошибки, {text} — её текст до 120 знаков или пусто. Номеров объектов и тел запросов в строке нет (инвариант 1).
+  "cli.act_failed": "пульт: действие {what} — сбой: {kind}{text}",
   "http.bad_request": "Неверный адрес запроса.",
   "http.not_found": "Не найдено.",
   "http.method_not_allowed": "Метод не поддерживается.",
@@ -343,6 +346,7 @@ const en: Record<MessageKey, string> = {
   "cli.stop": "Stop — Ctrl+C.",
   "cli.stop_failed": "demo stand: error while stopping",
   "cli.release_failed": "demo stand: resources were not fully released",
+  "cli.act_failed": "console: action {what} — failure: {kind}{text}",
   "http.bad_request": "Bad request URL.",
   "http.not_found": "Not found.",
   "http.method_not_allowed": "Method not allowed.",
