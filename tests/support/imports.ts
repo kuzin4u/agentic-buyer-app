@@ -31,6 +31,30 @@ export function specifiers(source: string): string[] {
   return out;
 }
 
+/** Имена, ввезённые из пакета `spec`, — для точечных исключений границы, где разрешены не файл и не пакет целиком, а
+ *  **перечень имён** (К2.3а, П7 дополнение 2).
+ *  `readable: false` означает, что форму импорта статически не прочитать или она ввозит больше, чем перечень имён:
+ *  `import * as`, импорт по умолчанию, побочный импорт, динамический `import()` и `require`. Такая форма — нарушение,
+ *  а не «имён нет»: иначе перечень обходился бы одной звёздочкой. */
+export function importedNames(source: string, spec: string): { names: string[]; readable: boolean } {
+  const lit = spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`(?:^|[\\s;])import\\s*["'\`]${lit}["'\`]`).test(source)) return { names: [], readable: false };
+  if (new RegExp(`\\b(?:import|require(?:\\.resolve)?)\\s*\\(\\s*["'\`]${lit}["'\`]`).test(source)) return { names: [], readable: false };
+  const names: string[] = [];
+  let found = false;
+  for (const m of source.matchAll(new RegExp(`(?:^|[\\s;])(?:import|export)\\s+([^;]*?)\\s*from\\s*["'\`]${lit}["'\`]`, "g"))) {
+    found = true;
+    const clause = (m[1] ?? "").replace(/^type\s+/, "").trim();
+    const braced = /^\{([\s\S]*)\}$/.exec(clause);
+    if (braced === null) return { names: [], readable: false };
+    for (const part of braced[1]!.split(",")) {
+      const name = /^\s*(?:type\s+)?([A-Za-z_$][\w$]*)/.exec(part)?.[1];
+      if (name !== undefined) names.push(name);
+    }
+  }
+  return { names, readable: found };
+}
+
 export function filesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((n) => {
     const p = join(dir, n);

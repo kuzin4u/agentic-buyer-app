@@ -6,7 +6,7 @@
 // маршрут; граница импортов.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { PaoCallError } from "@kuzin4u/agentic-core/pao";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { splitRuns } from "../../src/dashboards/control.js";
@@ -20,7 +20,7 @@ import { MESSAGES } from "../../src/demo/i18n.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { DemoScenarios } from "../../src/demo/scenarios.js";
 import { DEMO_SHOPS, MASSA_MADRE, TRAINING_MERCHANTS } from "../../src/demo/shops.js";
-import { DYNAMIC, filesUnder, specifiers } from "../support/imports.js";
+import { DYNAMIC, filesUnder, importedNames, specifiers } from "../support/imports.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const enc = (test: string) => encodeURIComponent(test);
@@ -1305,6 +1305,16 @@ const ALLOWED_DYNAMIC: Readonly<Record<string, string>> = {
   "src/demo/stand.ts": `createRequire(import.meta.url).resolve("agentic-buyer-ref/config/params.stand.json")`,
 };
 
+/** Точечное исключение границы для **основного входа** `@kuzin4u/agentic-core` (П7 дополнение 2; решение владельца
+ *  18.11.2026, Р-1613 вариант (а)): файл и **перечень имён**, а не файл целиком. Канонизация ядра — общий механизм без
+ *  протокола платформы, и правило 1 контракта К-Б требует считать хэш показанного тем же правилом, что журнал ядра
+ *  (П30 дополнение 1). Подмодули пакета (`/pao`, `/catalog`, `/diag`, `/merchant`, …) исключением **не покрыты**: в них
+ *  протокол платформы, и они остаются только у драйвера нарушителя. Исключение снимается, когда `agentic-buyer-ref`
+ *  реэкспортирует канонизацию (вариант (б) той же развилки). */
+const ALLOWED_CORE: Readonly<Record<string, readonly string[]>> = {
+  "src/contract/ui-v1/shown-hash.ts": ["canonicalJson", "sha256Hex"],
+};
+
 /** Опции каждого `new FaultyDriver(…)` в тексте: объект третьим аргументом — только ключи otherBusy и closeWaitMs (полной
  *  или краткой записью), без `...`; нет объекта — тоже норма. Разбор — по парным скобкам верхнего уровня. */
 function driverOptionsOk(text: string): boolean {
@@ -1372,7 +1382,19 @@ function driverBoundary(root: string): string[] {
     // otherBusy и closeWaitMs, без краткой записи других ключей и без разворота `...` (ревью П-11.3б № 1, повторное A).
     if (name === "src/demo/run.ts" && !driverOptionsOk(text)) bad.push(`${name} → опции драйвера для автотестов`);
     if (name === "src/demo/faulty.ts") continue;
-    if (specs.some((s) => /^@kuzin4u\/agentic-core(\/|$)/.test(s))) bad.push(`${name} → @kuzin4u/agentic-core`);
+    // Подмодули пакета (протокол платформы) — нигде, кроме драйвера. Основной вход — только у файлов из ALLOWED_CORE и
+    // только перечисленными именами: третье имя или нечитаемая форма импорта (`* as`, по умолчанию, побочный,
+    // динамический) — нарушение, иначе перечень обходился бы одной звёздочкой (П7 доп. 2).
+    if (specs.some((s) => /^@kuzin4u\/agentic-core\//.test(s))) bad.push(`${name} → подмодуль @kuzin4u/agentic-core`);
+    if (specs.includes("@kuzin4u/agentic-core")) {
+      const allowedNames = Object.hasOwn(ALLOWED_CORE, name) ? ALLOWED_CORE[name]! : undefined;
+      if (allowedNames === undefined) bad.push(`${name} → @kuzin4u/agentic-core`);
+      else {
+        const got = importedNames(text, "@kuzin4u/agentic-core");
+        if (!got.readable) bad.push(`${name} → форма импорта @kuzin4u/agentic-core`);
+        for (const n of got.names) if (!allowedNames.includes(n)) bad.push(`${name} → имя ${n} из @kuzin4u/agentic-core`);
+      }
+    }
     if (specs.some((s) => s.startsWith("agentic-buyer-ref/src/agent/adapters/"))) bad.push(`${name} → адаптер ядра`);
     if (/\bloadKey\b/.test(text)) bad.push(`${name} → loadKey`);
     // Динамическая ссылка на модуль статически не читается — сама нарушение; исключены только две точные строки.
@@ -1394,6 +1416,14 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
     expect(specifiers(driverText)).toContain("@kuzin4u/agentic-core/pao");
     expect(driverText).toMatch(/\bloadKey\b/);
     for (const [file, expr] of Object.entries(ALLOWED_DYNAMIC)) expect(readFileSync(join(ROOT, file), "utf8"), file).toContain(expr);
+    // Точечное исключение основного входа (П7 доп. 2) — **один** файл и **два** имени: расширение перечня видно здесь,
+    // а не только в разборе границы.
+    expect(Object.keys(ALLOWED_CORE)).toEqual(["src/contract/ui-v1/shown-hash.ts"]);
+    expect(ALLOWED_CORE["src/contract/ui-v1/shown-hash.ts"]).toEqual(["canonicalJson", "sha256Hex"]);
+    expect(importedNames(readFileSync(join(ROOT, "src/contract/ui-v1/shown-hash.ts"), "utf8"), "@kuzin4u/agentic-core")).toEqual({
+      names: ["canonicalJson", "sha256Hex"],
+      readable: true,
+    });
     expect(readFileSync(join(ROOT, "src/demo/run.ts"), "utf8")).toContain("new FaultyDriver(");
   });
 
@@ -1422,14 +1452,14 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
       const v = driverBoundary(root);
       expect(v).toEqual(
         expect.arrayContaining([
-          "src/demo/bad.ts → @kuzin4u/agentic-core",
+          "src/demo/bad.ts → подмодуль @kuzin4u/agentic-core",
           "src/demo/bad.ts → адаптер ядра",
           "src/demo/raw.ts → fetch на адреса стенда",
           "src/demo/dyn.ts → динамическая ссылка на модуль",
           "src/demo/tpl.ts → динамическая ссылка на модуль",
           "src/demo/plus.ts → динамическая ссылка на модуль",
           "src/demo/arg2.ts → динамическая ссылка на модуль",
-          "src/demo/space.ts → @kuzin4u/agentic-core",
+          "src/demo/space.ts → подмодуль @kuzin4u/agentic-core",
           "src/demo/space.ts → адаптер ядра",
           "src/demo/platform.ts → динамическая ссылка на модуль",
           "src/pult/p.ts → faulty",
@@ -1452,6 +1482,31 @@ describe("граница драйвера нарушителя (П7 п. 6, до�
       // Разрешённые опции — не нарушение.
       writeFileSync(join(root, "src/demo/run.ts"), `import { x } from "./faulty.js";\nexport const y = new FaultyDriver(stand, (s) => b.scenario(s), { otherBusy: () => sc.busy, closeWaitMs: 100 });\n`);
       expect(driverBoundary(root)).not.toContain("src/demo/run.ts → опции драйвера для автотестов");
+      // Точечное исключение основного входа (П7 доп. 2): разрешено одному файлу и только двум именам.
+      const hashFile = join(root, "src/contract/ui-v1/shown-hash.ts");
+      mkdirSync(dirname(hashFile), { recursive: true });
+      const write = (text: string) => writeFileSync(hashFile, text);
+      write(`import { canonicalJson, sha256Hex } from "@kuzin4u/agentic-core";\nexport const h = [canonicalJson, sha256Hex];\n`);
+      expect(driverBoundary(root).filter((x) => x.startsWith("src/contract/"))).toEqual([]);
+      // третье имя — красный, даже рядом с разрешёнными
+      write(`import { canonicalJson, sha256Hex, verifyRequest } from "@kuzin4u/agentic-core";\nexport const h = [canonicalJson, sha256Hex, verifyRequest];\n`);
+      expect(driverBoundary(root)).toContain("src/contract/ui-v1/shown-hash.ts → имя verifyRequest из @kuzin4u/agentic-core");
+      // подмодуль исключением не покрыт: там протокол платформы
+      write(`import { PaoClient } from "@kuzin4u/agentic-core/pao";\nexport const h = PaoClient;\n`);
+      expect(driverBoundary(root)).toContain("src/contract/ui-v1/shown-hash.ts → подмодуль @kuzin4u/agentic-core");
+      // нечитаемая форма — звёздочкой перечень имён не обойти
+      for (const form of [
+        `import * as core from "@kuzin4u/agentic-core";\nexport const h = core;\n`,
+        `import core from "@kuzin4u/agentic-core";\nexport const h = core;\n`,
+        `import "@kuzin4u/agentic-core";\nexport const h = 1;\n`,
+      ]) {
+        write(form);
+        expect(driverBoundary(root), form).toContain("src/contract/ui-v1/shown-hash.ts → форма импорта @kuzin4u/agentic-core");
+      }
+      // другому файлу основной вход не разрешён
+      write(`import { canonicalJson, sha256Hex } from "@kuzin4u/agentic-core";\nexport const h = [canonicalJson, sha256Hex];\n`);
+      writeFileSync(join(root, "src/demo/hash.ts"), `import { canonicalJson } from "@kuzin4u/agentic-core";\nexport const h = canonicalJson;\n`);
+      expect(driverBoundary(root)).toContain("src/demo/hash.ts → @kuzin4u/agentic-core");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

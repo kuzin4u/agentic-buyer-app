@@ -1,1 +1,2 @@
+- [@kuzin4u/agentic-core@0.13.1](https://github.com/kuzin4u/agentic-core) - Apache-2.0
 - [agentic-buyer-app@0.1.1](https://github.com/kuzin4u/agentic-buyer-app) - Apache-2.0
