@@ -21,6 +21,9 @@
     "lint": "eslint .",
     "demo": "tsx src/demo/main.ts"
   },
+  "dependencies": {
+    "@kuzin4u/agentic-core": "git+https://github.com/kuzin4u/agentic-core.git#v0.13.1"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
