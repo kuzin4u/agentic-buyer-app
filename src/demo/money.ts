@@ -4,6 +4,7 @@
 // Число знаков после запятой — по ISO 4217, а не по Intl: Intl берёт его из CLDR, а у части валют они расходятся
 // (IQD: ISO 3, CLDR 0; LAK, IRR: ISO 2, CLDR 0), и сумма вышла бы в 100–1000 раз больше (ревью К1.3 № 6). Валюта вне
 // таблицы — ошибка: монитор показывает событие без суммы, а не сумму с неверным масштабом.
+import { ISO4217_MINOR_UNITS } from "../iso4217.js";
 import { LANGS, type Lang } from "./i18n.js";
 
 export interface Money {
@@ -11,40 +12,9 @@ export interface Money {
   readonly currency: string;
 }
 
-/** Знаки минимальной единицы по ISO 4217 (таблица A.1) для валют, которые встречаются на стенде и в планах рынков. */
-export const ISO4217_MINOR_UNITS: Readonly<Record<string, number>> = {
-  RUB: 2,
-  BYN: 2,
-  KZT: 2,
-  AMD: 2,
-  KGS: 2,
-  UZS: 2,
-  CNY: 2,
-  USD: 2,
-  EUR: 2,
-  GBP: 2,
-  CHF: 2,
-  SEK: 2,
-  NOK: 2,
-  DKK: 2,
-  PLN: 2,
-  CZK: 2,
-  HUF: 2,
-  TRY: 2,
-  AED: 2,
-  INR: 2,
-  LAK: 2,
-  IRR: 2,
-  JPY: 0,
-  KRW: 0,
-  ISK: 0,
-  IQD: 3,
-  KWD: 3,
-  BHD: 3,
-  OMR: 3,
-  JOD: 3,
-  TND: 3,
-};
+/** Таблица знаков ISO 4217 переехала в `src/iso4217.ts` (ИН-0, К2): её спрашивают и монитор, и сервер `/ui/v1`, а две
+ *  копии разошлись бы молча. Реэкспорт оставлен — прежние места (`scenarios.ts`, тесты) не правятся. */
+export { ISO4217_MINOR_UNITS };
 
 const LOCALE: Record<Lang, string> = { ru: "ru-RU", en: "en-GB" };
 
