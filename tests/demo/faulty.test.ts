@@ -109,7 +109,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await post(`/fault/${enc("Н-07")}`, null)).status).toBe(403);
     expect((await post(`/fault/${enc("Н-07")}`, "http://evil.example")).status).toBe(403);
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
-    expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
+    // Сбой стенда только «П» (пометку стенд не принимает, ветки драйвера нет) — маршрута нет. Н-02 с v0.49.0 стенда — оба
+    // вида (передача #120), его маршрут есть и проверяется ниже отдельным тестом.
+    expect((await post(`/fault/${enc("Н-03")}`)).status).toBe(404);
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
     // С П-11.3д ветки есть у всех тестов «ПР»: маршрут запускает Н-05 (без ожидания клиента) — 202 и итог на шине.
     const n = steps().length;
@@ -929,6 +931,46 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-09", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
       expect(asks).toEqual([expect.objectContaining({ mandate_id: cartId, merchant_id: otherMerchant(DEMO_SHOPS), amount_max: price })]);
+    });
+
+    // Передача #22: Н-02 — «П + ПР». Сбой стенда взводит драйвер (без выбора витрины: у Н-02 настройки витрины нет),
+    // нарушение — новый запрос реквизита по уже выданному заказу; защиты нет намеренно, итог — «совершено и помечено».
+    it("Н-02: второй реквизит по тому же заказу — «совершено и помечено», сбой сработал (SECOND_CREDENTIAL_ISSUED); взвод и снятие — без витрины; реквизиты не выходят", async () => {
+      const n = steps().length;
+      const logFrom = demo.stand.stand.demo!.log().length;
+      const secrets: string[] = [];
+      const asks: CredentialAsk[] = [];
+      expect(FAULT_PLAN["Н-02"]).toMatchObject({ violations: ["POST /pao/v1/credentials"], expect: [], arm: { shop: false } });
+      const d = real({ fetch: spying(secrets, undefined, asks) });
+      expect(d.start("Н-02")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      const s = steps().slice(n);
+      // Взвод и снятие — своими шагами, без идентификатора витрины (иначе на мониторе стояло бы «витрина: нет»).
+      const armed = s.find((x) => x.step === "fault.note.armed_no_shop")!;
+      expect(armed.params).toEqual({ test: "Н-02" });
+      expect(s.some((x) => x.step === "fault.note.armed")).toBe(false);
+      expect(s.at(-1), JSON.stringify(s.at(-1)?.params)).toMatchObject({ step: "fault.marked", params: { test: "Н-02", mandate_id: cartId } });
+      expect(s.some((x) => x.step === "fault.note.disarmed_no_shop")).toBe(true);
+      // Первый реквизит — законная подготовка: его шаг несёт корзину и заказ, по которому пойдёт нарушение.
+      const first = s.find((x) => x.step === "fault.note.first_credential")!;
+      expect(first.params.mandate_id).toBe(cartId);
+      expect(typeof first.params.order_ref).toBe("string");
+      // Два запроса реквизита: та же корзина и тот же заказ — отличие только в ключе идемпотентности (его тело не несёт).
+      expect(asks).toHaveLength(2);
+      expect(asks[1]).toEqual(asks[0]);
+      expect(asks[0]).toMatchObject({ mandate_id: cartId, order_ref: first.params.order_ref });
+      // Сбой сработал: запись стенда по Н-02 после пометки — по ней пульт строит паспорт R23 / R25 (`engine.ts`).
+      const log = demo.stand.stand.demo!.log().slice(logFrom);
+      const markSeq = log.find((e) => e.test === "Н-02" && e.what === "MARKED")!.seq;
+      const fired = log.find((e) => e.test === "Н-02" && e.what === "SECOND_CREDENTIAL_ISSUED")!;
+      expect(fired.seq).toBeGreaterThan(markSeq);
+      expect(fired.ids?.order_ref).toBe(first.params.order_ref);
+      // Инвариант 1: оба реквизита — только в памяти ветки и теста.
+      expect(secrets).toHaveLength(6);
+      for (const [i, v] of secrets.entries()) expect(typeof v === "string" && v.length > 0, `значение ${i}`).toBe(true);
+      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log())].join("\n");
+      for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
     });
 
     it("Н-09 без второго продавца на стенде — «не разыграно» NO_SECOND_MERCHANT до пометки и запросов, не «Масса Мадре» по умолчанию", async () => {

@@ -181,6 +181,9 @@ const ru = {
     "Нарушитель (ПР) — драйвер приложения ({test}): прочитал каталог витрины {shop_id}; инструкцию продавца, если отдана, не исполняет — отдана ли, скажет итог.",
   "step.fault.note.armed": "Нарушитель (ПР) — драйвер приложения ({test}): взвёл сбой стенда на витрину {shop_id} — только на время нарушения.",
   "step.fault.note.disarmed": "Нарушитель (ПР) — драйвер приложения ({test}): снял сбой стенда с витрины {shop_id}.",
+  // Н-02: сбой в выдаче реквизита — витрины у него нет, поэтому шаги отдельные (иначе на мониторе стояло бы «на витрину нет»).
+  "step.fault.note.armed_no_shop": "Нарушитель (ПР) — драйвер приложения ({test}): взвёл сбой стенда — только на время нарушения; витрину этот сбой не выбирает.",
+  "step.fault.note.disarmed_no_shop": "Нарушитель (ПР) — драйвер приложения ({test}): снял сбой стенда.",
   "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
   "step.fault.note.intent_requested": "Нарушитель (ПР) — драйвер приложения ({test}): запрошено поручение {mandate_id} — подпишите его на экране мандатов банка.",
   "step.fault.note.intent_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал поручение {mandate_id}.",
@@ -197,6 +200,8 @@ const ru = {
   "step.fault.note.order_placed": "Нарушитель (ПР) — драйвер приложения ({test}): заказ {order_id} у витрины по корзине {mandate_id}.",
   "step.fault.note.first_payment":
     "Нарушитель (ПР) — драйвер приложения ({test}): Платформа записала операцию {op_ref} по заказу {order_id} — итог первой оплаты на мониторе по событию; первая оплата законна и входит в тест, нарушение — её повтор.",
+  "step.fault.note.first_credential":
+    "Нарушитель (ПР) — драйвер приложения ({test}): получен первый, законный реквизит по заказу {order_ref} корзины {mandate_id}; нарушение — новый запрос по тому же заказу.",
   "step.fault.sent": "Нарушитель (ПР) — драйвер приложения: нарушающий запрос {test} отправлен ключом агента.",
   // Эмулятор клиента «Авто» (П5, доп. 1): каждое действие помечено — решение за человека принимает эмулятор, не человек.
   "step.client.auto_on": "Эмулятор клиента: «Решения людей» — «Авто» (только прогон тестов, DEMO_FAULTS=1); подпись, подтверждение и отзыв — за клиента по сценарию теста.",
@@ -456,6 +461,8 @@ const en: Record<MessageKey, string> = {
     "Violator (ПР) — app driver ({test}): read the catalog of shop {shop_id}; does not execute the merchant's instruction if served — the outcome tells whether it was.",
   "step.fault.note.armed": "Violator (ПР) — app driver ({test}): armed the stand fault on shop {shop_id} — only for the violation.",
   "step.fault.note.disarmed": "Violator (ПР) — app driver ({test}): disarmed the stand fault on shop {shop_id}.",
+  "step.fault.note.armed_no_shop": "Violator (ПР) — app driver ({test}): armed the stand fault — only for the violation; this fault does not select a shop.",
+  "step.fault.note.disarmed_no_shop": "Violator (ПР) — app driver ({test}): disarmed the stand fault.",
   "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
   "step.fault.note.intent_requested": "Violator (ПР) — app driver ({test}): mandate {mandate_id} requested — sign it on the bank mandates screen.",
   "step.fault.note.intent_signed": "Violator (ПР) — app driver ({test}): the client signed mandate {mandate_id}.",
@@ -472,6 +479,8 @@ const en: Record<MessageKey, string> = {
   "step.fault.note.order_placed": "Violator (ПР) — app driver ({test}): order {order_id} placed at the shop under cart {mandate_id}.",
   "step.fault.note.first_payment":
     "Violator (ПР) — app driver ({test}): the Platform recorded operation {op_ref} for order {order_id} — the first payment outcome is on the monitor from the event; the first payment is legitimate and part of the test, the violation is its repeat.",
+  "step.fault.note.first_credential":
+    "Violator (ПР) — app driver ({test}): the first, legitimate credential for order {order_ref} of cart {mandate_id} is issued; the violation is a new request for the same order.",
   "step.fault.sent": "Violator (ПР) — app driver: violating request {test} sent with the agent key.",
   "step.client.auto_on": "Client emulator: “Human decisions” — “Auto” (test runs only, DEMO_FAULTS=1); signing, confirming and revoking for the client per the test scenario.",
   "step.client.auto_off": "Client emulator: “Human decisions” — “Manual”; a person decides.",

@@ -57,6 +57,11 @@ export const BRANCH_STEPS = [
   "fault.note.first_payment",
   // П-11.3д: Н-05 — нарушитель прочитал каталог (только записи стенда, Р-1483).
   "fault.note.catalog_read",
+  // Передача #22: Н-02 — сбой без выбора витрины (взвод и снятие своими шагами: у шагов про витрину её идентификатора нет)
+  // и первый, законный реквизит по заказу (подготовка).
+  "fault.note.armed_no_shop",
+  "fault.note.disarmed_no_shop",
+  "fault.note.first_credential",
 ] as const;
 export type BranchStep = (typeof BRANCH_STEPS)[number];
 
@@ -213,6 +218,32 @@ export const n09Branch = (shops: readonly { readonly merchant_id: string; readon
   },
 });
 
+/** Сколько ветка Н-02 ждёт перед повтором. Второй реквизит стенд пишет только с **другой** криптограммой, а она
+ *  детерминирована и зависит от срока реквизита: запрос в ту же миллисекунду часов стенда даёт ту же криптограмму, и сбой не
+ *  срабатывает — обычный повтор (РП75 «Нюансы К2.3» п. 2, CHANGELOG v0.49.0). Второе условие Платформы — `valid_to` корзины
+ *  позже чем через 15 минут — выполняет `intentAndCart` (сутки). */
+const SAME_MS_GUARD_MS = 5;
+
+/** Ветка Н-02 «платёжная система не отсекла повтор» (R23, R25, узел У2; передача #120 исполнена стендом в v0.49.0, вид теста —
+ *  «П + ПР»). Подготовка — подписанная клиентом корзина нарушителя и **первый, законный** реквизит по заказу; нарушение —
+ *  новый запрос реквизита по тому же заказу под **другим** ключом идемпотентности: повтор под тем же ключом стенд считает
+ *  replay и сбой не трогает (`src/stand/demo-credentials.ts`). При взведённом сбое стенд выдаёт второй реквизит, пишет
+ *  `SECOND_CREDENTIAL_ISSUED` и помечает обращение (`StandCall.fault`).
+ *  Защиты в таблице нет: у Н-02 её ослабляет сам сбой, поэтому ожидаемый итог ветки — «совершено и помечено»
+ *  (`fault.marked`) по ответу 2xx на нарушение. Реквизит и криптограмма — только в памяти ветки: на шину идут
+ *  `mandate_id` и `order_ref` (инвариант 1). */
+const n02Branch: FaultBranch = {
+  run: async (c) => {
+    const key = `n02-${randomUUID()}`;
+    const { cartId } = await signedCart(c, key);
+    const body = credentialBody(cartId, key, {});
+    await c.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential` });
+    c.step("fault.note.first_credential", { mandate_id: cartId, order_ref: body.order_ref });
+    await new Promise<void>((ok) => setTimeout(ok, SAME_MS_GUARD_MS));
+    await c.violate.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential-repeat` });
+  },
+};
+
 /** Ветка Н-01 «повторная оплата заказа» (R46 «два списания»; ответ Платформы по #112 п. 4; решения владельца, чат 11.11).
  *  Пометки «ПР» — по продавцу и по корзине (intentAndCart) и третья — по заказу: после проверки номера, до реквизита
  *  (решение владельца по В4, чат 12.11).
@@ -273,6 +304,7 @@ const n05Branch: FaultBranch = {
 /** Ветки по тестам (П-11.3б–д). Нет ветки — запуск NOT_READY. */
 const BRANCHES: Partial<Record<FaultTest, FaultBranch>> = {
   "Н-01": n01Branch,
+  "Н-02": n02Branch,
   "Н-05": n05Branch,
   // Н-07 «транзакция без согласия клиента» (R18): реквизит по корзине, которую клиент не подписывал → 409
   // PRINCIPAL_SIGNATURE_PENDING.
@@ -672,11 +704,16 @@ export class FaultyDriver {
       // пометкой (ПР): сбой взвёл драйвер, а не человек (№ 2).
       // Взвод человека (П-11.2г, Р-1520): на витрину нарушителя (или на все) — ветка идёт по нему и держит его всё время ветки
       // (а), не снимая; не на витрину нарушителя или куда — не известно — ветка не идёт по чужому сбою: ARMED_ELSEWHERE (б).
+      // Сбой витрины (`arm: true`) взводится с выбором витрины нарушителя; сбой без выбора (`arm: { shop: false }`, Н-02) —
+      // без настроек: у него настройки витрины нет, и стенд отклонил бы `arm` с `shop_id`.
+      const armOnShop = plan.arm === true;
       if (plan.arm && armedNow(standDemo.log(), test)) {
+        // Взвод человека: у сбоя без выбора витрины выбирать нечего — покрывает любой его взвод.
         const covers =
           humanArm !== undefined &&
-          (humanArm.shop_id === undefined || humanArm.shop_id === VIOLATOR_SHOP.id) &&
-          (humanArm.merchant_id === undefined || humanArm.merchant_id === VIOLATOR_SHOP.merchant_id);
+          (!armOnShop ||
+            ((humanArm.shop_id === undefined || humanArm.shop_id === VIOLATOR_SHOP.id) &&
+              (humanArm.merchant_id === undefined || humanArm.merchant_id === VIOLATOR_SHOP.merchant_id)));
         if (!covers) stop ??= "ARMED_ELSEWHERE";
         else {
           const release = (): void => {
@@ -690,7 +727,7 @@ export class FaultyDriver {
       } else if (plan.arm) {
         let armed = false;
         try {
-          standDemo.arm(test, { shop_id: VIOLATOR_SHOP.id });
+          standDemo.arm(test, armOnShop ? { shop_id: VIOLATOR_SHOP.id } : undefined);
           armed = true;
         } catch {
           stop ??= "ARM_REJECTED";
@@ -710,14 +747,16 @@ export class FaultyDriver {
             // шага «снят» нет — несоответствие видно на шине (№ 6). Шаг на шину после снятия: его сбой снятие не отменяет.
             try {
               standDemo.disarm(test);
-              this.#step("fault.note.disarmed", { test, shop_id: VIOLATOR_SHOP.id });
+              if (armOnShop) this.#step("fault.note.disarmed", { test, shop_id: VIOLATOR_SHOP.id });
+              else this.#step("fault.note.disarmed_no_shop", { test });
             } catch {
               // шаг «снят» не выпускается
             }
           };
           this.#disarm = disarm;
           this.#held = test;
-          this.#step("fault.note.armed", { test, shop_id: VIOLATOR_SHOP.id });
+          if (armOnShop) this.#step("fault.note.armed", { test, shop_id: VIOLATOR_SHOP.id });
+          else this.#step("fault.note.armed_no_shop", { test });
         }
       }
       if (stop === undefined) await branch.run(ctx);

@@ -29,7 +29,9 @@ export type StandTestRow =
 /** 12 тестов Н-xx по порядку задания. */
 export const STAND_TEST_TABLE = [
   { test: "Н-01", kind: "violator" },
-  { test: "Н-02", kind: "stand_fault" },
+  // Н-02 — оба вида с v0.49.0 стенда (передача #120): сбой включается `arm`, нарушающий запрос (новый реквизит по уже
+  // выданному заказу) разыгрывает драйвер нарушителя приложения.
+  { test: "Н-02", kind: "stand_fault_and_violator" },
   { test: "Н-03", kind: "stand_fault" },
   { test: "Н-04", kind: "stand_fault" },
   { test: "Н-05", kind: "stand_fault_and_violator" },

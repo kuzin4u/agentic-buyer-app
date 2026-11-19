@@ -65,6 +65,9 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "fault.note.catalog_read": p("Нарушитель (ПР): прочитал каталог витрины[ {shop_id}]; инструкцию, если отдана, не исполняет", "Violator (ПР): read the catalog of shop[ {shop_id}]; does not execute the instruction if served"),
   "fault.note.armed": p("Нарушитель (ПР): взвёл сбой стенда на витрину[ {shop_id}] на время нарушения", "Violator (ПР): armed the stand fault on shop[ {shop_id}] for the violation"),
   "fault.note.disarmed": p("Нарушитель (ПР): снял сбой стенда с витрины[ {shop_id}]", "Violator (ПР): disarmed the stand fault on shop[ {shop_id}]"),
+  // Н-02: сбой в выдаче реквизита — витрины не выбирает (передача #22).
+  "fault.note.armed_no_shop": p("Нарушитель (ПР): взвёл сбой стенда на время нарушения — без выбора витрины", "Violator (ПР): armed the stand fault for the violation — no shop selected"),
+  "fault.note.disarmed_no_shop": p("Нарушитель (ПР): снял сбой стенда", "Violator (ПР): disarmed the stand fault"),
   "fault.unplayed": p("Нарушитель (ПР): нарушение {test} помечено, но не разыграно — {code}", "Violator (ПР): violation {test} marked but not played — {code}"),
   "fault.note.intent_requested": p("Нарушитель (ПР): запрошено поручение[ {mandate_id}] — подпись клиента в банке", "Violator (ПР): mandate[ {mandate_id}] requested — client signature in the bank"),
   "fault.note.intent_signed": p("Нарушитель (ПР): клиент подписал поручение[ {mandate_id}]", "Violator (ПР): the client signed mandate[ {mandate_id}]"),
@@ -80,6 +83,10 @@ const scenario: Readonly<Record<string, Phrase>> = {
   "fault.note.first_payment": p(
     "Нарушитель (ПР): Платформа записала операцию первой оплаты заказа[ {order_id}] — итог по событию; первая оплата законна и входит в тест, нарушение — её повтор",
     "Violator (ПР): the Platform recorded the first payment operation for order[ {order_id}] — outcome from the event; the first payment is legitimate and part of the test, the violation is its repeat",
+  ),
+  "fault.note.first_credential": p(
+    "Нарушитель (ПР): получен первый, законный реквизит по заказу[ {order_ref}] корзины[ {mandate_id}]; нарушение — новый запрос по тому же заказу",
+    "Violator (ПР): the first, legitimate credential for order[ {order_ref}] of cart[ {mandate_id}] is issued; the violation is a new request for the same order",
   ),
   "fault.note.prepared": p("Нарушитель (ПР): подготовка к нарушению {test}", "Violator (ПР): preparing violation {test}"),
   "fault.sent": p("Нарушитель (ПР): нарушающий запрос {test} отправлен", "Violator (ПР): violating request {test} sent"),
