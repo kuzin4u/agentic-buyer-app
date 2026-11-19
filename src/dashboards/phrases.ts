@@ -220,7 +220,16 @@ export const CODE_WORDS: Readonly<Record<string, Phrase>> = {
   ABORTED: p("прервано человеком", "aborted by a human"),
   NO_SECOND_MERCHANT: p("нет второго продавца на стенде", "no second merchant on the stand"),
   INSTRUCTION_NOT_SERVED: p("витрина не отдала инструкцию — записи стенда нет", "the shop did not serve the instruction — no stand record"),
+  // Н-02: ответ на нарушение пришёл с 2xx, но сбой не сработал — второго реквизита не выдавалось (записи стенда нет).
+  FAULT_NOT_FIRED: p(
+    "сбой стенда не сработал: ответ пришёл, а записи о срабатывании нет — Платформа отдала прежний реквизит заказа",
+    "the stand fault did not fire: a reply came but there is no record of firing — the Platform returned the order's existing credential",
+  ),
   ARM_REJECTED: p("стенд не взвёл сбой для нарушения", "the stand refused to arm the fault for the violation"),
+  CLOCK_NOT_MOVED: p(
+    "часы стенда не сдвинулись — нарушение в ту же миллисекунду сбой не вызывает",
+    "the stand clock did not move — a violation in the same millisecond does not trigger the fault",
+  ),
   ARMED_ELSEWHERE: p(
     "сбой стенда уже взведён — не на витрину нарушителя или неизвестно куда; нарушение не идёт по чужому сбою",
     "the stand fault is already armed — on another shop or on an unknown one; the violation does not run on someone else's fault",

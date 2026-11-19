@@ -83,6 +83,12 @@ export interface FaultContext {
    *  «защита сработала» и «совершено». `call` и `shop` выше — подготовка: у неё учитывается лишь сбой. */
   readonly violate: { readonly call: Pao["call"]; readonly shop: FaultContext["shop"] };
   readonly urls: Readonly<{ pao: string; merchants: string }>;
+  /** Дождаться, пока часы стенда сдвинулись хотя бы на миллисекунду (не дольше `CLOCK_TICK_WAIT_MS`). Нужно веткам, где
+   *  срабатывание сбоя зависит от времени выдачи: у Н-02 криптограмма детерминирована и считается по `valid_to` реквизита с
+   *  миллисекундной точностью — две выдачи в одну миллисекунду дают одну криптограмму, и второй реквизит не пишется. Часы
+   *  стоят (подменены `setClock`) — ветка останавливается с причиной `CLOCK_NOT_MOVED`, а не молча не срабатывает.
+   *  Решение владельца 19.11.2026 (15:30): срабатывание не зависит от совпадения миллисекунд. */
+  readonly waitClockTick: () => Promise<void>;
   /** Шаг на шину: имя — из BRANCH_STEPS, параметры — только `code`, `status` и идентификаторы стенда по форме. */
   readonly step: (step: BranchStep, params?: ScenarioStep["params"]) => void;
   readonly signal: AbortSignal;
@@ -218,20 +224,18 @@ export const n09Branch = (shops: readonly { readonly merchant_id: string; readon
   },
 });
 
-/** Сколько ветка Н-02 ждёт перед повтором. Второй реквизит стенд пишет только с **другой** криптограммой, а она
- *  детерминирована и зависит от срока реквизита: запрос в ту же миллисекунду часов стенда даёт ту же криптограмму, и сбой не
- *  срабатывает — обычный повтор (РП75 «Нюансы К2.3» п. 2, CHANGELOG v0.49.0). Второе условие Платформы — `valid_to` корзины
- *  позже чем через 15 минут — выполняет `intentAndCart` (сутки). */
-const SAME_MS_GUARD_MS = 5;
-
 /** Ветка Н-02 «платёжная система не отсекла повтор» (R23, R25, узел У2; передача #120 исполнена стендом в v0.49.0, вид теста —
  *  «П + ПР»). Подготовка — подписанная клиентом корзина нарушителя и **первый, законный** реквизит по заказу; нарушение —
  *  новый запрос реквизита по тому же заказу под **другим** ключом идемпотентности: повтор под тем же ключом стенд считает
  *  replay и сбой не трогает (`src/stand/demo-credentials.ts`). При взведённом сбое стенд выдаёт второй реквизит, пишет
  *  `SECOND_CREDENTIAL_ISSUED` и помечает обращение (`StandCall.fault`).
  *  Защиты в таблице нет: у Н-02 её ослабляет сам сбой, поэтому ожидаемый итог ветки — «совершено и помечено»
- *  (`fault.marked`) по ответу 2xx на нарушение. Реквизит и криптограмма — только в памяти ветки: на шину идут
- *  `mandate_id` и `order_ref` (инвариант 1). */
+ *  (`fault.marked`), но **по записи журнала стенда**, а не по ответу 2xx (таблица: `fires`; инвариант 6, П31): без
+ *  сработавшего сбоя Платформа отдаёт прежний реквизит как повтор заказа — тоже 2xx. Условия срабатывания у Платформы
+ *  (РП75 «Нюансы К2.3» п. 2): `valid_to` корзины позже чем через 15 минут (`intentAndCart` — сутки) и повтор не в ту же
+ *  миллисекунду часов стенда (криптограмма детерминирована); не сработал — итог честный «помечено, но не разыграно»
+ *  `FAULT_NOT_FIRED`, и прогон повторяется. Реквизит и криптограмма — только в памяти ветки: на шину идут `mandate_id` и
+ *  `order_ref` (инвариант 1). */
 const n02Branch: FaultBranch = {
   run: async (c) => {
     const key = `n02-${randomUUID()}`;
@@ -239,7 +243,9 @@ const n02Branch: FaultBranch = {
     const body = credentialBody(cartId, key, {});
     await c.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential` });
     c.step("fault.note.first_credential", { mandate_id: cartId, order_ref: body.order_ref });
-    await new Promise<void>((ok) => setTimeout(ok, SAME_MS_GUARD_MS));
+    // Повтор — после сдвига часов стенда: в одну миллисекунду криптограмма совпала бы и сбой не сработал (решение
+    // владельца 19.11, 15:30 — срабатывание не зависит от совпадения миллисекунд; часы стоят — `CLOCK_NOT_MOVED`).
+    await c.waitClockTick();
     await c.violate.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential-repeat` });
   },
 };
@@ -370,6 +376,9 @@ export interface FaultyOptions {
 const CLIENT_WAIT_MS = EXPIRY_SEC * 1000;
 /** Как часто драйвер перечитывает мандат, ожидая действия клиента, мс. */
 const CLIENT_POLL_MS = 300;
+/** Сколько ветка ждёт сдвига часов стенда на миллисекунду (`waitClockTick`), мс: системные часы сдвигаются сразу, стоячие
+ *  (подменённые `setClock`) не сдвинутся никогда — ждать их бесконечно нельзя. */
+const CLOCK_TICK_WAIT_MS = 100;
 
 /** Причины остановки ветки драйвером — закрытый перечень (Р-1511): у каждой — фраза ru/en в `CODE_WORDS`, это сверяет тест. */
 export const STOP_CODES = [
@@ -386,6 +395,7 @@ export const STOP_CODES = [
   "ABORTED",
   "ARM_REJECTED",
   "ARMED_ELSEWHERE",
+  "CLOCK_NOT_MOVED",
 ] as const;
 /** Итоговые коды, которые выносит разбор журнала ветки (`#settle`, `paoEntry`, `shopEntry`), — тоже с фразой ru/en; кроме
  *  `UNEXPECTED_<код>` (код защиты как есть) и `missing` строки таблицы (`FAULT_PLAN`). */
@@ -678,6 +688,24 @@ export class FaultyDriver {
       }
     };
 
+    /** Сдвиг часов стенда на миллисекунду: читаются те же часы, что у реестра и выдачи реквизита (`stand.now()`). */
+    const waitClockTick = async (): Promise<void> => {
+      const t0 = this.#d.stand.now().getTime();
+      for (const end = Date.now() + CLOCK_TICK_WAIT_MS; ; ) {
+        const g = gate(false);
+        if (g) throw g;
+        if (this.#d.stand.now().getTime() !== t0) return;
+        if (Date.now() >= end) throw halt("CLOCK_NOT_MOVED");
+        // Шаг — миллисекунда, поэтому слушатель `abort` снимается сразу: иначе за одно ожидание их накопилось бы до сотни
+        // (у `waitClient` шаг 300 мс, там это незаметно) — ревью К3а № Г.
+        await new Promise<void>((ok) => {
+          const wake = () => (clearTimeout(t), ok());
+          const t = setTimeout(() => (signal.removeEventListener("abort", wake), ok()), 1);
+          signal.addEventListener("abort", wake, { once: true });
+        });
+      }
+    };
+
     const ctx: FaultContext = {
       call,
       shop,
@@ -687,6 +715,7 @@ export class FaultyDriver {
       signal,
       mark,
       waitClient,
+      waitClockTick,
       // Лента остановлена (агент остановлен) — не ошибка ветки: событие не придёт, итог ветки — по её журналу.
       // Как у шагов: после конца ветки, её остановки и закрытия драйвера — ничего (ревью П-11.3г № 7).
       wakeEvents: () => {
@@ -707,7 +736,10 @@ export class FaultyDriver {
       // Сбой витрины (`arm: true`) взводится с выбором витрины нарушителя; сбой без выбора (`arm: { shop: false }`, Н-02) —
       // без настроек: у него настройки витрины нет, и стенд отклонил бы `arm` с `shop_id`.
       const armOnShop = plan.arm === true;
-      if (plan.arm && armedNow(standDemo.log(), test)) {
+      // Одноразовый сбой (`fires.once`) стенд снимает сам при срабатывании, не записывая DISARMED: запись срабатывания
+      // читается как «снят» (блокер 2 ревью К3), иначе израсходованный взвод выглядел бы действующим.
+      const firedRecord = plan.fires?.once ? plan.fires.record : undefined;
+      if (plan.arm && armedNow(standDemo.log(), test, firedRecord)) {
         // Взвод человека: у сбоя без выбора витрины выбирать нечего — покрывает любой его взвод.
         const covers =
           humanArm !== undefined &&
@@ -746,7 +778,9 @@ export class FaultyDriver {
             // `disarm` стенда бросает только при выключенных сбоях или чужом тесте — здесь недостижимо; если всё же бросил,
             // шага «снят» нет — несоответствие видно на шине (№ 6). Шаг на шину после снятия: его сбой снятие не отменяет.
             try {
-              standDemo.disarm(test);
+              // Шаг «снял» — только когда взвод снят этим вызовом: одноразовый сбой стенд снял сам при срабатывании
+              // (`disarm` вернёт false, записи DISARMED нет) — шина не должна утверждать обратное (блокер 2 ревью К3).
+              if (!standDemo.disarm(test)) return;
               if (armOnShop) this.#step("fault.note.disarmed", { test, shop_id: VIOLATOR_SHOP.id });
               else this.#step("fault.note.disarmed_no_shop", { test });
             } catch {
@@ -777,14 +811,27 @@ export class FaultyDriver {
     // Записи стенда за прогон (только `recordOnly`): обе — пометка этого теста и **после неё** нужная запись по витрине
     // нарушителя; и у ветки — успешный (2xx) свой запрос подготовки из таблицы (`via`) к витрине нарушителя: запись от
     // чужого чтения в окне прогона итог не делает (ревью П-11.3д-1 № 4, повторное № 2).
-    const log = plan.recordOnly ? standDemo.log().slice(logFrom) : [];
+    const log = plan.recordOnly || plan.fires ? standDemo.log().slice(logFrom) : [];
     const markSeq = log.find((e) => e.test === test && e.what === "MARKED")?.seq;
+    // Сбой обязан сработать (таблица: `fires`): запись стенда за прогон (окно `logFrom`), **после** пометки по мандату
+    // нарушения и по тому же мандату. Отсчёт — от той пометки, что несёт мандат (у Н-02 первая пометка — по продавцу, без
+    // мандата), и обе сверки берутся из одной записи. Нет пометки с мандатом — итог не выносится (ревью К3а № 3:
+    // послабление «мандата нет — подходит любая запись» открывало бы ложное «совершено»).
+    // Сверка по мандату: запись стенда несёт и `order_ref`, но ветка со сбоем `fires` заводит под мандатом ровно один заказ
+    // (Н-02 — `credentialBody` с одним `order_ref`), поэтому мандата довольно; появится ветка с двумя заказами под одним
+    // мандатом — сверять и заказ, передав его в пометку, как Н-01 (ревью К3а № Б).
+    const firedMandate = plan.fires === undefined ? undefined : marked?.mandate_id;
+    const firedMarkSeq =
+      firedMandate === undefined ? undefined : log.find((e) => e.test === test && e.what === "MARKED" && e.ids.mandate_id === firedMandate)?.seq;
+    const fired =
+      firedMarkSeq !== undefined &&
+      log.some((e) => e.test === test && e.what === plan.fires!.record && e.seq > firedMarkSeq && e.ids.mandate_id === firedMandate);
     const recorded =
       plan.recordOnly !== undefined &&
       markSeq !== undefined &&
       log.some((e) => e.test === test && e.what === plan.recordOnly!.record && e.ids.shop_id === VIOLATOR_SHOP.id && e.seq > markSeq) &&
       entries.some((e) => !e.violation && e.kind === "ok" && e.op !== undefined && `${e.op.method} ${e.op.path}` === plan.recordOnly!.via.replace("{shop_id}", VIOLATOR_SHOP.id));
-    this.#settle(test, plan, marked, stop, threw, entries, recorded);
+    this.#settle(test, plan, marked, stop, threw, entries, recorded, fired);
   }
 
   /** Подписанный запрос к витрине ключом агента — как у ядра: x-agent-code, x-timestamp, x-nonce, подпись; без повторов
@@ -826,15 +873,31 @@ export class FaultyDriver {
    *  5. сбой нарушения (нет ответа, 5xx, перенаправление, отказ клиента ПАО, тело не разобрать, код не по форме, без кода);
    *  6. отказ нарушения с необъявленной парой — `UNEXPECTED_<код>`;
    *  7. ветка сломалась сама — `BRANCH_ERROR`; нарушение не отправлено — `NOT_SENT`.
+   *  Тест со сбоем, который обязан сработать (`fires`, Н-02), — исключение из п. 1: ответ 2xx даёт «совершено и помечено»
+   *  только вместе с записью журнала стенда о срабатывании (инвариант 6, П31); 2xx без записи — «помечено, но не
+   *  разыграно» с кодом `missing` таблицы: у Н-02 Платформа отвечает 2xx и прежним реквизитом заказа, когда сбой не
+   *  сработал (блокер 1 ревью К3).
    *  Тест «только записи стенда» (`recordOnly`, Н-05 к MVP) после п. 3: `fault.recorded` «записи стенда сделаны» — при обеих
    *  записях стенда за прогон; иначе `missing` таблицы; это не «защита сработала» и не «совершено».
    *  Без пометки — `fault.failed` «не помечено» с настоящей причиной; с пометкой — `fault.unplayed` «помечено, но не
    *  разыграно» с причиной и идентификаторами. */
-  #settle(test: FaultTest, plan: FaultPlanEntry, marked: DemoIds | undefined, stop: StopCode | undefined, threw: boolean, entries: readonly Entry[], recorded: boolean): void {
+  #settle(
+    test: FaultTest,
+    plan: FaultPlanEntry,
+    marked: DemoIds | undefined,
+    stop: StopCode | undefined,
+    threw: boolean,
+    entries: readonly Entry[],
+    recorded: boolean,
+    fired: boolean,
+  ): void {
     const ids = marked ? pick(marked) : {};
     const unplayed = (code: string, status?: number) =>
       this.#step(marked ? "fault.unplayed" : "fault.failed", { test, code, ...(status !== undefined && { status }), ...ids });
     const v = entries.find((e) => e.violation);
+    // Тест со сбоем, который обязан сработать (`fires`, Н-02): «совершено» — по записи журнала стенда, а не по 2xx
+    // (инвариант 6, П31; блокер 1 ревью К3): без сработавшего сбоя Платформа отвечает 2xx прежним реквизитом заказа.
+    if (marked && v?.kind === "ok" && plan.fires && !fired) return unplayed(plan.fires.missing);
     if (marked && v?.kind === "ok") return this.#step("fault.marked", { test, ...ids });
     if (stop) return unplayed(stop);
     if (!marked) return unplayed(threw ? "BRANCH_ERROR" : "NOT_MARKED");
@@ -903,11 +966,16 @@ function shopUrl(base: string, target: string): URL | undefined {
 }
 
 /** Взведён ли сбой стенда сейчас — по журналу стенда: последняя запись ARMED / DISARMED этого теста (у `StandDemo` нет
- *  чтения взвода; Н-05 сам себя не снимает — снимает только `disarm`). */
-function armedNow(log: readonly { readonly test?: string; readonly what: string }[], test: FaultTest): boolean {
+ *  чтения взвода). `firedRecord` — запись срабатывания одноразового сбоя (таблица: `fires.once`): стенд снимает такой взвод
+ *  сам и `DISARMED` не пишет, поэтому запись срабатывания читается наравне с «снят» — иначе Н-02 остался бы «взведён»
+ *  навсегда и следующий прогон пошёл бы по снятому взводу (блокер 2 ревью К3). Н-05 сам себя не снимает — у него
+ *  `fires` нет, и поведение прежнее. */
+function armedNow(log: readonly { readonly test?: string; readonly what: string }[], test: FaultTest, firedRecord?: string): boolean {
   for (let i = log.length - 1; i >= 0; i--) {
     const e = log[i]!;
-    if (e.test === test && (e.what === "ARMED" || e.what === "DISARMED")) return e.what === "ARMED";
+    if (e.test !== test) continue;
+    if (e.what === "ARMED") return true;
+    if (e.what === "DISARMED" || (firedRecord !== undefined && e.what === firedRecord)) return false;
   }
   return false;
 }
