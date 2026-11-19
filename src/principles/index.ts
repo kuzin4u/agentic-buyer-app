@@ -4,6 +4,8 @@
 export type {
   ChangeSource,
   KnownChangeSource,
+  NoteKey,
+  PrinciplesNotes,
   OrderCheck,
   OrderProblem,
   Principle,
@@ -18,6 +20,16 @@ export type {
   PrinciplesView,
   SignedPrinciples,
 } from "./model.js";
+
+export {
+  article19Applied,
+  currentPrinciples,
+  lockedId,
+  noteKeysFor,
+  notesFor,
+  ranksFor,
+  weightsFor,
+} from "./selection.js";
 
 export type {
   BodyProblem,
@@ -37,6 +49,7 @@ export { bodyFingerprint, createPrinciplesStore, signPrinciples } from "./signat
 export {
   FIRST_VERSION_NO,
   KNOWN_CHANGE_SOURCES,
+  NOTE_KEYS,
   PRINCIPLE_ROLES,
   byRole,
   checkOrder,

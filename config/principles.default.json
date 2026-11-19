@@ -1,5 +1,15 @@
 {
   "text_version": "principles@1.0",
+  "notes": {
+    "execution_always": {
+      "ru": "Надёжность исполнения учитывается всегда — правило системы",
+      "en": "Reliable fulfilment always counts — a system rule"
+    },
+    "price_capped": {
+      "ru": "Цена учитывается не выше надёжности исполнения — правило системы",
+      "en": "Price counts no higher than reliable fulfilment — a system rule"
+    }
+  },
   "items": [
     {
       "id": "prn_execution",

@@ -85,6 +85,18 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     }
   });
 
+  /** Поля § 5.14, добавленные тем же решением владельца (П32 доп. 1): строки-пояснения, признак включённости и
+   *  запертый пункт. В документе v1.0 их нет; появятся с К-Б v1.1 — тогда ожидание «в документе поля нет» станет
+   *  красным, и сверка сведётся к общей. */
+  it("поля `notes`, `items[].on` и `locked_id` объявлены в модуле, а в документе v1.0 их ещё нет", () => {
+    const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
+    const section = methods.slice(methods.indexOf("export interface PrinciplesResponse"));
+    const body = section.slice(0, section.indexOf("\n}"));
+    for (const field of ["notes", "readonly on", "locked_id"]) expect(body, field).toContain(field);
+    const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
+    for (const field of ["notes", '"on"', "locked_id"]) expect(docSection, field).not.toContain(field);
+  });
+
   it("код вне перечня не опознаётся как код `/ui` (это код ядра)", () => {
     expect(isUiErrorCode("SHOWN_STALE")).toBe(true);
     expect(isUiErrorCode("LIMIT_EXCEEDED")).toBe(false);

@@ -75,11 +75,15 @@ describe("К1.2: перечень по умолчанию — данными в 
 });
 
 describe("К1.2: проверка формы перечня", () => {
-  const good = JSON.parse(readFileSync(CONFIG_URL, "utf8")) as { items: Record<string, unknown>[]; text_version: string };
+  const good = JSON.parse(readFileSync(CONFIG_URL, "utf8")) as {
+    items: Record<string, unknown>[];
+    text_version: string;
+    notes: unknown;
+  };
   /** Пункты с ролями, чтобы проверяемый случай падал на том, что проверяется, а не на отсутствии роли. */
   const required = good.items.filter((it) => it["role"] !== undefined);
-  const withItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", items: [...required, ...items] });
-  const onlyItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", items });
+  const withItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", notes: good.notes, items: [...required, ...items] });
+  const onlyItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", notes: good.notes, items });
 
   it("пустой перечень — ошибка: профиль без принципов не стартует", () => {
     expect(() => parsePrinciplesCatalog(onlyItems([]))).toThrow(/пустой перечень/);
@@ -210,11 +214,10 @@ describe("К1.2: порядок — перестановка подмножес�
     });
 
     it("правило держится ролью, а не кодом: переименуй код — правило останется", () => {
+      const raw = JSON.parse(readFileSync(CONFIG_URL, "utf8")) as { items: Record<string, unknown>[] };
       const renamed = parsePrinciplesCatalog({
-        text_version: catalog.text_version,
-        items: (JSON.parse(readFileSync(CONFIG_URL, "utf8")) as { items: Record<string, unknown>[] }).items.map((it) =>
-          it["role"] === "execution" ? { ...it, code: "RELIABLE" } : it,
-        ),
+        ...raw,
+        items: raw.items.map((it) => (it["role"] === "execution" ? { ...it, code: "RELIABLE" } : it)),
       });
       const execId = byRole(renamed, "execution")?.id as string;
       expect(checkOrder(renamed.items.map((p) => p.id).filter((id) => id !== execId), renamed)).toEqual({
@@ -369,6 +372,15 @@ describe("К1.2: веса наружу не выходят", () => {
   /** Ссылка на модуль весов — по имени файла, в любой форме записи (`./weights.js`, `./weights.ts`, `./weights`). */
   const isWeights = (s: string): boolean => /(^|\/)weights(\.(js|ts|mjs))?$/.test(s);
 
+  it("из имён с «вес» наружу выходит только порт `weightsFor` — карты среди них нет", async () => {
+    // Порт нужен пучкам и ВР **внутри сервера** (постановка К1.4), поэтому имя с «weight» на поверхности одно и
+    // названо здесь поимённо. Карта (`weightsOf`, `Weights`, `Article19`) наружу не идёт, и это держат два
+    // соседних случая: ссылки на `./weights.js` в `index.ts` нет, а в типах `/ui/v1` нет поля `weight`.
+    const surface = Object.keys((await import("../../src/principles/index.js")) as object);
+    expect(surface.filter((n) => WEIGHT.test(n))).toEqual(["weightsFor"]);
+    expect(surface).not.toContain("weightsOf");
+  });
+
   it("`index.ts` не реэкспортирует `weights.ts` — ни значением, ни типом", () => {
     // `Object.keys` импортированного модуля типы **не видит**: `export type { Weights } from "./weights.js"` дал бы
     // пустые ключи и зелёный тест (находка ревью № 3 второго прохода). Поэтому смотрим текст: ссылки на модуль
@@ -492,6 +504,7 @@ describe("К1.2: карта «ранг → вес» — внутри серве�
   it("перечень без ролей (минуя проверку формы) — ст. 19 не о чем, веса считаются", () => {
     const small: PrinciplesCatalog = {
       text_version: "t@1",
+      notes: catalog.notes,
       items: catalog.items.filter((p) => p.role === null),
     };
     const { byId, article19 } = weightsOf(

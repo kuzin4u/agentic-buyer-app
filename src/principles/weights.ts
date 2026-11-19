@@ -6,7 +6,7 @@
 // Пункты правил ищутся **по роли** (`role` в `config/`), а не по коду: переименование кода правило не снимет
 // (решение владельца 19.11, П32 дополнение 1).
 import type { PrincipleId, PrinciplesCatalog, PrinciplesOrder } from "./model.js";
-import { byRole } from "./model.js";
+import { byRole, knownOrder } from "./model.js";
 
 /** Вес первого по важности пункта. Шкала условная и наружу не видна: важны только отношения весов. */
 const TOP_WEIGHT = 100;
@@ -39,7 +39,10 @@ export interface Weights {
  *  Ст. 19: вес цены не выше веса исполнения. Прежнего случая «исполнение выключено, потолок по умолчанию» больше
  *  нет — такой потолок равнялся верхнему весу и ничего не ограничивал, поэтому правило перенесено в проверку
  *  порядка (`EXECUTION_MISSING` → `PRINCIPLES_ORDER_INVALID`), где его нельзя обойти. */
-export function weightsOf(order: PrinciplesOrder, catalog: PrinciplesCatalog): Weights {
+export function weightsOf(rawOrder: PrinciplesOrder, catalog: PrinciplesCatalog): Weights {
+  // Приведение к нынешнему перечню — одно и то же для весов и для рангов (`knownOrder`): пункт, убранный из
+  // `config/` после подписи, не получает ни веса, ни ранга, и наборы не расходятся.
+  const order = knownOrder(rawOrder, catalog);
   const m = order.length;
   const byId = new Map<PrincipleId, number>(catalog.items.map((p) => [p.id, 0]));
   order.forEach((id, i) => byId.set(id, weightAt(i + 1, m)));

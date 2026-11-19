@@ -51,9 +51,22 @@ export interface Principle {
   readonly scope: PrincipleScope;
 }
 
+/** Строки-пояснения под списком — **данными**, как и сами принципы (правило планов № 3: оба языка с первого
+ *  коммита). Это тексты правил системы, а не тексты клиента:
+ *  - `execution_always` — «надёжность исполнения учитывается всегда»: человеку сказано, почему пункт не выключается
+ *    (решение владельца 19.11);
+ *  - `price_capped` — «цена учитывается не выше надёжности исполнения»: показывается, когда ст. 19 опустила вес цены.
+ *    Правило не прячется: порядок клиента принят, но что сделал сервер — сказано. */
+export const NOTE_KEYS = ["execution_always", "price_capped"] as const;
+
+export type NoteKey = (typeof NOTE_KEYS)[number];
+
+export type PrinciplesNotes = { readonly [K in NoteKey]: PrincipleText };
+
 /** Перечень по умолчанию с версией текстов: `text_version` входит в хэш показанного (правило 1 К-Б). */
 export interface PrinciplesCatalog {
   readonly text_version: string;
+  readonly notes: PrinciplesNotes;
   readonly items: readonly Principle[];
 }
 
@@ -171,6 +184,15 @@ export function checkOrder(order: PrinciplesOrder, catalog: PrinciplesCatalog): 
   return { ok: true };
 }
 
+/** Порядок, приведённый к нынешнему перечню: пункт, которого в перечне больше нет, из него выпадает.
+ *  Перечень — **данные** и меняется настройкой (П32), а подписанные версии неизменяемы, поэтому пункт могли убрать
+ *  из `config/` уже после подписи. Приведение делается **в одном месте** и для рангов, и для весов: иначе человек
+ *  видел бы ранги одного набора, а ранжирование шло бы по другому (находка ревью К1.4 № 7). */
+export function knownOrder(order: PrinciplesOrder, catalog: PrinciplesCatalog): PrinciplesOrder {
+  const known = new Set(catalog.items.map((p) => p.id));
+  return order.filter((id) => known.has(id));
+}
+
 /** Порядок по умолчанию — порядок пунктов в файле перечня. Подписанным он **не считается**: пока клиент не
  *  подтвердил свой порядок жестом, у профиля `signed: null` (К1.4). */
 export function defaultOrder(catalog: PrinciplesCatalog): PrinciplesOrder {
@@ -231,12 +253,28 @@ export function parsePrinciplesCatalog(raw: unknown): PrinciplesCatalog {
       scope: parseScope(it["scope"], where),
     };
   });
+  const notes = parseNotes(r["notes"]);
   for (const role of PRINCIPLE_ROLES) {
     const withRole = items.filter((p) => p.role === role);
     if (withRole.length !== 1)
       throw new Error(`principles.items: роль ${role} у ${withRole.length} пунктов, нужен ровно один`);
   }
-  return { text_version, items };
+  return { text_version, notes, items };
+}
+
+/** Строки-пояснения: ровно известные ключи, у каждого оба языка непустыми. Лишний ключ — ошибка формы: строка,
+ *  которую никто не показывает, хуже отсутствующей. */
+function parseNotes(raw: unknown): PrinciplesNotes {
+  const n = obj(raw, "principles.notes");
+  for (const key of Object.keys(n))
+    if (!(NOTE_KEYS as readonly string[]).includes(key)) throw new Error(`principles.notes.${key}: лишняя строка`);
+  const out = {} as { -readonly [K in NoteKey]: PrincipleText };
+  for (const key of NOTE_KEYS) {
+    const where = `principles.notes.${key}`;
+    const t = obj(n[key], where);
+    out[key] = { ru: str(t, "ru", where), en: str(t, "en", where) };
+  }
+  return out;
 }
 
 /** Параметры и область **пока пусты**: поля в файле можно не писать совсем, но непустое значение — ошибка формы.
