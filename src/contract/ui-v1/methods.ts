@@ -402,8 +402,21 @@ export interface ActCardResponse {
 /** Экрану приходит **только порядок важности** (`rank`). Веса остаются в системном регистре и в ответ не попадают
  *  (правка 6 канвы; правило 3 — вес исполнения не ниже веса цены живёт у сервера, ст. 19). */
 export interface PrinciplesResponse {
-  readonly items: readonly { readonly id: string; readonly text: string; readonly rank: number }[];
-  readonly signed: { readonly at: UiInstant; readonly version: string } | null;
+  readonly items: readonly { readonly id: string; readonly text: string; readonly rank: number; readonly on: boolean }[];
+  /** `by` — кто подтвердил порядок: человек или эмулятор клиента демо-стенда. Ставит **сервер** по своему знанию
+   *  (`DEMO_FAULTS=1`, режим «Авто», П5); из тела запроса признак не берётся — экран недоверенная среда. Пометку
+   *  «подписано эмулятором клиента (прогон)» рисует экран И-2. Поля `by` в § 5.14 документа v1.0 нет — решение
+   *  владельца 19.11, 17:52 (П32 доп. 1), войдёт в К-Б v1.1. */
+  readonly signed: { readonly at: UiInstant; readonly version: string; readonly by: "human" | "emulator" } | null;
+  /** Строки-пояснения под списком: про то, что надёжность исполнения учитывается всегда, и — когда ст. 19 опустила
+   *  вес цены — про потолок цены. Сами тексты лежат в `config/` на двух языках, литералом здесь их нет (правило
+   *  планов № 3); сюда они приходят готовыми, на языке запроса: экран ничего не выводит сам (правило 3).
+   *  **В § 5.14 документа v1.0 этих полей (`notes`, `items[].on`, `locked_id`) нет:**
+   *  добавлены решением владельца 19.11 (П32 дополнение 1) как совместимое расширение (§ 3 «Версии»); в документ
+   *  войдут с К-Б v1.1, до тех пор К2.4 сверяет их отдельным ожиданием. */
+  readonly notes: readonly string[];
+  /** Пункт, который клиент не может выключить (роль «исполнение»); `null`, если такого в перечне нет. */
+  readonly locked_id: string | null;
   readonly view: UiView;
 }
 
