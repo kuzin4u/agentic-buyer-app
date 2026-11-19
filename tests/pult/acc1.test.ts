@@ -82,10 +82,11 @@ describe("К2: строки акта ACC-1", () => {
     const rs = acc1Rows(t, [], { operatorByTest: true });
     const op = rs.filter((r) => r.operatorByTest).map((r) => r.test);
     expect(op).toEqual(["У-01", "У-02", "У-03", "У-04"]);
-    // без прогона — тест оператора не играл: пометки нет (ревью Б5 № 10); замечания по умолчанию — `KNOWN_NOTES` (№ 11)
+    // без прогона — тест оператора не играл: пометки нет (ревью Б5 № 10); замечания по умолчанию — `KNOWN_NOTES`, а он
+    // сейчас пуст (№ 11; Н-02 снято задачей по передаче #22)
     const noRun = acc1Rows(withRows({ "У-02": { agree: "unchecked" } }), [], { operatorByTest: true });
     expect(row(noRun, "У-02").operatorByTest).toBe(false);
-    expect(row(noRun, "Н-02").note.ru).toBe(KNOWN_NOTES["Н-02"]!.note.ru);
+    expect(noRun.map((r) => r.note.ru).join("")).toBe("");
     // «сходится» не меняется (инвариант 2): пометка — провенанс, не вердикт
     expect(row(rs, "У-01").agree).toBe("yes");
     expect(acc1Rows(t).some((r) => r.operatorByTest)).toBe(false);
@@ -181,17 +182,20 @@ describe("К2: строки акта ACC-1", () => {
     expect(csv[26]![5]).toBe(`Records not linked to a test row: records: П-009 (${AT}) — open`);
     expect(csv[27]![5]).toMatch(/^Built at: 2026-11-13T12:00:00Z \(UTC\)/);
   });
-  it("П11 (Р-1556): Н-02 «не проверено» — причина в замечании, ru и en; при «да» или «нет» — замечания нет", () => {
+  // Задача по передаче #22, «Пересмотр» П11: стенд `#v0.49.1` принимает пометку «ПР» по Н-02 (передача #120), в драйвере
+  // есть ветка, живой прогон даёт «да» (`tests/demo/acc1-n02-live.test.ts`) — замечания П11 в акте больше нет ни при каком
+  // исходе, и перечень известных причин пуст.
+  it("П11 снято: у Н-02 замечания нет ни при каком исходе, перечень известных причин пуст", () => {
     const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-02": o })), "Н-02").note;
-    expect(note({ agree: "unchecked" }).ru).toContain("сбой стенда не вызвать честным агентом");
-    expect(note({ agree: "unchecked" }).ru).toContain("инвариант 9");
-    expect(note({ agree: "unchecked" }).en).toContain("cannot be caused by an honest agent");
-    expect(note({ agree: "unchecked" }).en).not.toMatch(/[«»]/); // коды Н-02 и П11 — кириллицей, как во всём en-акте
-    expect(note({ agree: "yes" }).ru).toBe("");
-    expect(note({ agree: "no" }).ru).toBe("");
-    // прогона нет (Н-02 не взводили) — тоже «не проверено», причина та же (ревью № 5)
-    expect(row(acc1Rows(base), "Н-02")).toMatchObject({ agree: "unchecked" });
-    expect(row(acc1Rows(base), "Н-02").note.ru).toContain("сбой стенда не вызвать честным агентом");
+    for (const agree of ["unchecked", "yes", "no"] as const) {
+      expect(note({ agree }).ru, agree).toBe("");
+      expect(note({ agree }).en, agree).toBe("");
+    }
+    expect(row(acc1Rows(base), "Н-02")).toMatchObject({ agree: "unchecked" }); // прогона нет — «не проверено», но без причины
+    expect(row(acc1Rows(base), "Н-02").note.ru).toBe("");
+    // Проверяется отсутствие именно Н-02, а не пустота перечня: новая законная известная причина этот тест ронять не должна
+    // (ревью К5 № 5). Инвариант «ключ — код теста задания» — в тесте Н-08 ниже, он работает и на пустом перечне.
+    expect(KNOWN_NOTES["Н-02"]).toBeUndefined();
   });
   it("Н-08: временное замечание № 10 снято (кирпич № 10 окна А) — ни при каком исходе замечания нет", () => {
     const note = (o: Partial<TestRow>) => row(acc1Rows(withRows({ "Н-08": o })), "Н-08").note;
@@ -200,8 +204,12 @@ describe("К2: строки акта ACC-1", () => {
     expect(note({ agree: "no", driver: "marked" }).ru).toBe("");
     expect(note({ agree: "yes", driver: "refused" }).ru).toBe("");
     expect(row(acc1Rows(base), "Н-08").note.ru).toBe("");
-    // на случай новой известной причины: ключ — код теста задания
+    // На случай новой известной причины: ключ — код теста задания. Перечень сейчас пуст, поэтому инвариант проверяется и на
+    // подменённом перечне — иначе обход был бы бездействующим (ревью К5 № 5).
     for (const k of Object.keys(KNOWN_NOTES)) expect(TEST_CODES as readonly string[]).toContain(k);
+    const probe = { "Н-04": { applies: (r: TestRow) => r.agree === "no", note: { ru: "причина", en: "reason" } } };
+    for (const k of Object.keys(probe)) expect(TEST_CODES as readonly string[]).toContain(k);
+    expect(row(acc1Rows(withRows({ "Н-04": { agree: "no" } }), [], { known: probe }), "Н-04").note.ru).toBe("причина");
   });
   it("пометки в выгрузке: «Авто» (П5 п. 3) и «нарушитель (ПР) — драйвер приложения» (П7 п. 4) — в Markdown и CSV (ревью К2 № 5)", () => {
     const t = withRows({ "П-01": { auto: true }, "Н-07": { driver: "marked", run: "run.fault Н-07" } });
