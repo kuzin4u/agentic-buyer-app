@@ -30,6 +30,7 @@ export * from "./lang.js";
 export * from "./money.js";
 export * from "./port.js";
 export * from "./purchase.js";
+export * from "./session.js";
 
 /** Политика безопасности страницы — только `'self'`, без исключений (П4 п. 3): скрипт и стили каркаса отдаются
  *  файлами, inline на странице нет. Раздача самого экрана — кирпич К3. */
@@ -48,9 +49,11 @@ export interface UiServerOptions {
   /** Порт к ядру: состояние покупки и сигналы потока (правило планов № 1). */
   readonly core: UiCorePort;
   /**
-   * Кто спрашивает. Сессия приложения — cookie same-origin (§ 3 «Авторизация») — делается кирпичом **К2а**; здесь она
-   * зависимость, а не умолчание: умолчание «хозяин неизвестен — покажем» открыло бы чужие покупки, и ни один тест этого
-   * бы не заметил. `null` — сессии нет: данных маршруты не отдают.
+   * Кто спрашивает. Сессия приложения — cookie same-origin (§ 3 «Авторизация», кирпич К2а): обычно это
+   * `(req) => sessions.ownerOf(req)` у `Sessions` (`session.ts`).
+   *
+   * Зависимость, а не умолчание: умолчание «хозяин неизвестен — покажем» открыло бы чужие покупки, и ни один тест этого
+   * бы не заметил. `null` — сессии нет: данных маршруты не отдают, ответ — единый `PURCHASE_NOT_FOUND`.
    */
   readonly owner: (req: IncomingMessage) => string | null;
   /** Язык, если в запросе его нет. */
@@ -142,12 +145,14 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
       const path = u.pathname.slice(UI_V1_BASE.length);
       const method = req.method ?? "GET";
 
+      // Авторизация — **раньше всего остального** под `/ui/v1` (§ 3 «Авторизация»; находки ревью К2 № 4 и К2а № 4):
+      // без сессии запрос не получает ни данных, ни разницы в ответах — ни 405 с перечнем методов, ни 404 на неизвестный
+      // адрес, ни записи в память повторов. Иначе по разнице ответов было бы видно, какие методы зарегистрированы.
+      const owner = o.owner(req);
+      if (owner === null) return send(res, notFound(lang));
+
       // ── Правило 2: ключ повтора у каждого POST, до маршрутизации ──
       if (method === "POST") {
-        // Авторизация — раньше правила 2: без сессии запрос не должен ни получить данных, ни **попасть в память
-        // повторов** (находка ревью К2 № 4). Ответ — тот же единый `PURCHASE_NOT_FOUND`.
-        const owner = o.owner(req);
-        if (owner === null) return send(res, notFound(lang));
         const raw = await readBody(req);
         if (raw === null) return send(res, { status: 400, type: TEXT_TYPE, body: t(lang, "http.bad_request") });
         let check;
@@ -186,7 +191,6 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
       const purchase = /^\/purchase\/([^/]+)$/.exec(path);
       if (purchase) {
         if (method !== "GET") return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET" });
-        const owner = o.owner(req);
         // Раскодирование — в `try`: `%E0` это не UTF-8, и `decodeURIComponent` на нём бросает. Негодный опознаватель —
         // тот же единый `PURCHASE_NOT_FOUND` (§ 6: «не по форме» не отличается в ответе от чужой и неизвестной).
         let id: string;
@@ -195,7 +199,7 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         } catch {
           return send(res, notFound(lang));
         }
-        if (owner === null || !PURCHASE_ID.test(id)) return send(res, notFound(lang));
+        if (!PURCHASE_ID.test(id)) return send(res, notFound(lang));
         const got = await o.core.purchase(id, owner);
         if (got === null) return send(res, notFound(lang));
         return send(res, json(200, purchaseResponse(got, lang)));
@@ -204,8 +208,6 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
       // ── § 5.9 `GET /ui/v1/feed` (SSE) ──
       if (path === "/feed") {
         if (method !== "GET") return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET" });
-        const owner = o.owner(req);
-        if (owner === null) return send(res, notFound(lang));
         res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", ...HEADERS, connection: "keep-alive" });
         // Пауза перед повторным подключением — у экрана; поток сам ничего не досылает (правило 4: он только сигнал).
         res.write("retry: 3000\n\n");
