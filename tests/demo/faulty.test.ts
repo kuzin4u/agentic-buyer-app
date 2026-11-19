@@ -568,22 +568,22 @@ describe("драйвер нарушителя «ПР» — при режиме �
   it("часы стенда сдвинулись не сразу — `waitClockTick` дождался сдвига, и только потом ушло нарушение", async () => {
     const stopped = new Date();
     demo.stand.stand.setClock(stopped);
-    let waited = -1;
+    // Признак, а не часы: сверять прошедшие миллисекунды с задержкой таймера нельзя — таймер будит раньше срока, и на
+    // медленном раннере CI проверка «ждал не меньше 20 мс» падала на 19 (красный CI на `e072ed7`).
+    let released = false;
     let release: ReturnType<typeof setTimeout> | undefined;
     try {
       const s = await last("Н-02", {
         expect: [],
         run: async (c) => {
           c.mark({ mandate_id: "mnd_clock_go" });
-          const t0 = Date.now();
-          release = setTimeout(() => demo.stand.stand.setClock(undefined), 20); // часы пошли только через 20 мс
+          release = setTimeout(() => ((demo.stand.stand.setClock(undefined), (released = true))), 20); // часы пошли не сразу
           await c.waitClockTick();
-          waited = Date.now() - t0;
-          expect(demo.stand.stand.now().getTime(), "ветка продолжилась до сдвига часов").toBeGreaterThan(stopped.getTime());
+          expect(released, "`waitClockTick` вернулся до того, как часы пошли").toBe(true);
+          expect(demo.stand.stand.now().getTime(), "ветка продолжилась на стоячих часах").toBeGreaterThan(stopped.getTime());
           await c.violate.call("GET /pao/v1/agent", {});
         },
       });
-      expect(waited).toBeGreaterThanOrEqual(20);
       expect(s).toMatchObject({ step: "fault.marked", params: { test: "Н-02" } });
     } finally {
       if (release !== undefined) clearTimeout(release);
@@ -1017,8 +1017,10 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(armed.params).toEqual({ test: "Н-02" });
       expect(s.some((x) => x.step === "fault.note.armed")).toBe(false);
       expect(s.at(-1), JSON.stringify(s.at(-1)?.params)).toMatchObject({ step: "fault.marked", params: { test: "Н-02", mandate_id: cartId } });
-      // Сбой одноразовый: сработал — стенд снял взвод сам, записи DISARMED нет, и шага «снял» драйвер не выпускает (К3а).
+      // Сбой одноразовый: сработал — стенд снял взвод сам, записи DISARMED нет, шага «снял» драйвер не выпускает (К3а), а
+      // о судьбе взвода говорит свой шаг (К3б).
       expect(s.some((x) => x.step === "fault.note.disarmed_no_shop")).toBe(false);
+      expect(s.some((x) => x.step === "fault.note.disarmed_by_stand")).toBe(true);
       // Первый реквизит — законная подготовка: его шаг несёт корзину и заказ, по которому пойдёт нарушение.
       const first = s.find((x) => x.step === "fault.note.first_credential")!;
       expect(first.params.mandate_id).toBe(cartId);
@@ -1079,8 +1081,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
         const s = steps().slice(n);
         expect(s.at(-1), `прогон ${pass}: ${JSON.stringify(s.at(-1)?.params)}`).toMatchObject({ step: "fault.marked", params: { test: "Н-02", mandate_id: cartId } });
         expect(s.some((x) => x.step === "fault.note.armed_no_shop"), `прогон ${pass}: взвод свой`).toBe(true);
-        // Сбой сработал — стенд снял взвод сам: шага «снял» нет, и журнал стенда с шиной не расходятся.
+        // Сбой сработал — стенд снял взвод сам: шага «снял» нет, вместо него «снят стендом»; журнал стенда и шина сходятся.
         expect(s.some((x) => x.step === "fault.note.disarmed_no_shop"), `прогон ${pass}: шаг «снял» без снятия`).toBe(false);
+        expect(s.some((x) => x.step === "fault.note.disarmed_by_stand"), `прогон ${pass}: о снятии стендом на шине ничего`).toBe(true);
       }
     });
 

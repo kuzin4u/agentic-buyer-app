@@ -61,6 +61,7 @@ export const BRANCH_STEPS = [
   // и первый, законный реквизит по заказу (подготовка).
   "fault.note.armed_no_shop",
   "fault.note.disarmed_no_shop",
+  "fault.note.disarmed_by_stand",
   "fault.note.first_credential",
 ] as const;
 export type BranchStep = (typeof BRANCH_STEPS)[number];
@@ -376,9 +377,12 @@ export interface FaultyOptions {
 const CLIENT_WAIT_MS = EXPIRY_SEC * 1000;
 /** Как часто драйвер перечитывает мандат, ожидая действия клиента, мс. */
 const CLIENT_POLL_MS = 300;
-/** Сколько ветка ждёт сдвига часов стенда на миллисекунду (`waitClockTick`), мс: системные часы сдвигаются сразу, стоячие
- *  (подменённые `setClock`) не сдвинутся никогда — ждать их бесконечно нельзя. */
-const CLOCK_TICK_WAIT_MS = 100;
+/** Сколько ветка ждёт сдвига часов стенда на миллисекунду (`waitClockTick`), мс. Предел — от условия, а не впритык к шагу
+ *  ожидания: идущие часы сдвигаются на первом же шаге (1 мс), и срок тут ни при чём, а стоячие (подменённые `setClock`) не
+ *  сдвинутся никогда. Секунда соизмерима со сроками стенда (перечитывание мандата — 300 мс, срок ответа — 10 с) и заведомо
+ *  больше любой задержки медленного раннера CI: `CLOCK_NOT_MOVED` выносится только при действительно стоящих часах
+ *  (решение владельца 19.11.2026 по красному CI на `e072ed7`). */
+const CLOCK_TICK_WAIT_MS = 1000;
 
 /** Причины остановки ветки драйвером — закрытый перечень (Р-1511): у каждой — фраза ru/en в `CODE_WORDS`, это сверяет тест. */
 export const STOP_CODES = [
@@ -780,7 +784,12 @@ export class FaultyDriver {
             try {
               // Шаг «снял» — только когда взвод снят этим вызовом: одноразовый сбой стенд снял сам при срабатывании
               // (`disarm` вернёт false, записи DISARMED нет) — шина не должна утверждать обратное (блокер 2 ревью К3).
-              if (!standDemo.disarm(test)) return;
+              // Тогда — свой шаг: иначе о судьбе взвода на шине не остаётся ничего, и оператор видит только «совершено»
+              // (находка 6 ревью, «да» владельца 19.11.2026). Условие — что взвод и правда снят записью срабатывания.
+              if (!standDemo.disarm(test)) {
+                if (firedRecord !== undefined && !armedNow(standDemo.log(), test, firedRecord)) this.#step("fault.note.disarmed_by_stand", { test });
+                return;
+              }
               if (armOnShop) this.#step("fault.note.disarmed", { test, shop_id: VIOLATOR_SHOP.id });
               else this.#step("fault.note.disarmed_no_shop", { test });
             } catch {

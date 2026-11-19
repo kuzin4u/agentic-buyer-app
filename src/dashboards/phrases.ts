@@ -68,6 +68,10 @@ const scenario: Readonly<Record<string, Phrase>> = {
   // Н-02: сбой в выдаче реквизита — витрины не выбирает (передача #22).
   "fault.note.armed_no_shop": p("Нарушитель (ПР): взвёл сбой стенда на время нарушения — без выбора витрины", "Violator (ПР): armed the stand fault for the violation — no shop selected"),
   "fault.note.disarmed_no_shop": p("Нарушитель (ПР): снял сбой стенда", "Violator (ПР): disarmed the stand fault"),
+  "fault.note.disarmed_by_stand": p(
+    "Нарушитель (ПР): сбой стенда сработал и снят самим стендом — он одноразовый",
+    "Violator (ПР): the stand fault fired and the stand disarmed it itself — it is single-use",
+  ),
   "fault.unplayed": p("Нарушитель (ПР): нарушение {test} помечено, но не разыграно — {code}", "Violator (ПР): violation {test} marked but not played — {code}"),
   "fault.note.intent_requested": p("Нарушитель (ПР): запрошено поручение[ {mandate_id}] — подпись клиента в банке", "Violator (ПР): mandate[ {mandate_id}] requested — client signature in the bank"),
   "fault.note.intent_signed": p("Нарушитель (ПР): клиент подписал поручение[ {mandate_id}]", "Violator (ПР): the client signed mandate[ {mandate_id}]"),

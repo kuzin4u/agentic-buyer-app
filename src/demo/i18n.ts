@@ -184,6 +184,7 @@ const ru = {
   // Н-02: сбой в выдаче реквизита — витрины у него нет, поэтому шаги отдельные (иначе на мониторе стояло бы «на витрину нет»).
   "step.fault.note.armed_no_shop": "Нарушитель (ПР) — драйвер приложения ({test}): взвёл сбой стенда — только на время нарушения; витрину этот сбой не выбирает.",
   "step.fault.note.disarmed_no_shop": "Нарушитель (ПР) — драйвер приложения ({test}): снял сбой стенда.",
+  "step.fault.note.disarmed_by_stand": "Нарушитель (ПР) — драйвер приложения ({test}): сбой стенда сработал и снят самим стендом — он одноразовый; снимать нечего.",
   "step.fault.note.prepared": "Нарушитель (ПР) — драйвер приложения: подготовка к нарушению {test}.",
   "step.fault.note.intent_requested": "Нарушитель (ПР) — драйвер приложения ({test}): запрошено поручение {mandate_id} — подпишите его на экране мандатов банка.",
   "step.fault.note.intent_signed": "Нарушитель (ПР) — драйвер приложения ({test}): клиент подписал поручение {mandate_id}.",
@@ -463,6 +464,7 @@ const en: Record<MessageKey, string> = {
   "step.fault.note.disarmed": "Violator (ПР) — app driver ({test}): disarmed the stand fault on shop {shop_id}.",
   "step.fault.note.armed_no_shop": "Violator (ПР) — app driver ({test}): armed the stand fault — only for the violation; this fault does not select a shop.",
   "step.fault.note.disarmed_no_shop": "Violator (ПР) — app driver ({test}): disarmed the stand fault.",
+  "step.fault.note.disarmed_by_stand": "Violator (ПР) — app driver ({test}): the stand fault fired and the stand disarmed it itself — it is single-use; nothing to disarm.",
   "step.fault.note.prepared": "Violator (ПР) — app driver: preparing violation {test}.",
   "step.fault.note.intent_requested": "Violator (ПР) — app driver ({test}): mandate {mandate_id} requested — sign it on the bank mandates screen.",
   "step.fault.note.intent_signed": "Violator (ПР) — app driver ({test}): the client signed mandate {mandate_id}.",
