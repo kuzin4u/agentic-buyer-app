@@ -1,0 +1,37 @@
+{
+  "text_version": "principles@1.0",
+  "items": [
+    {
+      "id": "prn_execution",
+      "code": "EXECUTION",
+      "text": {
+        "ru": "Надёжное исполнение: вовремя, без ошибок и споров",
+        "en": "Reliable fulfilment: on time, accurate, no disputes"
+      }
+    },
+    {
+      "id": "prn_local",
+      "code": "LOCAL",
+      "text": {
+        "ru": "Местный производитель",
+        "en": "Local producer"
+      }
+    },
+    {
+      "id": "prn_near",
+      "code": "NEAR",
+      "text": {
+        "ru": "Ближе, быстрее доставка",
+        "en": "Closer, faster delivery"
+      }
+    },
+    {
+      "id": "prn_price",
+      "code": "PRICE",
+      "text": {
+        "ru": "Дешевле",
+        "en": "Lower price"
+      }
+    }
+  ]
+}
