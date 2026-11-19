@@ -25,16 +25,20 @@ describe("К2.2: состояние ядра → шаг экрана (§ 4 К-Б
     for (const s of PURCHASE_STATES) expect(stepOfState(s)).toBe(STEP_OF_STATE[s]);
   });
 
-  it("чтение двух строк документа, названных диапазоном, закреплено (§ 4, оговорка КТ1)", () => {
+  it("чтение двух строк документа, названных диапазоном, закреплено (§ 4; решение владельца 19.11, Р-1641)", () => {
     // «У2 → У3»: вариантов ещё нет — человек остаётся на У2
     expect(stepOfState("INTENT_ACTIVE")).toBe("U2");
-    // «У4–У5»: состояния внутри POST /ui/v1/cart — человек смотрит на карточку корзины
-    expect(stepOfState("CART_PENDING")).toBe("U5");
+    // «У4–У5» разложено по состояниям: запрошенный CART — живая проверка, активный — карточка корзины
+    expect(stepOfState("CART_PENDING")).toBe("U4");
     expect(stepOfState("CART_ACTIVE")).toBe("U5");
   });
 
-  it("У4 — шаг показа без состояния ядра: живая проверка идёт при OFFERS (§ 5.5, предварительный показ)", () => {
-    expect(statesOfStep("U4")).toEqual([]);
+  it("ни один шаг экрана не мёртв: у каждого из семи есть хотя бы одно состояние", () => {
+    // Прежнее чтение КТ-0 (оба `CART_*` в У5) оставляло У4 недостижимым никогда — именно это и было причиной
+    // отмены (решение владельца 19.11, Р-1641). Проверка общая, а не про один шаг: мёртвым не должен стать никакой.
+    for (const step of UI_STEPS) expect(statesOfStep(step), step).not.toEqual([]);
+    expect(statesOfStep("U4")).toEqual(["CART_PENDING"]);
+    expect(statesOfStep("U5")).toEqual(["CART_ACTIVE"]);
     expect(statesOfStep("U3")).toEqual(["OFFERS"]);
   });
 
