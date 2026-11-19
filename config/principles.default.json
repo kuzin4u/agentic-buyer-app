@@ -4,6 +4,7 @@
     {
       "id": "prn_execution",
       "code": "EXECUTION",
+      "role": "execution",
       "text": {
         "ru": "Надёжное исполнение: вовремя, без ошибок и споров",
         "en": "Reliable fulfilment: on time, accurate, no disputes"
@@ -28,6 +29,7 @@
     {
       "id": "prn_price",
       "code": "PRICE",
+      "role": "price",
       "text": {
         "ru": "Дешевле",
         "en": "Lower price"

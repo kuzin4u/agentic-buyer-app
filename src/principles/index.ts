@@ -10,6 +10,7 @@ export type {
   PrincipleCode,
   PrincipleId,
   PrincipleParams,
+  PrincipleRole,
   PrincipleScope,
   PrincipleText,
   PrinciplesCatalog,
@@ -18,12 +19,26 @@ export type {
   SignedPrinciples,
 } from "./model.js";
 
+export type {
+  BodyProblem,
+  PrinciplesJournal,
+  PrinciplesSignedEntry,
+  PrinciplesStore,
+  RememberedAnswer,
+  SignDeps,
+  SignedBy,
+  SignErrorCode,
+  SignOutcome,
+  SignRequest,
+} from "./signature.js";
+
+export { bodyFingerprint, createPrinciplesStore, signPrinciples } from "./signature.js";
+
 export {
-  EXECUTION_CODE,
   FIRST_VERSION_NO,
   KNOWN_CHANGE_SOURCES,
-  PRICE_CODE,
-  REQUIRED_CODES,
+  PRINCIPLE_ROLES,
+  byRole,
   checkOrder,
   defaultOrder,
   isKnownChangeSource,

@@ -3,11 +3,10 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  EXECUTION_CODE,
   FIRST_VERSION_NO,
   KNOWN_CHANGE_SOURCES,
-  PRICE_CODE,
-  REQUIRED_CODES,
+  PRINCIPLE_ROLES,
+  byRole,
   checkOrder,
   defaultOrder,
   isKnownChangeSource,
@@ -27,13 +26,17 @@ const PRINCIPLES_DIR = new URL("../../src/principles/", import.meta.url);
 const raw = JSON.parse(readFileSync(CONFIG_URL, "utf8")) as unknown;
 const catalog = parsePrinciplesCatalog(raw);
 
-/** Четыре пункта перечня по умолчанию — решение владельца 19.11 (PR #24 `#issuecomment-7006766298`). */
+/** Четыре пункта перечня по умолчанию — решение владельца 19.11 (PR #24 `#issuecomment-7006766298`); роли —
+ *  решение владельца 19.11, 14:51 (П32 дополнение 1). */
 const EXPECTED = [
-  { code: "EXECUTION", ru: "Надёжное исполнение: вовремя, без ошибок и споров", en: "Reliable fulfilment: on time, accurate, no disputes" },
-  { code: "LOCAL", ru: "Местный производитель", en: "Local producer" },
-  { code: "NEAR", ru: "Ближе, быстрее доставка", en: "Closer, faster delivery" },
-  { code: "PRICE", ru: "Дешевле", en: "Lower price" },
+  { code: "EXECUTION", role: "execution", ru: "Надёжное исполнение: вовремя, без ошибок и споров", en: "Reliable fulfilment: on time, accurate, no disputes" },
+  { code: "LOCAL", role: null, ru: "Местный производитель", en: "Local producer" },
+  { code: "NEAR", role: null, ru: "Ближе, быстрее доставка", en: "Closer, faster delivery" },
+  { code: "PRICE", role: "price", ru: "Дешевле", en: "Lower price" },
 ] as const;
+
+const executionId = byRole(catalog, "execution")?.id as string;
+const priceId = byRole(catalog, "price")?.id as string;
 
 describe("К1.2: перечень по умолчанию — данными в config/, не кодом", () => {
   it("состав и тексты ru и en — те, что назвал владелец", () => {
@@ -42,6 +45,13 @@ describe("К1.2: перечень по умолчанию — данными в 
       expect(catalog.items[i]?.text.ru).toBe(e.ru);
       expect(catalog.items[i]?.text.en).toBe(e.en);
     }
+  });
+
+  it("роли расставлены в файле: исполнение и цена — по одному пункту, у прочих роли нет", () => {
+    expect(catalog.items.map((p) => p.role)).toEqual(EXPECTED.map((e) => e.role));
+    expect(byRole(catalog, "execution")?.code).toBe("EXECUTION");
+    expect(byRole(catalog, "price")?.code).toBe("PRICE");
+    expect([...PRINCIPLE_ROLES]).toEqual(["execution", "price"]);
   });
 
   it("у каждого пункта оба языка непустые — экран с первого коммита на двух языках (правило планов № 3)", () => {
@@ -66,8 +76,8 @@ describe("К1.2: перечень по умолчанию — данными в 
 
 describe("К1.2: проверка формы перечня", () => {
   const good = JSON.parse(readFileSync(CONFIG_URL, "utf8")) as { items: Record<string, unknown>[]; text_version: string };
-  /** Обязательные по форме пункты, чтобы проверяемый случай падал на том, что проверяется, а не на ст. 19. */
-  const required = good.items.filter((it) => REQUIRED_CODES.includes(it["code"] as string));
+  /** Пункты с ролями, чтобы проверяемый случай падал на том, что проверяется, а не на отсутствии роли. */
+  const required = good.items.filter((it) => it["role"] !== undefined);
   const withItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", items: [...required, ...items] });
   const onlyItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", items });
 
@@ -119,22 +129,30 @@ describe("К1.2: проверка формы перечня", () => {
     expect(() => parsePrinciplesCatalog(withItems([withRank]))).toThrow(/rank: лишнее поле у пункта/);
   });
 
-  describe("ст. 19 не снимается настройкой: без ролей исполнения и цены перечень не принимается", () => {
-    it("перечень обязан нести оба кода", () => {
-      expect([...REQUIRED_CODES]).toEqual([EXECUTION_CODE, PRICE_CODE]);
-    });
-
-    for (const code of [EXECUTION_CODE, PRICE_CODE])
-      it(`нет пункта ${code} — ошибка формы, как у неполного бренда`, () => {
-        const without = good.items.filter((it) => it["code"] !== code);
+  describe("правила не снимаются настройкой: роли обязательны и по одной", () => {
+    for (const role of PRINCIPLE_ROLES)
+      it(`нет пункта с ролью ${role} — ошибка формы, как у неполного бренда`, () => {
+        const without = good.items.map((it) => (it["role"] === role ? { ...it, role: undefined } : it));
         expect(() => parsePrinciplesCatalog(onlyItems(without))).toThrow(
-          new RegExp(`нет пункта ${code} — ст\\. 19 проверять нечем`),
+          new RegExp(`роль ${role} у 0 пунктов, нужен ровно один`),
         );
       });
 
-    it("переименование кода в конфигурации не проходит молча", () => {
-      const renamed = good.items.map((it) => (it["code"] === PRICE_CODE ? { ...it, code: "CHEAPER" } : it));
-      expect(() => parsePrinciplesCatalog(onlyItems(renamed))).toThrow(/нет пункта PRICE/);
+    it("два пункта с одной ролью — ошибка формы: правило не знало бы, за кем из них идти", () => {
+      const twice = good.items.map((it) => (it["code"] === "NEAR" ? { ...it, role: "price" } : it));
+      expect(() => parsePrinciplesCatalog(onlyItems(twice))).toThrow(/роль price у 2 пунктов, нужен ровно один/);
+    });
+
+    it("переименование кода правило **не** снимает: роль живёт полем, а не кодом", () => {
+      const renamed = good.items.map((it) => (it["code"] === "PRICE" ? { ...it, code: "CHEAPER" } : it));
+      const parsed = parsePrinciplesCatalog(onlyItems(renamed));
+      expect(byRole(parsed, "price")?.code).toBe("CHEAPER");
+      expect(byRole(parsed, "execution")?.code).toBe("EXECUTION");
+    });
+
+    it("незнакомая роль — ошибка формы, а не «без роли»: опечатка не лишит правило пункта", () => {
+      const typo = good.items.map((it) => (it["role"] === "price" ? { ...it, role: "prise" } : it));
+      expect(() => parsePrinciplesCatalog(onlyItems(typo))).toThrow(/role: ожидается execution \| price/);
     });
   });
 });
@@ -151,8 +169,8 @@ describe("К1.2: порядок — перестановка подмножес�
   });
 
   it("подмножество принимается: выключенный пункт — это пропуск", () => {
-    expect(checkOrder([ids[3] as string, ids[1] as string], catalog)).toEqual({ ok: true });
-    expect(checkOrder([ids[0] as string], catalog)).toEqual({ ok: true });
+    expect(checkOrder([ids[3] as string, executionId], catalog)).toEqual({ ok: true });
+    expect(checkOrder([executionId], catalog)).toEqual({ ok: true });
   });
 
   it("пустой порядок не принимается: «без принципов» — это `signed: null`, а не версия без пунктов", () => {
@@ -164,10 +182,46 @@ describe("К1.2: порядок — перестановка подмножес�
   });
 
   it("повтор `id` — не принимается", () => {
-    expect(checkOrder([ids[0] as string, ids[0] as string], catalog)).toEqual({
+    expect(checkOrder([executionId, executionId], catalog)).toEqual({
       ok: false,
       reason: "DUPLICATE_ID",
-      id: ids[0],
+      id: executionId,
+    });
+  });
+
+  describe("надёжное исполнение переставляется, но не выключается (решение владельца 19.11)", () => {
+    it("порядок без пункта роли «исполнение» не принимается", () => {
+      expect(checkOrder([priceId], catalog)).toEqual({ ok: false, reason: "EXECUTION_MISSING", id: executionId });
+      expect(checkOrder(ids.filter((id) => id !== executionId), catalog)).toEqual({
+        ok: false,
+        reason: "EXECUTION_MISSING",
+        id: executionId,
+      });
+    });
+
+    it("переставить его можно куда угодно, в том числе последним", () => {
+      const moved = [...ids.filter((id) => id !== executionId), executionId];
+      expect(checkOrder(moved, catalog)).toEqual({ ok: true });
+    });
+
+    it("прочие пункты выключаются свободно", () => {
+      for (const id of ids.filter((i) => i !== executionId))
+        expect(checkOrder(ids.filter((i) => i !== id), catalog), id).toEqual({ ok: true });
+    });
+
+    it("правило держится ролью, а не кодом: переименуй код — правило останется", () => {
+      const renamed = parsePrinciplesCatalog({
+        text_version: catalog.text_version,
+        items: (JSON.parse(readFileSync(CONFIG_URL, "utf8")) as { items: Record<string, unknown>[] }).items.map((it) =>
+          it["role"] === "execution" ? { ...it, code: "RELIABLE" } : it,
+        ),
+      });
+      const execId = byRole(renamed, "execution")?.id as string;
+      expect(checkOrder(renamed.items.map((p) => p.id).filter((id) => id !== execId), renamed)).toEqual({
+        ok: false,
+        reason: "EXECUTION_MISSING",
+        id: execId,
+      });
     });
   });
 });
@@ -375,7 +429,20 @@ describe("К1.2: веса наружу не выходят", () => {
   });
 });
 
-describe("К1.2: карта «ранг → вес» — внутри сервера, с местом для ст. 19", () => {
+/** Все подмножества перечня, включая пустое: ст. 19 проверяется на подмножествах, а не только на перестановках. */
+function subsetsOf<T>(items: readonly T[]): T[][] {
+  return items.reduce<T[][]>((acc, item) => [...acc, ...acc.map((s) => [...s, item])], [[]]);
+}
+
+/** Все перестановки набора. */
+function permutationsOf<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  return items.flatMap((item, i) =>
+    permutationsOf([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
+  );
+}
+
+describe("К1.2: карта «ранг → вес» — внутри сервера, ст. 19 на всех порядках", () => {
   const ids = catalog.items.map((p) => p.id);
   const idOf = (code: string): string => catalog.items.find((p) => p.code === code)?.id as string;
 
@@ -387,52 +454,43 @@ describe("К1.2: карта «ранг → вес» — внутри серве�
   });
 
   it("порядок клиента принимается как есть: цена выше исполнения — порядок не переставлен", () => {
-    const order = [idOf(PRICE_CODE), idOf(EXECUTION_CODE)];
+    const order = [priceId, executionId];
     const { byId, article19 } = weightsOf(order, catalog);
     expect(article19.applied).toBe(true);
-    expect(byId.get(idOf(PRICE_CODE))).toBeLessThanOrEqual(byId.get(idOf(EXECUTION_CODE)) as number);
+    expect(byId.get(priceId)).toBeLessThanOrEqual(byId.get(executionId) as number);
   });
 
   it("исполнение выше цены — ст. 19 ничего не меняет", () => {
-    const { article19 } = weightsOf([idOf(EXECUTION_CODE), idOf(PRICE_CODE)], catalog);
+    const { article19 } = weightsOf([executionId, priceId], catalog);
     expect(article19.applied).toBe(false);
   });
 
-  describe("исполнение выключено, цена включена — потолок берётся по умолчанию", () => {
-    it("в перечне по умолчанию исполнение первое, поэтому потолок равен верхнему весу и опустить цену не может", () => {
-      // Это и есть нюанс для КТ1: при выключенном исполнении правило не срабатывает ни на каком порядке. Случай
-      // держит нынешнее поведение, чтобы оно не изменилось молча вместе с ответом на вопрос КТ1.
-      const { byId, article19 } = weightsOf([idOf(PRICE_CODE), idOf("LOCAL")], catalog);
-      expect(article19.execution_included).toBe(false);
-      expect(article19.ceiling).toBe(100);
-      expect(article19.applied).toBe(false);
-      expect(byId.get(idOf(EXECUTION_CODE))).toBe(0);
-      expect(byId.get(idOf(PRICE_CODE))).toBe(100);
-    });
-
-    it("исполнение в перечне не первое — потолок по умолчанию ниже, и вес цены опускается до него", () => {
-      const moved: PrinciplesCatalog = {
-        text_version: catalog.text_version,
-        items: [...catalog.items.filter((p) => p.code !== EXECUTION_CODE), ...catalog.items.filter((p) => p.code === EXECUTION_CODE)],
-      };
-      const priceId = moved.items.find((p) => p.code === PRICE_CODE)?.id as string;
-      const { byId, article19 } = weightsOf([priceId], moved);
-      expect(article19.execution_included).toBe(false);
-      expect(article19.applied).toBe(true);
-      expect(article19.ceiling).toBe(25);
-      expect(byId.get(priceId)).toBe(25);
-    });
+  it("ст. 19 держится на **всех** перестановках и подмножествах, где есть исполнение", () => {
+    // Порядок без исполнения до весов не доходит: его отклоняет `checkOrder` (`EXECUTION_MISSING`), и это
+    // проверено выше. Здесь — что на каждом принимаемом порядке вес цены не выше веса исполнения.
+    let checked = 0;
+    for (const subset of subsetsOf(ids)) {
+      for (const order of permutationsOf(subset)) {
+        if (!checkOrder(order, catalog).ok) continue;
+        checked += 1;
+        const { byId } = weightsOf(order, catalog);
+        if (!order.includes(priceId)) continue;
+        expect(byId.get(priceId), order.join(">")).toBeLessThanOrEqual(byId.get(executionId) as number);
+      }
+    }
+    // страховка: без перестановок проверка прошла бы вхолостую (8 подмножеств с исполнением × их перестановки)
+    expect(checked).toBe(49);
   });
 
   it("цены в порядке нет — ст. 19 не о чем", () => {
-    const { article19 } = weightsOf([idOf(EXECUTION_CODE), idOf("LOCAL")], catalog);
-    expect(article19).toEqual({ applied: false, ceiling: null, execution_included: true });
+    const { article19 } = weightsOf([executionId, idOf("LOCAL")], catalog);
+    expect(article19).toEqual({ applied: false, ceiling: null });
   });
 
-  it("перечень без исполнения и цены (минуя проверку формы) — ст. 19 не о чем, веса считаются", () => {
+  it("перечень без ролей (минуя проверку формы) — ст. 19 не о чем, веса считаются", () => {
     const small: PrinciplesCatalog = {
       text_version: "t@1",
-      items: catalog.items.filter((p) => p.code === "LOCAL" || p.code === "NEAR"),
+      items: catalog.items.filter((p) => p.role === null),
     };
     const { byId, article19 } = weightsOf(
       small.items.map((p) => p.id),

@@ -60,16 +60,29 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     return rows.map((m) => [m[1] as string, Number(m[2])] as const);
   })();
 
+  /** Коды, добавленные решением владельца **до выхода К-Б v1.1**: в таблице § 6 документа v1.0 их нет, и сверять их
+   *  с ним нечем. Таблицу v1.1 выпускает чат; после замены файла ожидание «в документе кода нет» станет красным —
+   *  это и есть сигнал свести перечень к общей сверке и убрать отсюда строку (П32 дополнение 1). */
+  const PENDING_V1_1 = [["PRINCIPLES_ORDER_INVALID", 400]] as const;
+
   it("таблица § 6 прочитана — девять строк", () => {
     expect(fromDoc).toHaveLength(9);
   });
 
-  it("перечень кодов и порядок — ровно как в § 6", () => {
-    expect(UI_ERROR_CODES).toEqual(fromDoc.map(([code]) => code));
+  it("перечень кодов и порядок — § 6 плюс решённое владельцем до К-Б v1.1", () => {
+    expect(UI_ERROR_CODES).toEqual([...fromDoc.map(([code]) => code), ...PENDING_V1_1.map(([code]) => code)]);
   });
 
   it("HTTP-статус каждого кода — как в § 6", () => {
     for (const [code, status] of fromDoc) expect(UI_ERROR_STATUS[code as keyof typeof UI_ERROR_STATUS], code).toBe(status);
+  });
+
+  it("`PRINCIPLES_ORDER_INVALID` — 400, и в документе v1.0 его ещё нет (К-Б v1.1, решение владельца 19.11)", () => {
+    for (const [code, status] of PENDING_V1_1) {
+      expect(isUiErrorCode(code), code).toBe(true);
+      expect(UI_ERROR_STATUS[code], code).toBe(status);
+      expect(doc, code).not.toContain(code);
+    }
   });
 
   it("код вне перечня не опознаётся как код `/ui` (это код ядра)", () => {

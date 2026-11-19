@@ -34,10 +34,18 @@ export interface PrincipleScope {
   readonly situation: string | null;
 }
 
+/** Роль пункта в правилах системы. Роль — **поле файла**, а не угаданный код: правила (ст. 19 и «надёжное исполнение
+ *  не выключается») ищут пункты **по роли**, поэтому переименование кода в `config/` правило не снимет. Настройка не
+ *  должна снимать норму (решение владельца 19.11, П32 дополнение 1). У остальных пунктов роли нет — `null`. */
+export const PRINCIPLE_ROLES = ["execution", "price"] as const;
+
+export type PrincipleRole = (typeof PRINCIPLE_ROLES)[number];
+
 /** Пункт профиля. Веса здесь **нет** и быть не может: карта «ранг → вес» лежит в `weights.ts` и наружу не выходит. */
 export interface Principle {
   readonly id: PrincipleId;
   readonly code: PrincipleCode;
+  readonly role: PrincipleRole | null;
   readonly text: PrincipleText;
   readonly params: PrincipleParams;
   readonly scope: PrincipleScope;
@@ -49,19 +57,11 @@ export interface PrinciplesCatalog {
   readonly items: readonly Principle[];
 }
 
-/** Код принципа «надёжное исполнение» и код «цена» — те два, между которыми стоит ст. 19 правил («вес исполнения
- *  не ниже веса цены»). Живут в модели, а не в `weights.ts`: от их присутствия зависит **проверка формы** перечня. */
-export const EXECUTION_CODE: PrincipleCode = "EXECUTION";
-export const PRICE_CODE: PrincipleCode = "PRICE";
-
-/** Коды, без которых перечень не принимается. Перечень принципов **открыт** — состав установок меняется настройкой, —
- *  но ст. 19 по П32 держит сервер «ни на какой перестановке и ни на каком подмножестве». Если бы роли «исполнение» и
- *  «цена» просто искались по коду, переименование кода в `config/` **молча снимало бы правило**: веса считались бы,
- *  ст. 19 возвращала бы «не о чем», и никто бы не узнал. Обход правила настройкой — это не исполнение правила,
- *  поэтому отсутствие любого из двух кодов — ошибка формы, как неполная конфигурация бренда.
- *  **Нюанс для КТ1:** роль пункта сейчас **угадывается по коду**. Правильнее разметить её в файле отдельным полем
- *  (`role: "execution" | "price"`), и тогда код станет свободным. Это правка формы перечня, и она ждёт КТ1. */
-export const REQUIRED_CODES: readonly PrincipleCode[] = [EXECUTION_CODE, PRICE_CODE];
+/** Пункт с этой ролью, или `null`, если такого в перечне нет. Проверка формы требует по одному пункту на каждую
+ *  роль, так что у разобранного перечня обе роли есть; `null` остаётся для перечня, собранного в обход разбора. */
+export function byRole(catalog: PrinciplesCatalog, role: PrincipleRole): Principle | null {
+  return catalog.items.find((p) => p.role === role) ?? null;
+}
 
 /** Откуда взялось изменение версии. Перечень **открытый**: сегодня профиль меняет клиент, с обучением У10 (И-8)
  *  добавится принятый совет, дальше — то, чего мы ещё не знаем. Поэтому тип — строка, а не замкнутое объединение:
@@ -78,9 +78,10 @@ export function isKnownChangeSource(source: ChangeSource): source is KnownChange
   return (KNOWN_CHANGE_SOURCES as readonly string[]).includes(source);
 }
 
-/** Порядок важности — **перестановка подмножества** известных `id`: клиент переставляет пункты и любой из них
- *  выключает (решение владельца 19.11). Пустой порядок — «без принципов», и он выражается `signed: null`, а не
- *  подписанной версией без пунктов (см. `checkOrder`). */
+/** Порядок важности — **перестановка подмножества** известных `id`: клиент переставляет пункты и выключает их —
+ *  **кроме пункта с ролью «исполнение»** (решение владельца 19.11, П32 дополнение 1: ст. 19 это норма системы, а не
+ *  настройка клиента). Пустой порядок — «без принципов», и он выражается `signed: null`, а не подписанной версией
+ *  без пунктов (см. `checkOrder`). */
 export type PrinciplesOrder = readonly PrincipleId[];
 
 /** Что в карточке видел человек, когда подтверждал: хэш показанного и версия текстов (правило 1 К-Б).
@@ -144,12 +145,16 @@ export function nextVersion(
 export type OrderProblem =
   | { readonly reason: "EMPTY" }
   | { readonly reason: "UNKNOWN_ID"; readonly id: PrincipleId }
-  | { readonly reason: "DUPLICATE_ID"; readonly id: PrincipleId };
+  | { readonly reason: "DUPLICATE_ID"; readonly id: PrincipleId }
+  | { readonly reason: "EXECUTION_MISSING"; readonly id: PrincipleId };
 
 export type OrderCheck = { readonly ok: true } | ({ readonly ok: false } & OrderProblem);
 
-/** Проверка порядка против перечня: известные `id`, без повторов, включённых — не меньше одного. Пропуски
- *  разрешены: выключенный пункт это и есть пропуск (перестановка **подмножества**). */
+/** Проверка порядка против перечня: известные `id`, без повторов, включённых — не меньше одного, и **пункт с ролью
+ *  «исполнение» на месте**. Прочие пропуски разрешены: выключенный пункт это и есть пропуск (перестановка
+ *  **подмножества**).
+ *  Экрану все четыре причины уходят **одним** кодом `PRINCIPLES_ORDER_INVALID` (400); причина остаётся внутри
+ *  уточнением (решение владельца 19.11, П32 дополнение 1). */
 export function checkOrder(order: PrinciplesOrder, catalog: PrinciplesCatalog): OrderCheck {
   if (order.length === 0) return { ok: false, reason: "EMPTY" };
   const known = new Set(catalog.items.map((p) => p.id));
@@ -159,6 +164,9 @@ export function checkOrder(order: PrinciplesOrder, catalog: PrinciplesCatalog): 
     if (seen.has(id)) return { ok: false, reason: "DUPLICATE_ID", id };
     seen.add(id);
   }
+  const execution = byRole(catalog, "execution");
+  if (execution !== null && !seen.has(execution.id))
+    return { ok: false, reason: "EXECUTION_MISSING", id: execution.id };
   return { ok: true };
 }
 
@@ -173,7 +181,7 @@ const CODE = /^[A-Z][A-Z0-9_]*$/;
 
 /** Поля пункта, и только они. Лишний ключ — ошибка формы, а не молчаливо пропущенные данные: иначе в перечень можно
  *  было бы положить `"weight": 99` и ждать, что его кто-нибудь прочитает. Веса в перечне нет (П32, правка 6 канвы). */
-const ITEM_KEYS: readonly string[] = ["id", "code", "text", "params", "scope"];
+const ITEM_KEYS: readonly string[] = ["id", "code", "role", "text", "params", "scope"];
 
 function str(raw: Record<string, unknown>, key: string, where: string): string {
   const v = raw[key];
@@ -189,9 +197,9 @@ function obj(raw: unknown, where: string): Record<string, unknown> {
 /** Разбор перечня по умолчанию (`config/principles.default.json`). Перечень — **данные**, не код: тексты банка и
  *  состав установок меняются настройкой (инвариант 7 читается так же, как для бренда). Неверная форма — ошибка:
  *  профиль без перечня не стартует, как интерфейс без бренда.
- *  Проверяется: непустой перечень, `id` и `code` по форме и **без повторов**, непустые тексты ru и en, присутствие
- *  кодов `REQUIRED_CODES` (иначе ст. 19 снималась бы настройкой — см. там). Повтор кода при разных `id` прятал бы
- *  два пункта под одним весом, поэтому красный — и то, и другое. */
+ *  Проверяется: непустой перечень, `id` и `code` по форме и **без повторов**, непустые тексты ru и en, **ровно один
+ *  пункт на каждую роль** (`execution`, `price`) — иначе ст. 19 и правило «исполнение не выключается» снимались бы
+ *  настройкой. Повтор кода при разных `id` прятал бы два пункта под одним весом, поэтому красный — и то, и другое. */
 export function parsePrinciplesCatalog(raw: unknown): PrinciplesCatalog {
   const r = obj(raw, "principles");
   const text_version = str(r, "text_version", "principles");
@@ -216,13 +224,17 @@ export function parsePrinciplesCatalog(raw: unknown): PrinciplesCatalog {
     return {
       id,
       code,
+      role: parseRole(it["role"], where),
       text: { ru: str(text, "ru", `${where}.text`), en: str(text, "en", `${where}.text`) },
       params: parseParams(it["params"], where),
       scope: parseScope(it["scope"], where),
     };
   });
-  for (const code of REQUIRED_CODES)
-    if (!codes.has(code)) throw new Error(`principles.items: нет пункта ${code} — ст. 19 проверять нечем`);
+  for (const role of PRINCIPLE_ROLES) {
+    const withRole = items.filter((p) => p.role === role);
+    if (withRole.length !== 1)
+      throw new Error(`principles.items: роль ${role} у ${withRole.length} пунктов, нужен ровно один`);
+  }
   return { text_version, items };
 }
 
@@ -236,6 +248,15 @@ function parseParams(raw: unknown, where: string): PrincipleParams {
     if (v !== undefined && v !== null) throw new Error(`${where}.params.${key}: пока не заполняется (ВР-5)`);
   }
   return { threshold: null, strength: null };
+}
+
+/** Роль пункта: `execution`, `price` или ничего. Незнакомая роль — ошибка формы, а не «без роли»: иначе опечатка в
+ *  `config/` тихо лишала бы правило его пункта. */
+function parseRole(raw: unknown, where: string): PrincipleRole | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string" || !(PRINCIPLE_ROLES as readonly string[]).includes(raw))
+    throw new Error(`${where}.role: ожидается ${PRINCIPLE_ROLES.join(" | ")} или ничего`);
+  return raw as PrincipleRole;
 }
 
 function parseScope(raw: unknown, where: string): PrincipleScope {
