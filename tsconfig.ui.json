@@ -1,0 +1,19 @@
+{
+  // Клиент каркаса (`src/ui-client/`) — браузерная среда и сборка Vite, а не Node (решение П4 п. 4; расхождение № 3).
+  // Корневой `tsconfig.json` собран под Node (`module: NodeNext`, без `DOM`), и клиент под ним не проверить.
+  // Этот файл читают редактор и инструменты Svelte; `npm run check` его не вызывает — в корневых конфигурациях каталог
+  // клиента исключён, иначе `tsc` спотыкается об импорт `.svelte`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  // `exclude` наследуется от корневого конфига, а там каталог клиента исключён — без этой строки `include` ниже гасится
+  // наследованным исключением и `tsc` отвечает «No inputs were found» (TS18003).
+  "exclude": [],
+  "include": ["src/ui-client"]
+}

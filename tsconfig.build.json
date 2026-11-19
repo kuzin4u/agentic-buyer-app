@@ -3,5 +3,8 @@
   "compilerOptions": {
     "rootDir": "src"
   },
+  // Клиент каркаса собирается Vite по `tsconfig.ui.json` (решение П4 п. 4): у него браузерная среда и импорт `.svelte`,
+  // о который `tsc` спотыкается (расхождение № 3 КТ0).
+  "exclude": ["src/ui-client"],
   "include": ["src"]
 }
