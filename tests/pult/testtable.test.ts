@@ -137,8 +137,10 @@ describe("П-11.5а: П-xx — ожидаемый итог и ни одного 
     // Р-1545: защитник «не определён» (остановка видна только в шаге сюжета — Р-1519) и защитник не из перечня — «нет»
     expect(row(table({ items, verdicts: [{ ...g, protector: "undetermined" }] }), "П-07").agree).toBe("no");
     expect(row(table({ items, verdicts: [{ ...g, protector: "bank" }] }), "П-07").agree).toBe("no");
-    expect(row(table({ items: [] }), "П-07").expected.ru).toContain("Платёжная система / Агенты");
-    expect(row(table({ items: [] }), "П-07").expected.en).toContain("Payment system / Agents");
+    // Подпись участника `platform` — «Платформа» / «Platform» (К8, решение владельца 19.11, 17:52; отступление от модели
+    // 1.23 — шапка `rules89.ts` п. 6): акт идёт в НСПК, и роль там не «платёжная система».
+    expect(row(table({ items: [] }), "П-07").expected.ru).toContain("Платформа / Агенты");
+    expect(row(table({ items: [] }), "П-07").expected.en).toContain("Platform / Agents");
     // «не определён» — не защитник ожидания: запрет держит тип (ревью К1а № 7)
     // @ts-expect-error — `undetermined` не входит в `ExpectProtector`
     const undet: ExpectProtector = "undetermined";
@@ -209,7 +211,7 @@ describe("П-11.5а: Н-xx — ожидаемый паспорт", () => {
     expect(both(marked)).toBe("no");
     // «записи стенда сделаны» — не «операция прошла» (повторное ревью К1а № 2)
     expect(n08(run("fault.recorded"), passed)).toBe("no");
-    expect(row(table({ items: [] }), "Н-08").expected.en).toContain('refused — "triggered", protected by: Payment system');
+    expect(row(table({ items: [] }), "Н-08").expected.en).toContain('refused — "triggered", protected by: Platform');
   });
   it("ревью № 7: ожидаемый паспорт и паспорт того же условия с другим нарушителем — «нет»", () => {
     const items = [rec(1, 0, "stand_fault.armed", { test: "Н-11" }), rec(2, 1, "cart.created")];

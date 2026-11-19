@@ -109,7 +109,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect((await post(`/fault/${enc("Н-07")}`, null)).status).toBe(403);
     expect((await post(`/fault/${enc("Н-07")}`, "http://evil.example")).status).toBe(403);
     expect((await fetch(`${demo.monitor.url}/fault/${enc("Н-07")}`)).status).toBe(404); // только POST: GET маршрута нет
-    expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(404); // сбой стенда «П», не «ПР»
+    // Сбой стенда только «П» (пометку стенд не принимает, ветки драйвера нет) — маршрута нет. Н-02 с v0.49.0 стенда — оба
+    // вида (передача #120): его маршрут отвечает 202 — тест «Н-02 с маршрута монитора» в П-11.3в.
+    expect((await post(`/fault/${enc("Н-03")}`)).status).toBe(404);
     expect((await post("/fault/%E0%A4%A")).status).toBe(400);
     // С П-11.3д ветки есть у всех тестов «ПР»: маршрут запускает Н-05 (без ожидания клиента) — 202 и итог на шине.
     const n = steps().length;
@@ -540,6 +542,55 @@ describe("драйвер нарушителя «ПР» — при режиме �
     expect(demo.stand.stand.calls().slice(callsFrom).some((c) => c.path === "/pao/v1/agent")).toBe(false);
   });
 
+  // `waitClockTick` (К3а): ветка Н-02 ждёт сдвига часов стенда — в одну миллисекунду криптограмма совпадает и сбой не
+  // срабатывает. Часы подменены и стоят — честная остановка с причиной, а не нарушение впустую.
+  it("часы стенда стоят — ветка останавливается с причиной CLOCK_NOT_MOVED, нарушающий запрос не уходит", async () => {
+    const callsFrom = demo.stand.stand.calls().length;
+    demo.stand.stand.setClock(new Date());
+    try {
+      const s = await last("Н-02", {
+        expect: [],
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_clock_stop" });
+          await c.waitClockTick();
+          await c.violate.call("GET /pao/v1/agent", {});
+        },
+      });
+      expect(s).toMatchObject({ step: "fault.unplayed", params: { test: "Н-02", code: "CLOCK_NOT_MOVED", mandate_id: "mnd_clock_stop" } });
+      expect(demo.stand.stand.calls().slice(callsFrom).some((c) => c.path === "/pao/v1/agent")).toBe(false);
+    } finally {
+      demo.stand.stand.setClock(undefined);
+    }
+  });
+
+  // Часы, которые сдвигаются не сразу: пока они стоят, ветка обязана **ждать** — реализация «вернуть управление сразу»
+  // этот тест не проходит (ревью К3а № В).
+  it("часы стенда сдвинулись не сразу — `waitClockTick` дождался сдвига, и только потом ушло нарушение", async () => {
+    const stopped = new Date();
+    demo.stand.stand.setClock(stopped);
+    // Признак, а не часы: сверять прошедшие миллисекунды с задержкой таймера нельзя — таймер будит раньше срока, и на
+    // медленном раннере CI проверка «ждал не меньше 20 мс» падала на 19 (красный CI на `e072ed7`).
+    let released = false;
+    let release: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const s = await last("Н-02", {
+        expect: [],
+        run: async (c) => {
+          c.mark({ mandate_id: "mnd_clock_go" });
+          release = setTimeout(() => ((demo.stand.stand.setClock(undefined), (released = true))), 20); // часы пошли не сразу
+          await c.waitClockTick();
+          expect(released, "`waitClockTick` вернулся до того, как часы пошли").toBe(true);
+          expect(demo.stand.stand.now().getTime(), "ветка продолжилась на стоячих часах").toBeGreaterThan(stopped.getTime());
+          await c.violate.call("GET /pao/v1/agent", {});
+        },
+      });
+      expect(s).toMatchObject({ step: "fault.marked", params: { test: "Н-02" } });
+    } finally {
+      if (release !== undefined) clearTimeout(release);
+      demo.stand.stand.setClock(undefined);
+    }
+  });
+
   it("на шину из ветки — только тест, код, статус и идентификаторы стенда по форме: криптограмма и токен отброшены (инвариант 1)", async () => {
     const s = await once("Н-09", {
       expect: [],
@@ -810,7 +861,7 @@ describe("драйвер нарушителя «ПР» — при режиме �
       }
       void n;
       // wakeEvents (П-11.3г) — только сигнал ленте событий ядра: ни ядра, ни эмулятора банка ветка не получает.
-      expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient", "wakeEvents"]);
+      expect(keys).toEqual(["call", "mark", "shop", "signal", "step", "urls", "violate", "waitClient", "waitClockTick", "wakeEvents"]);
       expect(signCalls(callsFrom)).toEqual([]);
       expect(demo.stand.merchantCalls().slice(merchantsFrom)).toEqual([]);
     });
@@ -865,6 +916,18 @@ describe("драйвер нарушителя «ПР» — при режиме �
       return r;
     }) as typeof fetch;
 
+  /** Инвариант 1: ни одно подсмотренное значение реквизита не вышло из памяти ветки — ни на шину, ни в журнал агента, ни в
+   *  журналы стенда (сбоев и обращений). Общий помощник: применяется ко всем веткам, где реквизит выдаётся (ревью К3а № 4). */
+  const nowhere = (secrets: readonly string[]) => {
+    const everywhere = [
+      JSON.stringify(demo.bus.history()),
+      JSON.stringify(demo.stand.journal.entries),
+      JSON.stringify(demo.stand.stand.demo!.log()),
+      JSON.stringify(demo.stand.stand.calls()),
+    ].join("\n");
+    for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
+  };
+
   describe("П-11.3в: ветка MANDATE_SCOPE — Н-08, Н-09 (по подписанной корзине)", { timeout: 60_000 }, () => {
     const price = MASSA_MADRE.items[0]!.price!;
 
@@ -904,10 +967,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1); // MANDATE_SCOPE в прямом тесте — из-за суммы
       expect(secrets).toHaveLength(3);
       for (const [i, name] of ["credential_ref", "cryptogram", "token_ref"].entries()) expect(typeof secrets[i] === "string" && secrets[i]!.length > 0, `${name} — непустая строка`).toBe(true);
-      // Явно, а не полагаясь на фильтр шага: ни на шине, ни в журнале агента, ни в журнале стенда. Ответы маршрута не
+      // Явно, а не полагаясь на фильтр шага: ни на шине, ни в журнале агента, ни в журналах стенда. Ответы маршрута не
       // проверяются: прогон — через d.start, маршрут отдаёт только {ok, code} (ревью П-11.3в № 4).
-      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log())].join("\n");
-      for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
+      nowhere(secrets);
     });
 
     // У Н-09 своего обратного нет: «в пределе с продавцом корзины реквизит выдаётся» доказывает обратный тест Н-08 выше; что
@@ -929,6 +991,112 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(s.at(-1)).toMatchObject({ step: "fault.refused", params: { test: "Н-09", code: "MANDATE_SCOPE", status: 409, mandate_id: cartId } });
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom);
       expect(asks).toEqual([expect.objectContaining({ mandate_id: cartId, merchant_id: otherMerchant(DEMO_SHOPS), amount_max: price })]);
+    });
+
+    // Передача #22: Н-02 — «П + ПР». Сбой стенда взводит драйвер (без выбора витрины: у Н-02 настройки витрины нет),
+    // нарушение — новый запрос реквизита по уже выданному заказу; защиты нет намеренно, итог — «совершено и помечено».
+    it("Н-02: второй реквизит по тому же заказу — «совершено и помечено», сбой сработал (SECOND_CREDENTIAL_ISSUED); взвод и снятие — без витрины; реквизиты не выходят", async () => {
+      const n = steps().length;
+      const logFrom = demo.stand.stand.demo!.log().length;
+      const secrets: string[] = [];
+      const asks: CredentialAsk[] = [];
+      // Строка таблицы — целиком (как у Н-05 ниже): пропажа `fires` или `once` обязана валить этот тест (ревью К3а № 2).
+      expect(FAULT_PLAN["Н-02"]).toEqual({
+        violations: ["POST /pao/v1/credentials"],
+        expect: [],
+        arm: { shop: false },
+        fires: { record: "SECOND_CREDENTIAL_ISSUED", missing: "FAULT_NOT_FIRED", once: true },
+      });
+      const d = real({ fetch: spying(secrets, undefined, asks) });
+      expect(d.start("Н-02")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      const s = steps().slice(n);
+      // Взвод и снятие — своими шагами, без идентификатора витрины (иначе на мониторе стояло бы «витрина: нет»).
+      const armed = s.find((x) => x.step === "fault.note.armed_no_shop")!;
+      expect(armed.params).toEqual({ test: "Н-02" });
+      expect(s.some((x) => x.step === "fault.note.armed")).toBe(false);
+      expect(s.at(-1), JSON.stringify(s.at(-1)?.params)).toMatchObject({ step: "fault.marked", params: { test: "Н-02", mandate_id: cartId } });
+      // Сбой одноразовый: сработал — стенд снял взвод сам, записи DISARMED нет, шага «снял» драйвер не выпускает (К3а), а
+      // о судьбе взвода говорит свой шаг (К3б).
+      expect(s.some((x) => x.step === "fault.note.disarmed_no_shop")).toBe(false);
+      expect(s.some((x) => x.step === "fault.note.disarmed_by_stand")).toBe(true);
+      // Первый реквизит — законная подготовка: его шаг несёт корзину и заказ, по которому пойдёт нарушение.
+      const first = s.find((x) => x.step === "fault.note.first_credential")!;
+      expect(first.params.mandate_id).toBe(cartId);
+      expect(typeof first.params.order_ref).toBe("string");
+      // Два запроса реквизита: та же корзина и тот же заказ — отличие только в ключе идемпотентности (его тело не несёт).
+      expect(asks).toHaveLength(2);
+      expect(asks[1]).toEqual(asks[0]);
+      expect(asks[0]).toMatchObject({ mandate_id: cartId, order_ref: first.params.order_ref });
+      // Сбой сработал: запись стенда по Н-02 после пометки — по ней пульт строит паспорт R23 / R25 (`engine.ts`).
+      const log = demo.stand.stand.demo!.log().slice(logFrom);
+      const markSeq = log.find((e) => e.test === "Н-02" && e.what === "MARKED")!.seq;
+      const fired = log.find((e) => e.test === "Н-02" && e.what === "SECOND_CREDENTIAL_ISSUED")!;
+      expect(fired.seq).toBeGreaterThan(markSeq);
+      expect(fired.ids?.order_ref).toBe(first.params.order_ref);
+      // Второй реквизит — именно второй: его credential_ref отличается от первого (у повтора заказа он был бы тот же).
+      expect(secrets).toHaveLength(6);
+      expect(secrets[3]).not.toBe(secrets[0]);
+      // Инвариант 1: оба реквизита — только в памяти ветки и теста; журнал обращений стенда — тоже (ревью К3 № 7).
+      for (const [i, v] of secrets.entries()) expect(typeof v === "string" && v.length > 0, `значение ${i}`).toBe(true);
+      nowhere(secrets);
+    });
+
+    // Блокер 1 ревью К3: без сработавшего сбоя Платформа отвечает на новый ключ идемпотентности 2xx и **прежним**
+    // реквизитом заказа («повтор заказа», РП47 п. 3, 5) — «совершено» по одному 2xx было бы ложным зелёным.
+    it("Н-02 без взведённого сбоя: повтор даёт 2xx с тем же реквизитом — итог «помечено, но не разыграно» FAULT_NOT_FIRED, не «совершено»", async () => {
+      const n = steps().length;
+      const logFrom = demo.stand.stand.demo!.log().length;
+      const secrets: string[] = [];
+      const d = new FaultyDriver(demo.stand, (s) => demo.bus.scenario(s), {
+        otherBusy: () => demo.scenarios.busy,
+        clientWaitMs: 15_000,
+        fetch: spying(secrets),
+        // Настоящая ветка и настоящая запись таблицы, но без взвода: сбой не включается — его срабатывания не будет.
+        plan: { "Н-02": { violations: FAULT_PLAN["Н-02"].violations, expect: [], fires: FAULT_PLAN["Н-02"].fires! } },
+      });
+      expect(d.start("Н-02")).toEqual({ ok: true });
+      const cartId = await clientSignsBoth(n);
+      await d.settled();
+      expect(steps().slice(n).at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-02", code: "FAULT_NOT_FIRED", mandate_id: cartId } });
+      // Ответы были успешные (2xx, два реквизита в ответах), но реквизит — один и тот же, записи стенда нет.
+      expect(secrets).toHaveLength(6);
+      expect(secrets[3]).toBe(secrets[0]);
+      expect(demo.stand.stand.demo!.log().slice(logFrom).some((e) => e.what === "SECOND_CREDENTIAL_ISSUED")).toBe(false);
+      nowhere(secrets); // инвариант 1 — и на этом пути тоже (ревью К3а № А)
+      // Код итога — с фразой ru и en (Р-1511).
+      expect(CODE_WORDS.FAULT_NOT_FIRED!.ru).not.toBe("");
+      expect(CODE_WORDS.FAULT_NOT_FIRED!.en).not.toBe("");
+    });
+
+    // Блокер 2 ревью К3: сбой Н-02 одноразовый — стенд снимает взвод сам при срабатывании и записи DISARMED не пишет.
+    it("Н-02 дважды подряд: оба прогона «совершено и помечено» — израсходованный взвод не читается как действующий, шаг «снял» — только по факту", async () => {
+      for (const pass of [1, 2]) {
+        const n = steps().length;
+        const d = real();
+        expect(d.start("Н-02"), `прогон ${pass}`).toEqual({ ok: true });
+        const cartId = await clientSignsBoth(n);
+        await d.settled();
+        const s = steps().slice(n);
+        expect(s.at(-1), `прогон ${pass}: ${JSON.stringify(s.at(-1)?.params)}`).toMatchObject({ step: "fault.marked", params: { test: "Н-02", mandate_id: cartId } });
+        expect(s.some((x) => x.step === "fault.note.armed_no_shop"), `прогон ${pass}: взвод свой`).toBe(true);
+        // Сбой сработал — стенд снял взвод сам: шага «снял» нет, вместо него «снят стендом»; журнал стенда и шина сходятся.
+        expect(s.some((x) => x.step === "fault.note.disarmed_no_shop"), `прогон ${pass}: шаг «снял» без снятия`).toBe(false);
+        expect(s.some((x) => x.step === "fault.note.disarmed_by_stand"), `прогон ${pass}: о снятии стендом на шине ничего`).toBe(true);
+      }
+    });
+
+    it("Н-02 с маршрута монитора: 202, «прервать» до нарушения — «не разыграно» ABORTED, взвод снят шагом (сбой не сработал)", async () => {
+      const n = steps().length;
+      expect((await post(`/fault/${enc("Н-02")}`)).status).toBe(202);
+      await untilStepFrom(n, "fault.note.intent_requested");
+      expect((await post("/scenario/abort")).status).toBe(202);
+      await demo.faulty!.settled();
+      const s = steps().slice(n);
+      expect(s.at(-1)).toMatchObject({ step: "fault.unplayed", params: { test: "Н-02", code: "ABORTED" } });
+      // Сбой не сработал — снял его драйвер, и шаг «снял» выпущен (в отличие от удачного прогона выше).
+      expect(s.some((x) => x.step === "fault.note.disarmed_no_shop")).toBe(true);
     });
 
     it("Н-09 без второго продавца на стенде — «не разыграно» NO_SECOND_MERCHANT до пометки и запросов, не «Масса Мадре» по умолчанию", async () => {
@@ -997,10 +1165,9 @@ describe("драйвер нарушителя «ПР» — при режиме �
       expect(secrets).toHaveLength(3);
       expect(demo.stand.stand.issuedCredentials().length).toBe(credsFrom + 1);
       for (const [i, name] of ["credential_ref", "cryptogram", "token_ref"].entries()) expect(typeof secrets[i] === "string" && secrets[i]!.length > 0, `${name} — непустая строка`).toBe(true);
-      // Ни на шине, ни в журнале агента, ни в журнале стенда. Ответы маршрута не проверяются: прогон — через d.start, а
+      // Ни на шине, ни в журнале агента, ни в журналах стенда. Ответы маршрута не проверяются: прогон — через d.start, а
       // маршрут отдаёт только {ok, code} (ревью П-11.3г № 11).
-      const everywhere = [JSON.stringify(demo.bus.history()), JSON.stringify(demo.stand.journal.entries), JSON.stringify(demo.stand.stand.demo!.log())].join("\n");
-      for (const secret of secrets) expect(everywhere.includes(secret), "реквизит вышел из памяти ветки").toBe(false);
+      nowhere(secrets);
     });
 
     it("Н-01: первая оплата не авторизована Платформой — повтор не уходит, «помечено, но не разыграно» FIRST_PAYMENT_NOT_AUTHORIZED, а не ложная «защита»", async () => {
@@ -1271,8 +1438,16 @@ describe("драйвер нарушителя «ПР» — при режиме �
   });
 
   it("Р-1511, Р-1520 (б): каждый код итога драйвера — в закрытом перечне и с фразой ru/en в CODE_WORDS; коды в исходнике драйвера — только из перечня", () => {
-    const codes = [...STOP_CODES, ...BRANCH_STOP_CODES, ...SETTLE_CODES, ...Object.values(FAULT_PLAN).flatMap((p) => (p.recordOnly ? [p.recordOnly.missing] : []))];
+    // Коды `missing` строк таблицы — из обоих полей: `recordOnly` (Н-05) и `fires` (Н-02), иначе следующий код без фразы
+    // ru/en тест не уронит (ревью К3а № 1).
+    const codes = [
+      ...STOP_CODES,
+      ...BRANCH_STOP_CODES,
+      ...SETTLE_CODES,
+      ...Object.values(FAULT_PLAN).flatMap((p) => [...(p.recordOnly ? [p.recordOnly.missing] : []), ...(p.fires ? [p.fires.missing] : [])]),
+    ];
     expect(codes).toContain("ARMED_ELSEWHERE");
+    expect(codes).toContain("FAULT_NOT_FIRED");
     for (const c of codes) {
       const w = CODE_WORDS[c];
       expect(w?.ru.trim(), c).toBeTruthy();

@@ -5,14 +5,16 @@
 // Порядок (план #issuecomment-6880932177, ответ чата #issuecomment-6881016969): сначала правильные П-xx; затем сюжеты 4 и 2 в
 // режиме оператора (клиент отвечает через 16 с, «Напомнить» — маршрутом `/pult/act/remind`): один прогон судит П-02 / У-03 /
 // У-04, другой — П-01 / У-02; затем Н-xx «П» (взвод маршрутом во время сюжета) и Н-xx «ПР» (драйвер при «Авто»); У-01 —
-// последним прогоном `intent` (строка берёт последний завершённый чистый прогон сюжета, Б5). Н-02 не взводится —
-// «не проверено» с причиной (П11); Н-10 — «нет случая».
+// последним прогоном `intent` (строка берёт последний завершённый чистый прогон сюжета, Б5). Н-10 — «нет случая».
+// Н-02 с задачи по передаче #22 разыгрывается драйвером наравне с прочими «ПР» (вид «П + ПР», стенд `#v0.49.1` принимает
+// пометку) и ждётся «да»; перечень «ПР» берётся из кода источника — `FAULT_TESTS` (Р-1511), а не литералом.
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { BusItem, ScenarioLine } from "../../src/demo/bus.js";
+import { FAULT_TESTS } from "../../src/demo/fault-tests.js";
 import { startDemo, type Demo } from "../../src/demo/run.js";
 import { acc1Csv, acc1CsvExcel, acc1Markdown } from "../../src/pult/acc1.js";
 import type { PultFeed } from "../../src/pult/feed.js";
@@ -253,7 +255,7 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
 
     // ——— Н-xx «ПР»: драйвер нарушителя при «Авто» ———
     demo.clientEmulator!.setAuto(true);
-    for (const test of ["Н-01", "Н-05", "Н-06", "Н-07", "Н-08", "Н-09"] as const) {
+    for (const test of FAULT_TESTS) {
       const r = demo.faulty!.start(test);
       if (!r.ok) throw new Error(`драйвер ${test}: ${r.code}`);
       await demo.faulty!.settled();
@@ -316,7 +318,7 @@ describe.skipIf(!RUN)("П-11.5б: прогон 25 тестов и акт ACC-1 (
     console.log(`П-11.5б: акт и сводка — ${out}\n${summary}`);
 
     const want: Record<string, string> = Object.fromEntries(rep!.table.rows.map((r) => [r.test, "yes"]));
-    want["Н-02"] = "unchecked";
+    // Н-02 — «да» с задачи по передаче #22: ветка драйвера есть, стенд пометку принимает (прежде — «не проверено», П11).
     want["Н-10"] = "no_case";
     expect(Object.fromEntries(rep!.table.rows.map((r) => [r.test, r.agree]))).toEqual(want);
   });
