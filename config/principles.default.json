@@ -10,6 +10,24 @@
       "en": "Price counts no higher than reliable fulfilment — a system rule"
     }
   },
+  "errors": {
+    "SHOWN_STALE": {
+      "ru": "Список успел измениться. Посмотрите его заново и подтвердите порядок ещё раз",
+      "en": "The list has changed. Please review it again and confirm the order once more"
+    },
+    "PRINCIPLES_ORDER_INVALID": {
+      "ru": "Подтверждение не принято. Посмотрите список и подтвердите порядок заново: «надёжное исполнение» остаётся в списке всегда, и хотя бы один принцип должен быть включён",
+      "en": "The confirmation was not accepted. Review the list and confirm the order again: reliable fulfilment always stays in the list, and at least one principle must be on"
+    },
+    "IDEMPOTENCY_REQUIRED": {
+      "ru": "Нажатие не опознано. Повторите подтверждение",
+      "en": "The tap was not recognised. Please confirm again"
+    },
+    "IDEMPOTENCY_CONFLICT": {
+      "ru": "Это нажатие уже учтено с другим порядком. Посмотрите список заново",
+      "en": "This tap has already been recorded with a different order. Please review the list again"
+    }
+  },
   "items": [
     {
       "id": "prn_execution",

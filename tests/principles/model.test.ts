@@ -79,11 +79,13 @@ describe("К1.2: проверка формы перечня", () => {
     items: Record<string, unknown>[];
     text_version: string;
     notes: unknown;
+    errors: unknown;
   };
   /** Пункты с ролями, чтобы проверяемый случай падал на том, что проверяется, а не на отсутствии роли. */
   const required = good.items.filter((it) => it["role"] !== undefined);
-  const withItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", notes: good.notes, items: [...required, ...items] });
-  const onlyItems = (items: unknown[]): unknown => ({ text_version: "principles@1.0", notes: good.notes, items });
+  const head = { text_version: "principles@1.0", notes: good.notes, errors: good.errors };
+  const withItems = (items: unknown[]): unknown => ({ ...head, items: [...required, ...items] });
+  const onlyItems = (items: unknown[]): unknown => ({ ...head, items });
 
   it("пустой перечень — ошибка: профиль без принципов не стартует", () => {
     expect(() => parsePrinciplesCatalog(onlyItems([]))).toThrow(/пустой перечень/);
@@ -243,6 +245,7 @@ describe("К1.2: подписанная версия — номер по воз�
     order,
     view,
     press,
+    by: "human" as const,
     received_at: at,
     source: "CLIENT",
   });
@@ -292,7 +295,14 @@ describe("К1.2: подписанная версия — номер по воз�
       text_version: PRESS_TEXT_VERSION,
       gesture: press.gesture,
     };
-    const v = nextVersion(null, { order: ids, view: liveView, press: livePress, received_at: "2026-11-19T11:00:01Z", source: "CLIENT" });
+    const v = nextVersion(null, {
+      order: ids,
+      view: liveView,
+      press: livePress,
+      by: "human",
+      received_at: "2026-11-19T11:00:01Z",
+      source: "CLIENT",
+    });
     liveView.hash = `sha256:${"ff".repeat(32)}`;
     livePress.at = "2001-01-01T00:00:00Z";
     expect(v.view.hash).toBe(VIEW_HASH);
@@ -505,6 +515,7 @@ describe("К1.2: карта «ранг → вес» — внутри серве�
     const small: PrinciplesCatalog = {
       text_version: "t@1",
       notes: catalog.notes,
+      errors: catalog.errors,
       items: catalog.items.filter((p) => p.role === null),
     };
     const { byId, article19 } = weightsOf(

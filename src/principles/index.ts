@@ -4,8 +4,11 @@
 export type {
   ChangeSource,
   KnownChangeSource,
+  ErrorTextKey,
   NoteKey,
+  PrinciplesErrorTexts,
   PrinciplesNotes,
+  SignedBy,
   OrderCheck,
   OrderProblem,
   Principle,
@@ -20,6 +23,10 @@ export type {
   PrinciplesView,
   SignedPrinciples,
 } from "./model.js";
+
+export type { PostOutcome, PrinciplesServiceDeps } from "./service.js";
+
+export { RETRY_BY_CODE, getPrinciplesView, postPrinciples } from "./service.js";
 
 export {
   article19Applied,
@@ -38,7 +45,6 @@ export type {
   PrinciplesStore,
   RememberedAnswer,
   SignDeps,
-  SignedBy,
   SignErrorCode,
   SignOutcome,
   SignRequest,
@@ -47,6 +53,7 @@ export type {
 export { bodyFingerprint, createPrinciplesStore, signPrinciples } from "./signature.js";
 
 export {
+  ERROR_TEXT_KEYS,
   FIRST_VERSION_NO,
   KNOWN_CHANGE_SOURCES,
   NOTE_KEYS,
@@ -55,6 +62,7 @@ export {
   checkOrder,
   defaultOrder,
   isKnownChangeSource,
+  knownOrder,
   nextVersion,
   parsePrinciplesCatalog,
 } from "./model.js";

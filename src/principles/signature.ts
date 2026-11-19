@@ -15,6 +15,7 @@ import type {
   OrderProblem,
   PrinciplesCatalog,
   PrinciplesOrder,
+  SignedBy,
   SignedPrinciples,
 } from "./model.js";
 import { checkOrder, nextVersion } from "./model.js";
@@ -25,13 +26,6 @@ export interface SignRequest {
   readonly shown_hash: ShownHash;
   readonly press: UiPress;
 }
-
-/** Кто нажал: человек или эмулятор клиента демо-стенда (`DEMO_FAULTS=1`, режим «Авто», П5). Ставит **сервер** — он
- *  один это знает; из тела запроса признак не берётся, потому что экран недоверенная среда (С-12, С-31) и присланное
- *  «я человек» ничего не доказывает. Поэтому в `UiPress` признака нет, и контракт не меняется (решение владельца
- *  19.11, П32 дополнение 1 — так же, как пометка «Авто» в акте ACC-1 и провенанс реакций пульта, П26).
- *  Умолчания нет: значение сервер ставит всегда. */
-export type SignedBy = "human" | "emulator";
 
 /** Запись журнала о подписи профиля. Реквизитов и сумм в ней нет — только номер версии, хэш и провенанс
  *  (инвариант 1). */
@@ -49,10 +43,12 @@ export interface PrinciplesJournal {
   write(entry: PrinciplesSignedEntry): void;
 }
 
-/** Прежний ответ по ключу идемпотентности: отпечаток тела и версия, которую тогда отдали. */
+/** Прежний ответ по ключу идемпотентности: отпечаток первого тела и **исход**, который тогда отдали — удача или
+ *  отказ. Отказ занимает ключ так же, как удача (решение владельца 19.11, 17:52 п. 1), поэтому здесь исход целиком,
+ *  а не версия: иначе повтор отказа молча подписывал бы профиль. Сверено с ПАО 1.4.0 — см. `signPrinciples`. */
 export interface RememberedAnswer {
   readonly fingerprint: string;
-  readonly version: SignedPrinciples;
+  readonly outcome: SignOutcome;
 }
 
 /** Хранение профиля — **портом**, как прочее состояние стенда (КТ0, пункт (б)). Версии только добавляются: `append`
@@ -135,13 +131,29 @@ export interface SignDeps {
 /** Версия формы отпечатка тела: входит в отпечаток, чтобы смена формы не выдала чужой повтор за свой. */
 const BODY_FINGERPRINT_VERSION = "principles.sign-body@1.0";
 
-/** Отпечаток тела для правила 2 — канонизацией ядра, той же, что считает хэш показанного: иначе «то же тело»
- *  зависело бы от порядка ключей в JSON. Своей копии правила канонизации здесь нет (П30 доп. 1, П7 доп. 3). */
+/** Снимок тела как оно пришло — «сырые байты» этого слоя: ключи объектов по алфавиту (чтобы порядок ключей в JSON на
+ *  «то же тело» не влиял), значения вне JSON — явными пометками, а не исключением.
+ *  Нужен потому, что отпечаток считается **до** проверки формы: негодное тело тоже занимает ключ (решение владельца
+ *  19.11, 18:20), а канонизация ядра на `undefined` в массиве, `NaN` или `Date` бросает `TypeError` — и маршрут отдал
+ *  бы 500 вместо 400. */
+function rawDump(value: unknown): string {
+  if (value === undefined) return "u";
+  if (value === null) return "n";
+  if (typeof value === "number") return Number.isFinite(value) ? `d${value}` : `d!${String(value)}`;
+  if (typeof value === "boolean" || typeof value === "bigint") return `b${String(value)}`;
+  if (typeof value === "string") return `s${JSON.stringify(value)}`;
+  if (typeof value === "function" || typeof value === "symbol") return `x${typeof value}`;
+  if (Array.isArray(value)) return `[${value.map(rawDump).join(",")}]`;
+  const o = value as Record<string, unknown>;
+  const keys = Object.keys(o).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${rawDump(o[k])}`).join(",")}}`;
+}
+
+/** Отпечаток тела для правила 2. Хэш считает канонизация ядра (`showingHash`), та же, что считает хэш показанного —
+ *  своей копии правила хэширования здесь нет (П30 доп. 1, П7 доп. 3); канонизируется **строка снимка**, поэтому
+ *  негодное тело отпечаток получает так же, как годное. */
 export function bodyFingerprint(body: SignRequest): string {
-  return showingHash({
-    text_version: BODY_FINGERPRINT_VERSION,
-    card: { order: [...body.order], shown_hash: body.shown_hash, press: body.press },
-  });
+  return showingHash({ text_version: BODY_FINGERPRINT_VERSION, card: rawDump(body) });
 }
 
 /** Поля тела и провенанса — ровно те, что в § 5.14 и § 3. Лишнее поле — негодное тело, а не «то же тело с
@@ -173,12 +185,20 @@ function checkBodyShape(body: SignRequest): BodyProblem | null {
  *  повтор → смысл**.
  *  1. **ключ идемпотентности** — нет или не по форме: `IDEMPOTENCY_REQUIRED` (правило 2; это не «повтор неизвестного
  *     ключа»);
- *  2. **форма тела** — `order` список строк, провенанс на месте и по перечням § 3, лишних полей нет. Идёт до
- *     отпечатка: отпечаток считается канонизацией, а она на негодном значении бросает `TypeError`, и маршрут отдал бы
- *     500 вместо 400;
- *  3. **повтор** — тот же ключ: то же тело даёт прежний ответ без новой версии, другое — `IDEMPOTENCY_CONFLICT`.
+ *  2. **повтор** — тот же ключ: то же тело даёт прежний ответ без новой версии, другое — `IDEMPOTENCY_CONFLICT`.
+ *     Отпечаток берётся со снимка тела (`rawDump`), поэтому считается **раньше** разбора формы: негодное тело
+ *     занимает ключ так же, как годное;
+ *  3. **форма тела** — `order` список строк, провенанс на месте и по перечням § 3, лишних полей нет.
  *     Повтор проверяется **до смысловых** проверок: иначе повтор удачного нажатия мог бы получить отказ по карточке,
- *     которая успела смениться (С-18, обрыв связи);
+ *     которая успела смениться (С-18, обрыв связи).
+ *     **Ключ занимает любой окончательный ответ, включая отказ** (решение владельца 19.11, 17:52 п. 1). Сверено с
+ *     ПАО 1.4.0 (`agentic-buyer-ref/docs/core/protocol/AGENT-PROTOCOL.v1.4.md`), правило 2 К-Б «сервер отвечает так
+ *     же, как ПАО»: «Повтор с тем же ключом и тем же телом возвращает прежний результат», «404 сохраняется под
+ *     ключом», «400 — отказ самого адреса… сохраняется под ключом идемпотентности, исправленный адрес — с новым
+ *     `Idempotency-Key`». Исключения — ответы класса `same_key`: у ПАО 503 сохраняется «без сохранения», а у
+ *     `IDEMPOTENCY_REQUIRED` класс `same_key` («добавить ключ и повторять с ним же»). В П-К1 ответов `same_key`
+ *     сегодня нет ни одного (503 у нас не бывает), поэтому исключение **одно**: `IDEMPOTENCY_REQUIRED` — ключа нет,
+ *     занимать нечего (решение владельца 19.11, 18:20);
  *  4. **порядок** — перестановка подмножества известных `id` без повторов и с пунктом роли «исполнение»;
  *  5. **хэш показанного** — по своей копии карточки; не совпал или не по форме: `SHOWN_STALE` с **новой** карточкой.
  *     Туда же — расхождение `press.text_version` с версией текстов своей копии: это одна и та же величина (§ 3,
@@ -186,54 +206,74 @@ function checkBodyShape(body: SignRequest): BodyProblem | null {
  *  Запись журнала `principles.signed` делается только при настоящей подписи: повтор второй записи не даёт, иначе
  *  журнал считал бы одно нажатие за два. */
 export function signPrinciples(body: SignRequest, key: string | null | undefined, deps: SignDeps): SignOutcome {
+  // `IDEMPOTENCY_REQUIRED` ключ **не занимает** — занимать нечего; у ПАО у этого кода класс `same_key`
+  // («добавить ключ и повторять с ним же»).
   if (typeof key !== "string" || !isIdempotencyKey(key))
     return { ok: false, kind: "ui", code: "IDEMPOTENCY_REQUIRED", view: null };
 
-  const shape = checkBodyShape(body);
-  if (shape !== null) return { ok: false, kind: "ui", code: "PRINCIPLES_ORDER_INVALID", view: null, problem: shape };
+  /** Окончательный ответ занимает ключ: повтор того же тела отдаёт его же, не делая действия второй раз. */
+  const settle = (outcome: SignOutcome, fingerprint: string): SignOutcome => {
+    deps.store.remember(key, { fingerprint, outcome });
+    return outcome;
+  };
 
+  // Отпечаток — **до** проверки формы: негодное тело занимает ключ так же, как годное (решение владельца 19.11,
+  // 18:20). Иначе один ключ обозначал бы два действия: кривое тело → 400, потом правильное тело тем же ключом →
+  // подпись.
   const fingerprint = bodyFingerprint(body);
   const remembered = deps.store.recall(key);
-  if (remembered !== null)
-    return remembered.fingerprint === fingerprint
-      ? { ok: true, replay: true, version: remembered.version }
-      : { ok: false, kind: "ui", code: "IDEMPOTENCY_CONFLICT", view: null };
+  if (remembered !== null) {
+    if (remembered.fingerprint !== fingerprint)
+      return { ok: false, kind: "ui", code: "IDEMPOTENCY_CONFLICT", view: null };
+    // То же тело — тот же ответ, в том числе тот же отказ; второго действия нет.
+    return remembered.outcome.ok ? { ...remembered.outcome, replay: true } : remembered.outcome;
+  }
+
+  const shape = checkBodyShape(body);
+  if (shape !== null)
+    return settle({ ok: false, kind: "ui", code: "PRINCIPLES_ORDER_INVALID", view: null, problem: shape }, fingerprint);
 
   const order = checkOrder(body.order, deps.catalog);
   if (!order.ok)
-    return {
-      ok: false,
-      kind: "ui",
-      code: "PRINCIPLES_ORDER_INVALID",
-      view: null,
-      problem: order.reason === "EMPTY" ? { reason: "EMPTY" } : { reason: order.reason, id: order.id },
-    };
+    return settle(
+      {
+        ok: false,
+        kind: "ui",
+        code: "PRINCIPLES_ORDER_INVALID",
+        view: null,
+        problem: order.reason === "EMPTY" ? { reason: "EMPTY" } : { reason: order.reason, id: order.id },
+      },
+      fingerprint,
+    );
 
   const shown = deps.shown();
   // Версия текстов у провенанса и у карточки — **одна величина** (§ 3, пример: у `press` и у `view` один
   // `u1-card@1.0`). Расходится — человек подтверждал не те тексты, что сервер считает показанными, и это тот же
   // случай «карточка устарела»: `SHOWN_STALE` с новой карточкой (находка ревью К1.3 № 2).
   if (body.press.text_version !== shown.text_version || !shownMatches(shown, body.shown_hash))
-    return { ok: false, kind: "ui", code: "SHOWN_STALE", view: viewOf(deps.viewId, shown) };
+    // Отказ окончательный и занимает ключ: новая карточка — это **новое нажатие и новый ключ** экрана
+    // (решение владельца 19.11, 17:52 п. 1; у ПАО так же — «исправленный адрес — с новым `Idempotency-Key`»).
+    return settle({ ok: false, kind: "ui", code: "SHOWN_STALE", view: viewOf(deps.viewId, shown) }, fingerprint);
 
   const received_at = deps.now();
+  const by = deps.by();
   const version = nextVersion(deps.store.last(), {
     order: body.order,
     view: { hash: showingHash(shown), text_version: shown.text_version },
     press: body.press,
+    by,
     received_at,
     source: "CLIENT",
   });
   deps.store.append(version);
-  deps.store.remember(key, { fingerprint, version });
   deps.journal.write({
     event: "principles.signed",
     version: version.no,
     hash: version.view.hash,
     press: version.press,
-    by: deps.by(),
+    by,
     received_at,
     source: version.source,
   });
-  return { ok: true, replay: false, version };
+  return settle({ ok: true, replay: false, version }, fingerprint);
 }

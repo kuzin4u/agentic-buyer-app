@@ -403,7 +403,11 @@ export interface ActCardResponse {
  *  (правка 6 канвы; правило 3 — вес исполнения не ниже веса цены живёт у сервера, ст. 19). */
 export interface PrinciplesResponse {
   readonly items: readonly { readonly id: string; readonly text: string; readonly rank: number; readonly on: boolean }[];
-  readonly signed: { readonly at: UiInstant; readonly version: string } | null;
+  /** `by` — кто подтвердил порядок: человек или эмулятор клиента демо-стенда. Ставит **сервер** по своему знанию
+   *  (`DEMO_FAULTS=1`, режим «Авто», П5); из тела запроса признак не берётся — экран недоверенная среда. Пометку
+   *  «подписано эмулятором клиента (прогон)» рисует экран И-2. Поля `by` в § 5.14 документа v1.0 нет — решение
+   *  владельца 19.11, 17:52 (П32 доп. 1), войдёт в К-Б v1.1. */
+  readonly signed: { readonly at: UiInstant; readonly version: string; readonly by: "human" | "emulator" } | null;
   /** Строки-пояснения под списком: про то, что надёжность исполнения учитывается всегда, и — когда ст. 19 опустила
    *  вес цены — про потолок цены. Сами тексты лежат в `config/` на двух языках, литералом здесь их нет (правило
    *  планов № 3); сюда они приходят готовыми, на языке запроса: экран ничего не выводит сам (правило 3).

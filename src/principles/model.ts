@@ -63,10 +63,32 @@ export type NoteKey = (typeof NOTE_KEYS)[number];
 
 export type PrinciplesNotes = { readonly [K in NoteKey]: PrincipleText };
 
+/** Коды `/ui`, которыми отвечает `POST /ui/v1/principles`; у каждого — свой текст человеку в `config/` (§ 3
+ *  «Ошибки»: `text` предназначен человеку и приходит на языке запроса). Перечень закрытый: `service.ts` сверяет его
+ *  с типом `SignErrorCode` на компиляции, так что новый код без текста не пройдёт сборку. */
+export const ERROR_TEXT_KEYS = [
+  "SHOWN_STALE",
+  "PRINCIPLES_ORDER_INVALID",
+  "IDEMPOTENCY_REQUIRED",
+  "IDEMPOTENCY_CONFLICT",
+] as const;
+
+export type ErrorTextKey = (typeof ERROR_TEXT_KEYS)[number];
+
+export type PrinciplesErrorTexts = { readonly [K in ErrorTextKey]: PrincipleText };
+
+/** Кто нажал: человек или эмулятор клиента демо-стенда (`DEMO_FAULTS=1`, режим «Авто», П5). Ставит **сервер** — он
+ *  один это знает; из тела запроса признак не берётся: экран недоверенная среда (С-12, С-31), и присланное
+ *  «я человек» ничего не доказывает. Поэтому в `UiPress` признака нет, и контракт им не меняется (П32 дополнение 1).
+ *  Умолчания нет: значение сервер ставит всегда — и в запись журнала, и в саму версию, потому что `GET` показывает
+ *  пометку человеку (решение владельца 19.11, 17:52 п. 2). */
+export type SignedBy = "human" | "emulator";
+
 /** Перечень по умолчанию с версией текстов: `text_version` входит в хэш показанного (правило 1 К-Б). */
 export interface PrinciplesCatalog {
   readonly text_version: string;
   readonly notes: PrinciplesNotes;
+  readonly errors: PrinciplesErrorTexts;
   readonly items: readonly Principle[];
 }
 
@@ -111,6 +133,8 @@ export interface SignedPrinciples {
   readonly order: PrinciplesOrder;
   readonly view: PrinciplesView;
   readonly press: UiPress;
+  /** кто нажал — ставит сервер; в версии, а не только в журнале, потому что `GET` показывает пометку человеку */
+  readonly by: SignedBy;
   readonly received_at: UiInstant;
   readonly source: ChangeSource;
 }
@@ -135,6 +159,7 @@ export function nextVersion(
     readonly order: PrinciplesOrder;
     readonly view: PrinciplesView;
     readonly press: UiPress;
+    readonly by: SignedBy;
     readonly received_at: UiInstant;
     readonly source: ChangeSource;
   },
@@ -142,6 +167,7 @@ export function nextVersion(
   return Object.freeze({
     no: prev === null ? FIRST_VERSION_NO : prev.no + 1,
     order: Object.freeze([...built.order]),
+    by: built.by,
     view: Object.freeze({ hash: built.view.hash, text_version: built.view.text_version }),
     press: Object.freeze({
       at: built.press.at,
@@ -254,27 +280,32 @@ export function parsePrinciplesCatalog(raw: unknown): PrinciplesCatalog {
     };
   });
   const notes = parseNotes(r["notes"]);
+  const errors = parseTexts(r["errors"], "principles.errors", ERROR_TEXT_KEYS);
   for (const role of PRINCIPLE_ROLES) {
     const withRole = items.filter((p) => p.role === role);
     if (withRole.length !== 1)
       throw new Error(`principles.items: роль ${role} у ${withRole.length} пунктов, нужен ровно один`);
   }
-  return { text_version, notes, items };
+  return { text_version, notes, errors, items };
 }
 
-/** Строки-пояснения: ровно известные ключи, у каждого оба языка непустыми. Лишний ключ — ошибка формы: строка,
- *  которую никто не показывает, хуже отсутствующей. */
-function parseNotes(raw: unknown): PrinciplesNotes {
-  const n = obj(raw, "principles.notes");
+/** Набор текстов с закрытым перечнем ключей: ровно известные ключи, у каждого оба языка непустыми. Лишний ключ —
+ *  ошибка формы: строка, которую никто не показывает, хуже отсутствующей. */
+function parseTexts<K extends string>(raw: unknown, where: string, keys: readonly K[]): { readonly [P in K]: PrincipleText } {
+  const n = obj(raw, where);
   for (const key of Object.keys(n))
-    if (!(NOTE_KEYS as readonly string[]).includes(key)) throw new Error(`principles.notes.${key}: лишняя строка`);
-  const out = {} as { -readonly [K in NoteKey]: PrincipleText };
-  for (const key of NOTE_KEYS) {
-    const where = `principles.notes.${key}`;
-    const t = obj(n[key], where);
-    out[key] = { ru: str(t, "ru", where), en: str(t, "en", where) };
+    if (!(keys as readonly string[]).includes(key)) throw new Error(`${where}.${key}: лишняя строка`);
+  const out = {} as { -readonly [P in K]: PrincipleText };
+  for (const key of keys) {
+    const at = `${where}.${key}`;
+    const t = obj(n[key], at);
+    out[key] = { ru: str(t, "ru", at), en: str(t, "en", at) };
   }
   return out;
+}
+
+function parseNotes(raw: unknown): PrinciplesNotes {
+  return parseTexts(raw, "principles.notes", NOTE_KEYS);
 }
 
 /** Параметры и область **пока пусты**: поля в файле можно не писать совсем, но непустое значение — ошибка формы.
