@@ -1,2 +1,4 @@
 - [@kuzin4u/agentic-core@0.13.1](https://github.com/kuzin4u/agentic-core) - Apache-2.0
 - [agentic-buyer-app@0.1.1](https://github.com/kuzin4u/agentic-buyer-app) - Apache-2.0
+- [agentic-buyer-ref@0.1.0](https://github.com/kuzin4u/agentic-buyer-ref) - Apache-2.0
+- [zod@4.6.7](https://github.com/colinhacks/zod) - MIT

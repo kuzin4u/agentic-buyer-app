@@ -23,13 +23,13 @@
     "demo": "tsx src/demo/main.ts"
   },
   "dependencies": {
-    "@kuzin4u/agentic-core": "git+https://github.com/kuzin4u/agentic-core.git#v0.13.1"
+    "@kuzin4u/agentic-core": "git+https://github.com/kuzin4u/agentic-core.git#v0.13.1",
+    "agentic-buyer-ref": "git+https://github.com/kuzin4u/agentic-buyer-ref.git#v0.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/node": "^22.20.5",
-    "agentic-buyer-ref": "git+https://github.com/kuzin4u/agentic-buyer-ref.git#v0.1.0",
     "agentic-ps-platform": "git+https://github.com/kuzin4u/agentic-ps-platform.git#v0.49.1",
     "audit-ci": "7.1.0",
     "eslint": "^10.12.0",

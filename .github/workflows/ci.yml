@@ -44,7 +44,11 @@ jobs:
           git config --global --add url."https://x-access-token:${CORE_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
       - name: Установка зависимостей
         run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
-      - name: Аудит зависимостей работающего кода
+      # Р-1639 (владелец, 19.11, кирпич К1а ИН-0): ядро агента `agentic-buyer-ref` переведено из devDependencies в
+      # dependencies — сервер `/ui/v1` исполняет его код, а не только берёт типы. Поэтому этот шаг проверяет теперь и
+      # ядро агента, и ядро `@kuzin4u/agentic-core`. Порог не ослабляется и `--omit=dev` из шага не убирается: новое
+      # предупреждение в работающем коде — находка и отдельный кирпич, а не причина опустить планку.
+      - name: Аудит зависимостей работающего кода (ядро агента и `agentic-core`)
         run: npm audit --omit=dev --audit-level=high
       # РП79 (Платформа, 17.11, передача #21): в дереве инструментов разработки живёт GHSA-fc5q-39xc-vjpf — ReDoS в
       # picomatch. Диапазон предупреждения — все выпущенные версии, исправленной нет ни одной, а picomatch требуют
