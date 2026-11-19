@@ -244,8 +244,9 @@ const n02Branch: FaultBranch = {
     const body = credentialBody(cartId, key, {});
     await c.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential` });
     c.step("fault.note.first_credential", { mandate_id: cartId, order_ref: body.order_ref });
-    // Повтор — после сдвига часов стенда: в одну миллисекунду криптограмма совпала бы и сбой не сработал (решение
-    // владельца 19.11, 15:30 — срабатывание не зависит от совпадения миллисекунд; часы стоят — `CLOCK_NOT_MOVED`).
+    // Повтор — после сдвига часов стенда: в одну миллисекунду криптограмма совпала бы и сбой не сработал (условие
+    // Платформы — РП75 «Нюансы К2.3» п. 2). Требование «срабатывание не зависит от совпадения миллисекунд» — решение
+    // владельца 19.11.2026, 15:30; часы стоят — `CLOCK_NOT_MOVED`.
     await c.waitClockTick();
     await c.violate.call("POST /pao/v1/credentials", { body, idempotencyKey: `${key}-credential-repeat` });
   },
@@ -785,7 +786,7 @@ export class FaultyDriver {
               // Шаг «снял» — только когда взвод снят этим вызовом: одноразовый сбой стенд снял сам при срабатывании
               // (`disarm` вернёт false, записи DISARMED нет) — шина не должна утверждать обратное (блокер 2 ревью К3).
               // Тогда — свой шаг: иначе о судьбе взвода на шине не остаётся ничего, и оператор видит только «совершено»
-              // (находка 6 ревью, «да» владельца 19.11.2026). Условие — что взвод и правда снят записью срабатывания.
+              // (находка 6 ревью, рекомендация чата 19.11.2026, 16:00). Условие — что взвод и правда снят записью срабатывания.
               if (!standDemo.disarm(test)) {
                 if (firedRecord !== undefined && !armedNow(standDemo.log(), test, firedRecord)) this.#step("fault.note.disarmed_by_stand", { test });
                 return;
