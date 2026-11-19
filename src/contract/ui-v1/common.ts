@@ -41,16 +41,29 @@ export interface UiView {
 /** Хэш показанной карточки, который экран возвращает в теле подтверждения (`view.hash` той карточки). */
 export type ShownHash = string;
 
-/** Где нажали: веб, мобильный, MiniApp MAX, модуль ИН-ВМ в приложении банка (§ 3, правило 1). */
-export type UiDevice = "mobile" | "web" | "max" | "bank_module";
+/** Где нажали: веб, мобильный, MiniApp MAX, модуль ИН-ВМ в приложении банка (§ 3, правило 1).
+ *  Перечень **закрытый** и живёт константой, а не только типом: тип в рантайме не существует, и без перечня
+ *  `device: "robot"` лёг бы в подписанную версию и в журнал (находка ревью К1.3 № 1). */
+export const UI_DEVICES = ["mobile", "web", "max", "bank_module"] as const;
 
-/** Жест подтверждения: `swipe` — подпись жестом (правка 5 канвы), `tap` — нажатие. */
-export type UiGesture = "swipe" | "tap";
+export type UiDevice = (typeof UI_DEVICES)[number];
+
+export const isUiDevice = (s: unknown): s is UiDevice => typeof s === "string" && (UI_DEVICES as readonly string[]).includes(s);
+
+/** Жест подтверждения: `swipe` — подпись жестом (правка 5 канвы), `tap` — нажатие. Перечень закрытый — см. выше. */
+export const UI_GESTURES = ["swipe", "tap"] as const;
+
+export type UiGesture = (typeof UI_GESTURES)[number];
+
+export const isUiGesture = (s: unknown): s is UiGesture =>
+  typeof s === "string" && (UI_GESTURES as readonly string[]).includes(s);
 
 /** Провенанс нажатия (П26): кто и чем подтвердил. Приходит тем же телом, что `shown_hash`.
  *  `at` — время **по часам устройства**; своё время получения сервер **добавляет**, а не заменяет им время устройства.
  *  Умолчания у провенанса нет (П26): тело без `press` сервер не принимает — как режим прогона тестов не принимает
- *  нажатие без признака «кто нажал». Сервер записывает провенанс в журнал покупки. */
+ *  нажатие без признака «кто нажал». Сервер записывает провенанс в журнал покупки.
+ *  `text_version` — версия текстов **показанной карточки**, та же величина, что `view.text_version` (в примере § 3
+ *  у обеих `u1-card@1.0`). Расходится — человек подтверждал не те тексты, которые сервер считает показанными. */
 export interface UiPress {
   readonly at: UiInstant;
   readonly device: UiDevice;

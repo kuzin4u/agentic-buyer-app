@@ -2,6 +2,7 @@
 // запись журнала `principles.signed`, обязательный провенанс нажатия.
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
+import { UI_DEVICES, UI_GESTURES } from "../../src/contract/ui-v1/common.js";
 import { UI_ERROR_STATUS } from "../../src/contract/ui-v1/errors.js";
 import { showingHash, type ShownPayload } from "../../src/contract/ui-v1/shown-hash.js";
 import {
@@ -26,15 +27,16 @@ const ids = defaultOrder(catalog);
 const executionId = byRole(catalog, "execution")?.id as string;
 const priceId = byRole(catalog, "price")?.id as string;
 
-/** Разные сущности — разные значения (решение владельца 16.11): версия текстов карточки, версия текстов устройства,
- *  опознаватель своей копии и ключи идемпотентности не совпадают между собой. */
+/** Разные сущности — разные значения (решение владельца 16.11): опознаватель своей копии, ключи идемпотентности и
+ *  порядки в случаях различимы.
+ *  **Версия текстов у карточки и у провенанса — одна и та же величина** (§ 3 контракта, пример: у `view` и у `press`
+ *  один `u1-card@1.0`), поэтому здесь она одна, и её расхождение — отдельный случай ниже. */
 const CARD_TEXT_VERSION = "principles-card@1.0";
-const PRESS_TEXT_VERSION = "principles-device@1.0";
 const VIEW_ID = "viw_principles_1";
 const KEY_A = "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5";
 const KEY_B = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
-const press = { at: "2026-11-19T11:00:00Z", device: "mobile", text_version: PRESS_TEXT_VERSION, gesture: "swipe" } as const;
+const press = { at: "2026-11-19T11:00:00Z", device: "mobile", text_version: CARD_TEXT_VERSION, gesture: "swipe" } as const;
 
 /** Своя копия показанной карточки: сервер собирает её сам — ни одного значения из тела запроса. */
 const shownFor = (order: readonly string[]): ShownPayload => ({
@@ -105,12 +107,34 @@ describe("К1.3: подпись порядка — удачный путь", () 
   });
 
   it("хэш версии — хэш **своей** копии карточки, а не присланное значение", () => {
-    const out = signPrinciples(bodyFor(ids), KEY_A, deps());
+    // Присланный хэш нарочно иной формы, чем хэш своей копии: реализация «взять `body.shown_hash`» была бы красной.
+    // Для этого карточка показана в порядке по умолчанию, а тело несёт **свой** порядок — обычный сюжет перестановки.
+    shownOrder = ids;
+    const body: SignRequest = { order: [priceId, executionId], shown_hash: showingHash(shownFor(ids)), press };
+    const out = signPrinciples(body, KEY_A, deps());
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.version.view.hash).toBe(showingHash(shownFor(ids)));
     expect(out.version.view.text_version).toBe(CARD_TEXT_VERSION);
-    expect(out.version.view.text_version).not.toBe(press.text_version);
+  });
+
+  it("обычный сюжет перестановки: карточка показана по умолчанию, тело несёт новый порядок", () => {
+    shownOrder = ids; // человеку показали порядок по умолчанию
+    const newOrder = [priceId, executionId]; // и он переставил пункты
+    const out = signPrinciples({ order: newOrder, shown_hash: showingHash(shownFor(ids)), press }, KEY_A, deps());
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.version.order).toEqual(newOrder);
+    expect(out.version.view.hash).toBe(showingHash(shownFor(ids)));
+  });
+
+  it("хэш карточки, собранной по **новому** порядку, не подходит: показывали не её", () => {
+    shownOrder = ids;
+    const newOrder = [priceId, executionId];
+    const out = signPrinciples({ order: newOrder, shown_hash: showingHash(shownFor(newOrder)), press }, KEY_A, deps());
+    expect(out.ok).toBe(false);
+    if (out.ok || out.kind !== "ui") return;
+    expect(out.code).toBe("SHOWN_STALE");
   });
 
   it("время сервера — своё; время устройства не заменяется (П26)", () => {
@@ -163,10 +187,15 @@ describe("К1.3: журнал `principles.signed`", () => {
       expect(written[0]?.by).toBe("emulator");
     });
 
-    it("признак из тела запроса не берётся: экран недоверенная среда (С-12, С-31)", () => {
+    it("признак из тела запроса взять нельзя: такое тело вообще не принимается (С-12, С-31)", () => {
       who = "emulator";
       const forged = { ...bodyFor(ids), press: { ...press, by: "human" } } as unknown as SignRequest;
-      signPrinciples(forged, KEY_A, deps());
+      const out = signPrinciples(forged, KEY_A, deps());
+      expect(out.ok).toBe(false);
+      expect(written).toEqual([]);
+      // и когда подпись проходит, признак ставит сервер, а в провенансе его нет вовсе
+      store = createPrinciplesStore();
+      signPrinciples(bodyFor(ids), KEY_A, deps());
       expect(written[0]?.by).toBe("emulator");
       expect(JSON.stringify(written[0]?.press)).not.toContain("human");
     });
@@ -220,6 +249,18 @@ describe("К1.3: хэш показанного (правило 1 К-Б)", () => 
     expect(out.code).toBe("SHOWN_STALE");
     expect(out.view?.hash).toBe(showingHash(shownFor(shownOrder)));
     expect(out.view?.hash).not.toBe(body.shown_hash);
+  });
+
+  it("версия текстов провенанса расходится с версией своей копии — `SHOWN_STALE`, подписи нет", () => {
+    // § 3: у `press` и у `view` это одна величина (в примере обе `u1-card@1.0`). Расхождение значит, что человек
+    // подтверждал не те тексты, которые сервер считает показанными, — тот же случай «карточка устарела».
+    const out = signPrinciples({ ...bodyFor(ids), press: { ...press, text_version: "CHUZHAYA@9" } }, KEY_A, deps());
+    expect(out.ok).toBe(false);
+    if (out.ok || out.kind !== "ui") return;
+    expect(out.code).toBe("SHOWN_STALE");
+    expect(out.view?.text_version).toBe(CARD_TEXT_VERSION);
+    expect(store.all()).toEqual([]);
+    expect(written).toEqual([]);
   });
 
   it("хэш не по форме — тот же `SHOWN_STALE`, а не отдельный исход", () => {
@@ -316,11 +357,11 @@ describe("К1.3: негодное тело — один код `PRINCIPLES_ORDER
   });
 
   it("нет провенанса — умолчания у него нет (П26)", () => {
-    for (const press_ of [undefined, null, {}, { at: "", device: "mobile", text_version: "t", gesture: "tap" }]) {
+    for (const press_ of [undefined, null, {}, { at: "2026-11-19T11:00:00Z", device: "mobile" }, "swipe"]) {
       store = createPrinciplesStore();
       const out = signPrinciples({ ...bodyFor(ids), press: press_ } as SignRequest, KEY_A, deps());
-      expect(out).toEqual(invalid({ reason: "PRESS_MISSING" }));
-      expect(store.all()).toEqual([]);
+      expect(out, JSON.stringify(press_)).toEqual(invalid({ reason: "PRESS_MISSING" }));
+      expect(store.all(), JSON.stringify(press_)).toEqual([]);
     }
   });
 
@@ -343,6 +384,83 @@ describe("К1.3: негодное тело — один код `PRINCIPLES_ORDER
     expect(out).toEqual(invalid({ reason: "EXECUTION_MISSING", id: executionId }));
     expect(store.all()).toEqual([]);
     expect(written).toEqual([]);
+  });
+
+  describe("провенанс, который ничего не доказывает, — это отсутствие провенанса (П26)", () => {
+    it("`device` вне перечня § 3 не принимается", () => {
+      for (const device of ["robot", "Mobile", "", "ios"]) {
+        store = createPrinciplesStore();
+        const out = signPrinciples({ ...bodyFor(ids), press: { ...press, device } } as SignRequest, KEY_A, deps());
+        expect(out, device).toEqual(invalid({ reason: "PRESS_INVALID", field: "device" }));
+        expect(store.all(), device).toEqual([]);
+      }
+    });
+
+    it("все значения перечня `device` принимаются — проверка не запрещает лишнего", () => {
+      for (const device of UI_DEVICES) {
+        store = createPrinciplesStore();
+        const out = signPrinciples({ ...bodyFor(ids), press: { ...press, device } }, KEY_A, deps());
+        expect(out.ok, device).toBe(true);
+      }
+    });
+
+    it("`gesture` вне перечня § 3 не принимается, оба значения перечня принимаются", () => {
+      const out = signPrinciples(
+        { ...bodyFor(ids), press: { ...press, gesture: "nod" } } as unknown as SignRequest,
+        KEY_A,
+        deps(),
+      );
+      expect(out).toEqual(invalid({ reason: "PRESS_INVALID", field: "gesture" }));
+      for (const gesture of UI_GESTURES) {
+        store = createPrinciplesStore();
+        expect(signPrinciples({ ...bodyFor(ids), press: { ...press, gesture } }, KEY_A, deps()).ok, gesture).toBe(true);
+      }
+    });
+
+    it("пустое время нажатия или пустая версия текстов не принимаются", () => {
+      expect(signPrinciples({ ...bodyFor(ids), press: { ...press, at: "" } }, KEY_A, deps())).toEqual(
+        invalid({ reason: "PRESS_INVALID", field: "at" }),
+      );
+      store = createPrinciplesStore();
+      expect(signPrinciples({ ...bodyFor(ids), press: { ...press, text_version: "" } }, KEY_A, deps())).toEqual(
+        invalid({ reason: "PRESS_INVALID", field: "text_version" }),
+      );
+    });
+
+    it("перечни взяты из контракта, а не переписаны: значения — как в § 3", () => {
+      expect([...UI_DEVICES]).toEqual(["mobile", "web", "max", "bank_module"]);
+      expect([...UI_GESTURES]).toEqual(["swipe", "tap"]);
+      const doc = readFileSync(new URL("../../docs/reference/2026-11-18-kontrakt-K-B-ui-v1-v1.0.md", import.meta.url), "utf8");
+      expect(doc).toContain("`device` принимает значения `mobile` | `web` | `max` | `bank_module`");
+      for (const g of UI_GESTURES) expect(doc, g).toContain(`\`${g}\``);
+    });
+  });
+
+  describe("форма тела — до отпечатка: негодное значение даёт код, а не исключение", () => {
+    for (const order of [undefined, null, 5, {}, "prn_execution", [1, 2]])
+      it(`\`order\` = ${JSON.stringify(order)} — \`ORDER_NOT_LIST\`, а не TypeError`, () => {
+        store = createPrinciplesStore();
+        const out = signPrinciples({ ...bodyFor(ids), order } as unknown as SignRequest, KEY_A, deps());
+        expect(out).toEqual(invalid({ reason: "ORDER_NOT_LIST" }));
+      });
+
+    it("лишнее поле в теле — другое тело, а не «то же с примечанием»", () => {
+      const out = signPrinciples({ ...bodyFor(ids), extra: 1 } as unknown as SignRequest, KEY_A, deps());
+      expect(out).toEqual(invalid({ reason: "UNKNOWN_FIELD", field: "extra" }));
+    });
+
+    it("лишнее поле в провенансе — тоже отказ: `by` экран не присылает", () => {
+      const forged = { ...bodyFor(ids), press: { ...press, by: "human" } } as unknown as SignRequest;
+      expect(signPrinciples(forged, KEY_A, deps())).toEqual(invalid({ reason: "UNKNOWN_FIELD", field: "by" }));
+    });
+
+    it("повтор удачного тела с лишним полем повтором не считается", () => {
+      const body = bodyFor(ids);
+      expect(signPrinciples(body, KEY_A, deps()).ok).toBe(true);
+      const out = signPrinciples({ ...body, extra: 1 } as unknown as SignRequest, KEY_A, deps());
+      expect(out.ok).toBe(false);
+      expect(store.all()).toHaveLength(1);
+    });
   });
 
   it("код один на все причины, статус — 400; причина остаётся уточнением внутри", () => {

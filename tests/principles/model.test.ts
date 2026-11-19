@@ -228,8 +228,10 @@ describe("К1.2: порядок — перестановка подмножес�
 
 describe("К1.2: подписанная версия — номер по возрастанию и неизменяемость", () => {
   const ids = catalog.items.map((p) => p.id);
-  /** Разные сущности — разные значения (решение владельца 16.11): версия текстов у устройства и у карточки
-   *  отличима, иначе подмена `view.text_version` на `press.text_version` осталась бы зелёной. */
+  /** Здесь версии текстов нарочно различны, чтобы подмена `view.text_version` на `press.text_version` в
+   *  `nextVersion` была красной: эта функция складывает версию из готовых частей и сверять их не её дело.
+   *  **На границе `/ui` это одна и та же величина** (§ 3 контракта, пример: у `view` и у `press` один
+   *  `u1-card@1.0`), и расхождение до `nextVersion` не доходит — его отклоняет подпись (К1.3, `SHOWN_STALE`). */
   const PRESS_TEXT_VERSION = "principles@1.0-device";
   const VIEW_HASH = `sha256:${"0f".repeat(32)}`;
   const press = { at: "2026-11-19T11:00:00Z", device: "mobile", text_version: PRESS_TEXT_VERSION, gesture: "swipe" } as const;
