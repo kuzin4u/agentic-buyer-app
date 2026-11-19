@@ -200,6 +200,13 @@ describe("К1.3: журнал `principles.signed`", () => {
       expect(JSON.stringify(written[0]?.press)).not.toContain("human");
     });
 
+    it("подпись прогоном помечена `by: \"test\"` — не `emulator` (решение владельца 19.11, 22:10)", () => {
+      who = "test";
+      signPrinciples(bodyFor(ids), KEY_A, deps());
+      expect(written[0]?.by).toBe("test");
+      expect(store.last()?.by).toBe("test");
+    });
+
     it("умолчания нет: признак в записи есть всегда", () => {
       signPrinciples(bodyFor(ids), KEY_A, deps());
       expect(written[0]).toHaveProperty("by");
@@ -452,6 +459,16 @@ describe("К1.3: негодное тело — один код `PRINCIPLES_ORDER
     it("лишнее поле в провенансе — тоже отказ: `by` экран не присылает", () => {
       const forged = { ...bodyFor(ids), press: { ...press, by: "human" } } as unknown as SignRequest;
       expect(signPrinciples(forged, KEY_A, deps())).toEqual(invalid({ reason: "UNKNOWN_FIELD", field: "by" }));
+    });
+
+    // Третье значение присылать тоже нельзя — ни в провенансе, ни верхним полем тела: иначе экран сам объявлял бы
+    // себя прогоном, а признак ставит сервер (П26; находка ревью К0а № 8).
+    it("`by: \"test\"` из тела не принимается — ни в провенансе, ни верхним полем", () => {
+      const inPress = { ...bodyFor(ids), press: { ...press, by: "test" } } as unknown as SignRequest;
+      expect(signPrinciples(inPress, KEY_A, deps())).toEqual(invalid({ reason: "UNKNOWN_FIELD", field: "by" }));
+      const onTop = { ...bodyFor(ids), by: "test" } as unknown as SignRequest;
+      expect(signPrinciples(onTop, KEY_B, deps())).toEqual(invalid({ reason: "UNKNOWN_FIELD", field: "by" }));
+      expect(store.all()).toHaveLength(0);
     });
 
     it("повтор удачного тела с лишним полем повтором не считается", () => {
