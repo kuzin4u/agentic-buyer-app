@@ -162,6 +162,9 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     ["PRINCIPLES_ORDER_INVALID", 400],
     /** негодный ввод карточки поручения — решения владельца 20.11: Р-1650 (§ 5.2) и Р-1670 (тот же код для § 5.1) */
     ["INTENT_DRAFT_INVALID", 400],
+    // `SESSION_REQUIRED` — решение владельца 20.11.2026 (Р-1665), кирпич К7 ИН-0: «вход истёк» своим кодом, иначе
+    // человек видит «покупка не найдена» и пути войти заново у него нет.
+    ["SESSION_REQUIRED", 401],
   ] as const;
 
   it("таблица § 6 прочитана — девять строк", () => {
@@ -176,7 +179,7 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     for (const [code, status] of fromDoc) expect(UI_ERROR_STATUS[code as keyof typeof UI_ERROR_STATUS], code).toBe(status);
   });
 
-  it("коды, решённые владельцем до К-Б v1.1, — 400, и в документе v1.0 их ещё нет", () => {
+  it("коды, решённые владельцем до К-Б v1.1, объявлены со своим статусом, и в документе v1.0 их ещё нет", () => {
     for (const [code, status] of PENDING_V1_1) {
       expect(isUiErrorCode(code), code).toBe(true);
       expect(UI_ERROR_STATUS[code], code).toBe(status);

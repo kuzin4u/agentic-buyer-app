@@ -11,5 +11,8 @@
     "outDir": "dist",
     "rootDir": "."
   },
+  // Каталог клиента исключён по той же причине, что и в `tsconfig.build.json`: его проверяет `tsconfig.ui.json`.
+  // Без этого `npm run check` (`tsc --noEmit`) краснел бы на импорте `.svelte`.
+  "exclude": ["src/ui-client"],
   "include": ["src", "tests"]
 }
