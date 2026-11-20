@@ -46,7 +46,10 @@ export function mountLang(host: HTMLElement): string {
 export type BootText = Readonly<Record<BootKey, string>>;
 
 export function mountBootText(host: HTMLElement): BootText {
-  const read = (key: BootKey): string => host.dataset[bootDatasetKey(key)] ?? "";
+  // Атрибута нет (страница и сборка разошлись версиями) — показывается сам ключ: видно, чего не доехало, и кнопка
+  // остаётся с подписью и нажимаемой. Пустая строка давала бы кнопку без подписи, то есть снова экран без выхода
+  // (находка ревью К3б № 7); тот же приём, что у подписи раздела и класса повтора.
+  const read = (key: BootKey): string => host.dataset[bootDatasetKey(key)] ?? key;
   return {
     "state.offline": read("state.offline"),
     "state.broken": read("state.broken"),
