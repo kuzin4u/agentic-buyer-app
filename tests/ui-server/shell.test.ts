@@ -13,6 +13,7 @@ import {
   bootDatasetKey,
   DONE_TEXT,
   LANG_NAME,
+  page as uiPage,
   purchaseResponse,
   Sessions,
   SHELL_PLACES,
@@ -102,12 +103,18 @@ test("страница отдаёт все строки загрузки из BO
   }
 });
 
-test("бренд в разметке — из конфигурации и экранированным", async () => {
+test("бренд в разметке — из конфигурации, и подставляется экранированным", async () => {
   const html = await (await page()).text();
   const { brand } = await import("../../src/ui-server/shell.js").then((m) => m.loadShellBrand("config/brand.demo.json"));
   expect(html).toContain(`<title>${brand.name} — `);
-  // Имени банка литералом в коде нет: его знает только конфигурация (инвариант 7) — проверка в тесте экрана.
-  expect(brand.name.length).toBeGreaterThan(0);
+  // Экранирование проверяется на враждебном названии, а не обещается названием теста (находка ревью К4 № 11):
+  // название банка приходит из конфигурации, то есть из данных, и в разметку идёт как текст (инвариант 4).
+  const hostile = { name: '<script>alert(1)</script> & "Банк"', colors: brand.colors, logo: brand.logo };
+  const made = uiPage("ru", hostile);
+  expect(made).not.toContain("<script>alert(1)</script>");
+  expect(made).toContain("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;Банк&quot;");
+  // И ни одного исполняемого куска на странице от этого не появилось.
+  expect(made).not.toMatch(/<script(?![^>]*\ssrc=)/);
 });
 
 // ── Сессия при раздаче ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -191,12 +198,23 @@ const shellOf = async (lang: UiLang): Promise<ShellData> => {
   return (await (await fetch(`${server.url}/ui/shell?lang=${lang}`, { headers: { cookie } })).json()) as ShellData;
 };
 
-test("перечень шагов — из UI_STEPS контракта, а не копией в раздаче", async () => {
-  const data = await shellOf("ru");
-  expect(data.steps.map((s) => s.id)).toEqual([...UI_STEPS]);
-  expect(data.places.map((p) => p.id)).toEqual([...SHELL_PLACES]);
-  for (const s of data.steps) expect(s.label.length).toBeGreaterThan(0);
-  for (const p of data.places) expect(p.label.length).toBeGreaterThan(0);
+test("перечень шагов — из UI_STEPS контракта, подписи — из словаря, и каждая своя", async () => {
+  for (const lang of UI_LANGS) {
+    const data = await shellOf(lang);
+    expect(data.steps.map((s) => s.id)).toEqual([...UI_STEPS]);
+    // Подпись сверяется **со словарём по своему ключу**: «не пусто» пропускало перепутанные между собой подписи,
+    // например U3 на месте U4 (находка ревью К4 № 6).
+    for (const s of data.steps) expect(s.label).toBe(SHELL_TEXT[`step.${s.id}`][lang]);
+    for (const p of data.places) expect(p.label).toBe(SHELL_TEXT[`place.${p.id}`][lang]);
+    // Ни одна подпись не повторяется: две одинаковые в навигации неразличимы для человека.
+    const labels = [...data.steps, ...data.places].map((x) => x.label);
+    expect(new Set(labels).size).toBe(labels.length);
+  }
+  // У перечня мест внешнего источника **нет**: У8–У10 это разделы приложения, в `UiStep` контракта их не бывает.
+  // Поэтому сверять его не с чем, кроме самого объявления, и это названо прямо, а не выдано за сверку с источником
+  // (находка ревью К4 № 6).
+  expect((await shellOf("ru")).places.map((p) => p.id)).toEqual([...SHELL_PLACES]);
+  expect(SHELL_PLACES.every((p) => !(UI_STEPS as readonly string[]).includes(p))).toBe(true);
 });
 
 test("подписи ролей равны PARTY_LABEL на оба языка (поле parties не разъезжается молча)", async () => {
@@ -215,16 +233,23 @@ test("название другого языка — на нём самом, и 
   for (const lang of UI_LANGS) expect(LANG_NAME[lang].length).toBeGreaterThan(0);
 });
 
-test("все тексты словаря есть парами ru и en, и ни одна строка не пуста", async () => {
-  for (const [key, phrase] of Object.entries(SHELL_TEXT)) {
-    for (const lang of UI_LANGS) {
-      expect(phrase[lang], `${key}.${lang}`).toBeTruthy();
-      expect(phrase[lang].trim(), `${key}.${lang}`).toBe(phrase[lang]);
+test("все тексты обоих словарей есть парами ru и en — одинаково строго", () => {
+  // Один цикл на оба словаря: у `UI_TEXT` проверка была слабее — только «не пусто», — и русская строка, забытая в
+  // поле `en`, проходила (находка ревью К4 № 8).
+  for (const [name, dict] of [
+    ["SHELL_TEXT", SHELL_TEXT as Readonly<Record<string, { ru: string; en: string }>>],
+    ["UI_TEXT", UI_TEXT as Readonly<Record<string, { ru: string; en: string }>>],
+  ] as const) {
+    for (const [key, phrase] of Object.entries(dict)) {
+      for (const lang of UI_LANGS) {
+        expect(phrase[lang], `${name}.${key}.${lang}`).toBeTruthy();
+        expect(phrase[lang].trim(), `${name}.${key}.${lang}`).toBe(phrase[lang]);
+      }
+      // Одинаковые строки на двух языках — признак забытого перевода.
+      expect(phrase.ru, `${name}.${key}`).not.toBe(phrase.en);
+      // Кириллица в английской строке — тот же забытый перевод, только незаметный глазами.
+      expect(phrase.en, `${name}.${key}`).not.toMatch(/[А-Яа-яЁё]/);
     }
-    expect(phrase.ru, key).not.toBe(phrase.en);
-  }
-  for (const [key, phrase] of Object.entries(UI_TEXT)) {
-    for (const lang of UI_LANGS) expect(phrase[lang], `${key}.${lang}`).toBeTruthy();
   }
 });
 
@@ -235,7 +260,13 @@ test("словарь каркаса отдаётся на языке запро�
     expect(ru.text[key]).toBe(SHELL_TEXT[key].ru);
     expect(en.text[key]).toBe(SHELL_TEXT[key].en);
   }
-  expect(Object.keys(ru.retry).sort()).toEqual(["after_fix", "after_human", "never", "same_key"]);
+  // Перечень классов повтора берётся **из кода ядра** (`FAILURE_RULES`), а не вписывается копией в тест (Р-1511,
+  // находка ревью К4 № 7): появится у ядра новый класс — покраснеет здесь, а не промолчит. `new_key` экрану не
+  // отдаётся (§ 3), поэтому он из перечня исключён.
+  const { FAILURE_RULES } = await import("agentic-buyer-ref/src/agent/declines/table.js");
+  const theirs = new Set(Object.values(FAILURE_RULES).map((r) => (r.retry === "new_key" ? "same_key" : r.retry)));
+  for (const cls of theirs) expect(Object.keys(ru.retry), cls).toContain(cls);
+  for (const cls of Object.keys(ru.retry)) expect([...theirs, "after_fix"], cls).toContain(cls);
 });
 
 test("в словаре каркаса нет ни сумм, ни состояний, ни шагов покупки — экран их не выводит", async () => {
@@ -280,8 +311,15 @@ test("включится метод — кнопка не останется м�
   // и это согласовано. Станет истинным — упадёт этот тест, а не поведение у человека.
   const source = await import("node:fs").then((fs) => fs.readFileSync("src/ui-server/purchase.ts", "utf8"));
   const ready = /STOP_METHOD_READY\s*=\s*(true|false)/.exec(source)![1];
-  const markup = await import("node:fs").then((fs) => fs.readFileSync("src/ui-client/App.svelte", "utf8"));
-  const hasHandler = /actions\.stop[\s\S]{0,200}?onclick/.test(markup);
+  // Разметка **без комментариев** и только внутри узла кнопки: слово `onclick` в объяснении рядом меняло ответ
+  // теста, не меняя поведения (находка ревью К4 № 10).
+  const markup = (await import("node:fs"))
+    .readFileSync("src/ui-client/App.svelte", "utf8")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ");
+  const stopButton = /<button[^>]*>\s*\{purchase\.actions\.stop\.label\}/.exec(markup);
+  expect(stopButton, "кнопка «Стоп» в разметке не найдена").not.toBeNull();
+  const hasHandler = /\bonclick=/.test(stopButton![0]);
   expect(ready === "true" ? hasHandler : !hasHandler).toBe(true);
 });
 
@@ -289,9 +327,9 @@ test("ответ § 5.3 не несёт реквизитов и собирает
   const out = purchaseResponse(corePurchase("OFFERS", true), "ru");
   const json = JSON.stringify(out).toLowerCase();
   for (const forbidden of ["pan", "card_number", "cvv", "expiry", "kid", "cryptogram"]) expect(json).not.toContain(forbidden);
-  // Сумма пришла из `verify` ядра как есть; в строке человеку она только оформлена по валюте и языку.
-  expect(out.done_line.not_spent).toContain("6");
-  expect(out.intent.amount_left.amount).toBe(632000);
+  // Формат суммы и обе его ошибки закрыты точными строками в `money.test.ts` (находка ревью К4 № 2): здесь — только
+  // то, что величина дошла до ответа неизменной.
+  expect(out.intent.amount_left).toEqual({ amount: 632000, currency: "RUB" });
 });
 
 test("данные словаря собираются одной функцией — без обращения к сети и к стенду", () => {

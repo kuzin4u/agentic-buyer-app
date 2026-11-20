@@ -30,6 +30,11 @@ export type ReadFail =
   | { readonly reason: "contract"; readonly error: UiFailure }
   | { readonly reason: "offline" | "broken" | "no_session"; readonly error: null };
 
+/** Неудача **без** тела § 3. Отдельным типом, чтобы выбор строки «нет связи / вход истёк / сбой» нельзя было вызвать
+ *  на отказе по контракту: у того своё тело с кодом и «что делать», и общая строка скрыла бы его (находка ревью
+ *  К4 № 14). Случай закрыт типом, а не договорённостью. */
+export type ReadFailPlain = Extract<ReadFail, { reason: "offline" | "broken" | "no_session" }>;
+
 /** Исход чтения. */
 export type Read<T> = ({ readonly ok: true; readonly value: T }) | ({ readonly ok: false } & ReadFail);
 

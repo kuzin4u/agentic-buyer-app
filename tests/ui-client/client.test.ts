@@ -8,15 +8,17 @@
 //    П4 п. 3), и мобильная раскладка 360–430 (Р-1601).
 // 3. **Логика** — `view.ts` и `api.ts` прямо: порядок наложенных чтений, разделение причин неудачи, выбор строк.
 //
-// Чего здесь нет: монтирования собранного компонента. Рукописный подменённый DOM (`tests/support/fake-dom.ts`)
-// рантайм Svelte не поднимает, а новой зависимости ради проверок окно Б не заводит — это решение владельца, вопрос
-// задан в PR. Пока раскладка закрыта проверкой собранного CSS и разметки страницы, а поведение — логикой ниже.
-import { readFileSync } from "node:fs";
+// **Чего здесь нет, и это открытый пункт, а не умолчание.** Обещанного в К4 «рендера на ширине 360 подменённым DOM»
+// нет: рукописный подменённый DOM (`tests/support/fake-dom.ts`) рантайм Svelte не поднимает, а новая зависимость
+// (`svelte-check`, `jsdom`, `happy-dom`) — решение владельца, не выбор окна Б. Пока раскладка закрыта проверкой
+// собранного CSS и разметки страницы, а поведение — логикой ниже; сама разметка типами и рендером не покрыта.
+// Вопрос владельцу — в отчёте по К4 в PR #26; закроется либо акцептом на отступление, либо своим кирпичом.
+import { readFileSync, statSync } from "node:fs";
 import { expect, test } from "vitest";
 import { UI_STEPS } from "../../src/contract/ui-v1/index.js";
 import { BOOT_KEYS, bootAttr, bootDatasetKey, SHELL_PLACES, type ShellData } from "../../src/ui-server/index.js";
-import { mountBootText, mountLang, openFeed, type ReadFail, type UiFailure } from "../../src/ui-client/api.js";
-import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine } from "../../src/ui-client/view.js";
+import { mountBootText, mountLang, openFeed, type ReadFailPlain, type UiFailure } from "../../src/ui-client/api.js";
+import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, triggers } from "../../src/ui-client/view.js";
 
 const read = (path: string): string => readFileSync(path, "utf8");
 
@@ -99,6 +101,22 @@ test("boot-text.ts не импортирует ничего: иначе в бр�
   expect(read("src/ui-client/api.ts")).toContain('from "../ui-server/boot-text.js"');
 });
 
+test("из экрана в сервер ведёт одна значимая ссылка — boot-text; остальное только типами", () => {
+  // Обещанная проверка графа импортов (находка ревью К4 № 12): сейчас `ShellData` ввозится из `ui-server/shell.js`
+  // как **тип** и при сборке исчезает, но держится это одним словом `type`. Если слово потеряется, в браузерный
+  // бандл поедет `node:fs` — здесь это покраснеет, а не выяснится на сборке.
+  for (const file of CLIENT) {
+    const text = code(file);
+    for (const [whole, kind, spec] of [...text.matchAll(/import\s+(type\s+)?([\s\S]*?)from\s+"([^"]+)"/g)].map((m) => [m[0]!, m[1], m[3]!] as const)) {
+      if (!spec.startsWith("../ui-server/") && !spec.startsWith("../contract/")) continue;
+      const typeOnly = kind !== undefined || /^\s*\{\s*type\s/.test(whole.slice(whole.indexOf("{")));
+      const everyNameTyped = /\{([\s\S]*?)\}/.exec(whole)?.[1]?.split(",").every((n) => n.trim() === "" || n.trim().startsWith("type ")) ?? false;
+      if (spec === "../ui-server/boot-text.js") continue;
+      expect(typeOnly || everyNameTyped, `${file}: ${spec} ввозится значимо`).toBe(true);
+    }
+  }
+});
+
 test("экран берёт имена атрибутов страницы из одного перечня, а не литералами", () => {
   const api = read("src/ui-client/api.ts");
   expect(api).toContain("bootDatasetKey");
@@ -113,6 +131,14 @@ test("экран берёт имена атрибутов страницы из 
 });
 
 // ── 2. Собранное ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("сборка не старее исходников экрана: иначе проверки собранного зеленеют на вчерашнем коде", () => {
+  // В CI порядок верный (`build` перед `test`), а локально устаревшая сборка давала зелёные проверки на коде, который
+  // их бы не прошёл (находка ревью К4 № 9). Сообщение называет, что делать.
+  const built = statSync("dist/ui/ui.js").mtimeMs;
+  const newest = Math.max(...CLIENT.map((f) => statSync(f).mtimeMs));
+  expect(built, "сборка каркаса устарела — запустите npm run build:ui").toBeGreaterThanOrEqual(newest);
+});
 
 test("в собранном каркасе нет inline-стиля, нет data:-ресурсов и нет исполняемого куска разметки", () => {
   const js = read("dist/ui/ui.js");
@@ -196,9 +222,61 @@ test("порядок чтений: признак «чтение идёт» сн
   expect(reads.busy).toBe(false);
 });
 
+// ── Поводы перечитать покупку ───────────────────────────────────────────────────────────────────────────────────────
+
+const plan = (o: { purchase?: boolean; closed?: boolean; busy?: boolean } = {}) => {
+  const calls = { read: 0, listen: 0 };
+  const fire = triggers({
+    purchaseId: "pur_71",
+    hasPurchase: () => o.purchase ?? true,
+    feedClosed: () => o.closed ?? false,
+    busy: () => o.busy ?? false,
+    read: async () => {
+      calls.read += 1;
+    },
+    listen: () => {
+      calls.listen += 1;
+    },
+  });
+  return { fire, calls };
+};
+
+test("сигнал потока перечитывает только свою покупку", () => {
+  const { fire, calls } = plan();
+  fire.signal("pur_92");
+  expect(calls.read).toBe(0);
+  fire.signal("pur_71");
+  expect(calls.read).toBe(1);
+});
+
+test("возврат потока перечитывает, но не поверх идущего чтения", async () => {
+  const idle = plan();
+  idle.fire.back();
+  expect(idle.calls.read).toBe(1);
+  // `open` наступает сразу после открытия потока, и на каждое «Обновить» уходило по два одинаковых запроса
+  // (находка ревью К3б № 3; сама проводка не проверялась ничем — находка ревью К4 № 5).
+  const busy = plan({ busy: true });
+  busy.fire.back();
+  expect(busy.calls.read).toBe(0);
+  // Покупки нет — перечитывать нечего.
+  const empty = plan({ purchase: false });
+  empty.fire.back();
+  expect(empty.calls.read).toBe(0);
+});
+
+test("«Обновить» перечитывает всегда, а поток поднимает только закрытый", async () => {
+  const live = plan({ closed: false });
+  await live.fire.refresh();
+  expect(live.calls).toEqual({ read: 1, listen: 0 });
+  const dead = plan({ closed: true });
+  await dead.fire.refresh();
+  // Живой поток рвать незачем: при временном обрыве браузер восстановит его сам.
+  expect(dead.calls).toEqual({ read: 1, listen: 1 });
+});
+
 test("причины неудачи не смешиваются — ни до словаря, ни после", () => {
   const boot = { "state.offline": "нет связи", "state.broken": "сбой", "state.no_session": "вход истёк", "action.retry": "повторить" };
-  const cases: { fail: ReadFail; boot: string; shell: string }[] = [
+  const cases: { fail: ReadFailPlain; boot: string; shell: string }[] = [
     { fail: { reason: "offline", error: null }, boot: "нет связи", shell: "нет связи" },
     { fail: { reason: "broken", error: null }, boot: "сбой", shell: "сбой" },
     { fail: { reason: "no_session", error: null }, boot: "вход истёк", shell: "вход истёк" },
@@ -211,6 +289,13 @@ test("причины неудачи не смешиваются — ни до с
   expect(needsPage({ reason: "no_session", error: null })).toBe(true);
   expect(needsPage({ reason: "offline", error: null })).toBe(false);
   expect(needsPage({ reason: "broken", error: null })).toBe(false);
+  expect(needsPage({ reason: "contract", error: failure("same_key") })).toBe(false);
+  // Четвёртая причина — отказ по контракту — в эти две функции попасть **не может**: у неё своё тело § 3 с кодом и
+  // «что делать», и общая строка его скрыла бы. Случай закрыт типом, а не договорённостью (находка ревью К4 № 14).
+  // @ts-expect-error — `contract` не входит в `ReadFailPlain`
+  void (() => failLine(shellLike, { reason: "contract", error: failure("same_key") }));
+  // @ts-expect-error — то же для строк со страницы
+  void (() => bootLine(boot, { reason: "contract", error: failure("same_key") }));
 });
 
 test("повтор на месте — только при same_key", () => {

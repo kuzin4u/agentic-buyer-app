@@ -79,6 +79,38 @@ test("поток: пауза переподключения приходит с 
   await reader.cancel();
 });
 
+test("в поток одного владельца чужие сигналы не попадают", async () => {
+  // Положительного случая мало: без отрицательного «подписка по владельцу» держалась бы только тем, что в тесте один
+  // владелец (находка ревью К4 № 13). Два потока двух владельцев: чужой сигнал уходит **только** в свой поток, и
+  // проверяется это не ожиданием тишины (оно упирается в срок теста), а тем, что следующая порция своего потока —
+  // своя, а не чужая.
+  const mineCookie = (await fetch(`${server.url}/ui`)).headers.get("set-cookie")!.split(";")[0]!;
+  const alienCookie = `ui_session=${sessions.issue("own_2").id}`;
+  const open = async (cookie: string): Promise<ReadableStreamDefaultReader<Uint8Array>> => {
+    const res = await fetch(`${server.url}/ui/v1/feed`, { headers: { cookie } });
+    const reader = res.body!.getReader();
+    // Первая порция — строка `retry:` от сервера.
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("retry: ");
+    return reader;
+  };
+  const mine = await open(mineCookie);
+  const alien = await open(alienCookie);
+  expect(listeners.map((l) => l.owner).sort()).toEqual(["own_1", "own_2"]);
+
+  const alienSignal = { ...signal, event_id: "evt_77", purchase_id: "pur_92" };
+  listeners.find((l) => l.owner === "own_2")!.send(alienSignal);
+  expect(new TextDecoder().decode((await alien.read()).value)).toContain("evt_77");
+
+  listeners.find((l) => l.owner === "own_1")!.send(signal);
+  const got = new TextDecoder().decode((await mine.read()).value);
+  // Если бы чужой сигнал затёк в наш поток, здесь была бы **его** порция — она пришла бы раньше нашей.
+  expect(got).toContain(signal.event_id);
+  expect(got).not.toContain("evt_77");
+  expect(got).not.toContain("pur_92");
+  await mine.cancel();
+  await alien.cancel();
+});
+
 test("поток без сессии не открывается и подписки не создаёт", async () => {
   const res = await fetch(`${server.url}/ui/v1/feed`);
   expect(res.headers.get("content-type")).not.toContain("text/event-stream");

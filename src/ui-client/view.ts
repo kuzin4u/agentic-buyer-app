@@ -1,14 +1,14 @@
 // Логика каркаса, вынесенная из разметки (ИН-0, кирпич К4).
 //
 // Зачем отдельным модулем: в `.svelte` эту логику нечем закрыть тестом — смонтировать собранный компонент в
-// рукописном подменённом DOM (`tests/support/fake-dom.ts`) нельзя, а новой зависимости ради проверок окно Б не
-// заводит (это решение владельца, вопрос в PR). Вынесенная сюда, она проверяется прямо, а в `App.svelte` остаётся
-// разметка и состояние.
+// рукописном подменённом DOM (`tests/support/fake-dom.ts`) нельзя, а новая зависимость для рендера в тестах это
+// решение владельца, а не выбор окна Б (вопрос задан в отчёте по К4 в PR #26). Вынесенная сюда, логика проверяется
+// прямо, а в `App.svelte` остаются разметка и состояние.
 //
 // Ничего, кроме выбора готовых строк и порядка чтений, здесь нет (правило 3 К-Б «Экран ничего не считает»): ни суммы,
 // ни шага, ни доступности действия этот модуль не выводит.
 import type { ShellData } from "../ui-server/shell.js";
-import type { ReadFail, UiFailure } from "./api.js";
+import type { ReadFail, ReadFailPlain, UiFailure } from "./api.js";
 
 /**
  * Порядок чтений: применяется ответ **последнего** чтения.
@@ -59,11 +59,11 @@ export const labelOf = (shell: ShellData | null, id: string | null): string => {
 
 /** Строка о неудаче **до словаря** — из трёх строк, положенных на страницу сервером. Причины не смешиваются: «нет
  *  связи», «вход не выполнен» и «сбой на нашей стороне» это разные случаи (находки ревью К3 № 2 и К3а № 1). */
-export const bootLine = (boot: Readonly<Record<string, string>>, fail: ReadFail): string =>
+export const bootLine = (boot: Readonly<Record<string, string>>, fail: ReadFailPlain): string =>
   fail.reason === "offline" ? boot["state.offline"]! : fail.reason === "no_session" ? boot["state.no_session"]! : boot["state.broken"]!;
 
 /** Та же строка **из словаря**, когда он уже доехал. Отказ по контракту сюда не попадает: у него своё тело § 3. */
-export const failLine = (shell: ShellData, fail: ReadFail): string =>
+export const failLine = (shell: ShellData, fail: ReadFailPlain): string =>
   fail.reason === "offline" ? shell.text["state.offline"] : fail.reason === "no_session" ? shell.text["state.no_session"] : shell.text["state.broken"];
 
 /** «Что делать» по классу повтора. Класса нет в перечне сервера (ядро добавило новый) — показывается сам класс, а не
@@ -78,3 +78,42 @@ export const canRetryInPlace = (failure: UiFailure): boolean => failure.retry ==
 /** Нужен ли выход через страницу, а не повтор чтения: сессию выдаёт раздача каркаса, и повтор того же запроса
  *  крутился бы без выхода (находка ревью К3а № 1). */
 export const needsPage = (fail: ReadFail): boolean => fail.reason === "no_session";
+
+/**
+ * Поводы перечитать покупку — одним местом.
+ *
+ * Было в разметке, и там это ничем не держалось: убери `!busy` из `App.svelte` — все тесты оставались бы зелёными, а
+ * два запроса на одно «Обновить» вернулись бы (находка ревью К4 № 5). Правил здесь ровно три, и каждое названо:
+ * - **сигнал потока** — перечитывать только **свою** покупку: по чужому опознавателю читать нечего;
+ * - **возврат потока** — перечитать, потому что пока он молчал, покупка могла измениться (правило 4), но не поверх
+ *   уже идущего чтения: `open` наступает сразу после открытия потока;
+ * - **«Обновить»** — перечитать и поднять поток заново **только если он закрыт**: живой поток рвать незачем, при
+ *   временном обрыве браузер восстановит его сам.
+ */
+export interface ReadTriggers {
+  signal(purchaseId: string): void;
+  back(): void;
+  refresh(): Promise<void>;
+}
+
+export function triggers(o: {
+  readonly purchaseId: string | null;
+  readonly hasPurchase: () => boolean;
+  readonly feedClosed: () => boolean;
+  readonly busy: () => boolean;
+  readonly read: () => Promise<void>;
+  readonly listen: () => void;
+}): ReadTriggers {
+  return {
+    signal: (purchaseId) => {
+      if (purchaseId === o.purchaseId) void o.read();
+    },
+    back: () => {
+      if (o.hasPurchase() && !o.busy()) void o.read();
+    },
+    refresh: async () => {
+      await o.read();
+      if (o.feedClosed()) o.listen();
+    },
+  };
+}

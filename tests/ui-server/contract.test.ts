@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { ruleForFailure } from "agentic-buyer-ref/src/agent/declines/table.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { IDEMPOTENCY_HEADER, STEP_OF_STATE, UI_ERROR_STATUS } from "../../src/contract/ui-v1/index.js";
-import { Sessions, startUiServer, type CorePurchase, type UiCorePort, type UiServer } from "../../src/ui-server/index.js";
+import { RepeatStore, Sessions, startUiServer, type CorePurchase, type UiCorePort, type UiServer } from "../../src/ui-server/index.js";
 
 /** Покупка стенда: поля ровно те, из которых собирается § 5.3. Значения **разные у разных сущностей** (решение
  *  владельца 16.11): опознаватель покупки, поручения и отзыва не совпадают, иначе подмена поля не ловится. */
@@ -104,12 +104,32 @@ test("правило 2: тот же ключ на другом адресе — 
 });
 
 test("правило 2: POST без сессии не пишет в память повторов", async () => {
-  const key = randomUUID();
-  const res = await post("/ui/v1/anything", { a: 1 }, key, "");
-  expect(res.status).toBe(UI_ERROR_STATUS.PURCHASE_NOT_FOUND);
-  // Со своей сессией тот же ключ и то же тело — обычное первое обращение, а не «повтор» чужой записи.
-  const mine = await post("/ui/v1/anything", { a: 1 }, key);
-  expect(mine.status).toBe(404);
+  // Проверяется **память**, а не ответ: без сессии и на неизвестном адресе ответ один и тот же (404), поэтому
+  // сравнение ответов здесь ничего не держит — тест оставался бы зелёным при сломанном коде (находка ревью К4 № 1).
+  const repeats = new RepeatStore();
+  const own = new Sessions();
+  const s = await startUiServer({
+    core,
+    owner: (req) => own.ownerOf(req),
+    repeats,
+    shell: { brandPath: "config/brand.demo.json", sessions: own, ownerOnPage: () => "own_1" },
+  });
+  try {
+    const cookie = (await fetch(`${s.url}/ui`)).headers.get("set-cookie")!.split(";")[0]!;
+    const key = randomUUID();
+    const send = (c: string): Promise<Response> =>
+      fetch(`${s.url}/ui/v1/anything`, {
+        method: "POST",
+        headers: { cookie: c, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
+        body: JSON.stringify({ a: 1 }),
+      });
+    expect((await send("")).status).toBe(UI_ERROR_STATUS.PURCHASE_NOT_FOUND);
+    expect(repeats.size).toBe(0);
+    expect((await send(cookie)).status).toBe(404);
+    expect(repeats.size).toBe(1);
+  } finally {
+    await s.close();
+  }
 });
 
 // ── § 6: один ответ на чужую, неизвестную и не по форме покупку ─────────────────────────────────────────────────────

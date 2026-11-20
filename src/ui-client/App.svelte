@@ -18,7 +18,7 @@
   import type { PurchaseResponse } from "../contract/ui-v1/index.js";
   import type { ShellData } from "../ui-server/shell.js";
   import { langHref, loadPurchase, loadShell, openFeed, pageHref, purchaseIdOf, type BootText, type ReadFail } from "./api";
-  import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine } from "./view";
+  import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, triggers } from "./view";
 
   /**
    * `lang` — язык страницы: его выбрал **сервер** и положил в `data-lang` точки монтирования. Экран язык не выбирает
@@ -90,37 +90,32 @@
     await readPurchase();
   }
 
+  /** Правила «когда перечитывать» — в `view.ts`, где они закрыты тестом (К4а по находке ревью К4 № 5). Здесь только
+   *  состояние: что считать своей покупкой, закрыт ли поток, идёт ли чтение. */
+  const fire = triggers({
+    purchaseId,
+    hasPurchase: () => purchase !== null,
+    feedClosed: () => feedClosed,
+    busy: () => reads.busy,
+    read: readPurchase,
+    listen: () => listen(),
+  });
+
   /** Открыть поток заново. Нужна отдельная функция: закрытый поток (403, 404) браузер не восстанавливает, и человеку
    *  даётся явное действие «Обновить» — перечитать покупку и попробовать поток снова (находка ревью К3а № 2). */
   function listen(): void {
     feed?.close();
     // Сигнал потока — только повод перечитать: статусов и сумм в нём нет (правило 4, инвариант 6 в редакции П31).
-    feed = openFeed(
-      (id) => {
-        if (id === purchaseId) void readPurchase();
-      },
-      (closed) => {
-        // Временный обрыв: браузер переподключится сам (пауза приходит полем `retry:`), показанные данные помечаются
-        // возможно устаревшими — но не исчезают и не подменяются догадкой. Закрытый поток — отдельный случай: сигналов
-        // не будет вовсе, и об этом говорится прямо.
-        feedClosed = closed;
-        if (purchase !== null) stale = true;
-      },
-      () => {
-        // Подключение вернулось: пока поток молчал, покупка могла измениться, и перечитывание — единственный способ
-        // это узнать (правило 4). Если чтение уже идёт, второго не нужно: `open` наступает сразу после открытия
-        // потока, и на каждое «Обновить» уходило по два одинаковых запроса (находка ревью К3б № 3).
-        feedClosed = false;
-        if (purchase !== null && !reads.busy) void readPurchase();
-      },
-    );
-  }
-
-  /** Явное обновление человеком: перечитать покупку, а поток поднимать заново **только если он закрыт**. Живой поток
-   *  рвать незачем — при временном обрыве браузер восстановит его сам (находка ревью К3б № 3). */
-  async function refresh(): Promise<void> {
-    await readPurchase();
-    if (feedClosed) listen();
+    feed = openFeed(fire.signal, (closed) => {
+      // Временный обрыв: браузер переподключится сам (пауза приходит полем `retry:`), показанные данные помечаются
+      // возможно устаревшими — но не исчезают и не подменяются догадкой. Закрытый поток — отдельный случай: сигналов
+      // не будет вовсе, и об этом говорится прямо.
+      feedClosed = closed;
+      if (purchase !== null) stale = true;
+    }, () => {
+      feedClosed = false;
+      fire.back();
+    });
   }
 
   onMount(() => {
@@ -199,7 +194,7 @@
   {#if purchase !== null && (feedClosed || stale)}
     <p class="stale" role="status">
       {feedClosed ? shell.text["state.feed_closed"] : shell.text["state.stale"]}
-      <button type="button" onclick={() => void refresh()}>{shell.text["action.refresh"]}</button>
+      <button type="button" onclick={() => void fire.refresh()}>{shell.text["action.refresh"]}</button>
     </p>
   {/if}
 
