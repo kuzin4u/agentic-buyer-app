@@ -24,6 +24,7 @@ import { purchaseResponse } from "./purchase.js";
 import { createShellHandler, type ShellHandler, type ShellOptions } from "./shell.js";
 
 export { UI_CONTRACT_VERSION, UI_V1_BASE };
+export * from "./boot-text.js";
 export * from "./errors.js";
 export * from "./feed.js";
 export * from "./idempotency.js";

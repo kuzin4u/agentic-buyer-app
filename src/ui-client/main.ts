@@ -7,11 +7,13 @@
 // приходят готовыми, арифметики над деньгами в этом каталоге нет — проверяется тестом К4.
 import { mount } from "svelte";
 import App from "./App.svelte";
-import { mountLang } from "./api";
+import { mountBootText, mountLang } from "./api";
 
 // Точка монтирования и язык страницы приходят из разметки сервера: `<div id="app" data-lang="…">`. Нет её — страницу
 // собрал не наш сервер, и молча рисовать каркас в `document.body` неправильно: это скрыло бы расхождение раздачи.
 const host = document.getElementById("app");
+// Сообщение **разработчику**, не человеку: оно уходит в консоль браузера и на экране не показывается, поэтому пары
+// ru/en у него нет и тест парности строк интерфейса на него не распространяется (находка ревью К3 № 10).
 if (host === null) throw new Error("каркас: нет точки монтирования #app — страницу отдал не сервер /ui");
 
-mount(App, { target: host, props: { lang: mountLang(host) } });
+mount(App, { target: host, props: { lang: mountLang(host), boot: mountBootText(host) } });

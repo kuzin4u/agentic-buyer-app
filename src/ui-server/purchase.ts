@@ -9,6 +9,17 @@ import { DONE_TEXT, fill, t } from "./lang.js";
 import { formatUiMoney } from "./money.js";
 import type { CorePurchase } from "./port.js";
 
+/**
+ * Включён ли метод остановки у `/ui/v1`.
+ *
+ * В ИН-0 зарегистрированы только `purchase` и `feed` (постановка, «Чего в задаче нет»), поэтому разрешённая ядром
+ * остановка на экране всё равно недоступна — и сказать об этом обязан **сервер** (правило 3 «доступность решает
+ * сервер»), а не экран своей подписью под живой кнопкой: это была находка ревью К3 № 4. Признак назван одним местом
+ * и переключается одной строкой вместе с появлением метода; решение ядра (`stoppable`) при этом не подменяется —
+ * оно остаётся первым условием доступности.
+ */
+const STOP_METHOD_READY = false;
+
 /** Ответ § 5.3 из данных ядра. Ни одной величины здесь не вычисляется: `amount_left`, `valid_to` и `as_of` идут из
  *  `verify` как есть, а текст — это формат той же величины, а не её пересчёт. */
 export function purchaseResponse(p: CorePurchase, lang: UiLang): PurchaseResponse {
@@ -25,9 +36,12 @@ export function purchaseResponse(p: CorePurchase, lang: UiLang): PurchaseRespons
     stops: p.stops,
     actions: {
       stop: {
-        enabled: p.stoppable,
+        enabled: p.stoppable && STOP_METHOD_READY,
         label: t(lang, "action.stop"),
-        why_disabled: p.stoppable ? null : t(lang, "action.stop.why_disabled"),
+        // Две причины недоступности — разные, и человеку они говорят разное: «останавливать нечего» (решение ядра) и
+        // «метод ещё не включён» (состояние приложения). Одной строкой на оба случая вторая причина выглядела бы
+        // как первая.
+        why_disabled: p.stoppable ? (STOP_METHOD_READY ? null : t(lang, "action.stop.not_yet")) : t(lang, "action.stop.why_disabled"),
       },
     },
   };

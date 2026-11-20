@@ -62,6 +62,12 @@ export const UI_TEXT = {
     ru: "Останавливать уже нечего: покупка завершена или остановлена.",
     en: "There is nothing left to stop: the purchase is completed or stopped.",
   },
+  /** ядро остановку разрешает, но метода остановки у `/ui/v1` в ИН-0 ещё нет: доступность объявляет **сервер**
+   *  (правило 3), а не экран своей подписью под живой кнопкой (находка ревью К3 № 4) */
+  "action.stop.not_yet": {
+    ru: "Остановить можно будет с экраном покупки — метод ещё не включён.",
+    en: "Stopping will be available with the purchase screen — the method is not enabled yet.",
+  },
 } as const satisfies Readonly<Record<string, Phrase>>;
 
 export type UiTextKey = keyof typeof UI_TEXT;

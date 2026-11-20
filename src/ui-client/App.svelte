@@ -17,18 +17,26 @@
   import { onDestroy, onMount } from "svelte";
   import type { PurchaseResponse } from "../contract/ui-v1/index.js";
   import type { ShellData } from "../ui-server/shell.js";
-  import { langHref, loadPurchase, loadShell, openFeed, purchaseIdOf, type UiFailure } from "./api";
+  import { langHref, loadPurchase, loadShell, openFeed, pageHref, purchaseIdOf, type BootText, type ReadFail } from "./api";
 
-  /** Язык страницы — его выбрал **сервер** и положил в `data-lang` точки монтирования (`main.ts` читает атрибут).
-   *  Экран язык не выбирает и не сверяет с перечнем: негодное значение отбросит сервер (`langOf`). */
-  const { lang }: { lang: string } = $props();
+  /**
+   * `lang` — язык страницы: его выбрал **сервер** и положил в `data-lang` точки монтирования. Экран язык не выбирает
+   * и не сверяет с перечнем: негодное значение отбросит сервер (`langOf`).
+   * `boot` — три строки со страницы (нет связи, сбой, повторить) на тот случай, когда словарь ещё не доехал: иначе
+   * экран остался бы пустым навсегда и выхода из этого не было бы (находка ревью К3 № 1).
+   */
+  const { lang, boot }: { lang: string; boot: BootText } = $props();
 
   const purchaseId = purchaseIdOf();
 
   let shell = $state<ShellData | null>(null);
   let purchase = $state<PurchaseResponse | null>(null);
-  let failure = $state<UiFailure | null>(null);
-  let offline = $state(false);
+  /** Последняя неудача чтения — с **причиной**: отказ по контракту, нет связи или негодный ответ. */
+  let fail = $state<ReadFail | null>(null);
+  /** Поток оборвался при уже показанных данных: они не исчезают, но свежими больше не считаются (правило 4). */
+  let stale = $state(false);
+  /** Поток **закрыт** и сам не вернётся: об изменениях не сообщат вовсе, и это другое сообщение, чем «мог устареть». */
+  let feedClosed = $state(false);
   let loading = $state(true);
   /** Что человек открыл в навигации. `null` — «идём за сервером»: показывается шаг из ответа § 5.3. */
   let opened = $state<string | null>(null);
@@ -37,10 +45,15 @@
   /** Открытый раздел: выбор человека, иначе шаг с сервера. Своей таблицы шагов здесь нет — только одно поле ответа. */
   const current = $derived(opened ?? purchase?.step ?? null);
 
-  /** Подпись раздела по опознавателю — из перечней сервера; неизвестный опознаватель подписи не получает. */
+  /** Подпись раздела по опознавателю — из перечней сервера. Опознавателя нет в перечнях (сервер и экран разошлись
+   *  версиями) — показывается сам опознаватель, а не пустой заголовок (находка ревью К3 № 13). */
+  /** Раздел ли это пути (У8–У10), а не шаг покупки. Перечни — с сервера, своих у экрана нет. */
+  const isPlace = (id: string | null): boolean => id !== null && shell !== null && shell.places.some((p) => p.id === id);
+
   const labelOf = (id: string | null): string => {
-    if (shell === null || id === null) return "";
-    return [...shell.steps, ...shell.places].find((x) => x.id === id)?.label ?? "";
+    if (id === null) return "";
+    if (shell === null) return id;
+    return [...shell.steps, ...shell.places].find((x) => x.id === id)?.label ?? id;
   };
 
   async function readPurchase(): Promise<void> {
@@ -53,43 +66,95 @@
     loading = false;
     if (got.ok) {
       purchase = got.value;
-      failure = null;
-      offline = false;
+      fail = null;
+      stale = false;
       return;
     }
-    // Разделение намеренное: тело § 3 — это ответ сервера с кодом и «что делать», а `null` — отсутствие связи, у
-    // которого кода нет. Показать одно вместо другого значило бы сказать человеку неправду о причине.
-    failure = got.error;
-    offline = got.error === null;
+    // Причина сохраняется как есть: тело § 3 — ответ сервера с кодом и «что делать», «нет связи» и «негодный ответ» —
+    // разные случаи без кода. Показать одно вместо другого значило бы сказать человеку неправду о причине.
+    fail = got;
   }
 
-  onMount(() => {
-    void (async () => {
+  /** Словарь, затем покупка. Вызывается на запуске и кнопкой «Повторить»: выход из отказа есть всегда. */
+  async function start(): Promise<void> {
+    loading = true;
+    if (shell === null) {
       const got = await loadShell(lang);
-      if (got.ok) shell = got.value;
-      else offline = true;
-      await readPurchase();
-    })();
+      if (got.ok) {
+        shell = got.value;
+        fail = null;
+      } else {
+        loading = false;
+        fail = got;
+        return;
+      }
+    }
+    await readPurchase();
+  }
+
+  /** Открыть поток заново. Нужна отдельная функция: закрытый поток (403, 404) браузер не восстанавливает, и человеку
+   *  даётся явное действие «Обновить» — перечитать покупку и попробовать поток снова (находка ревью К3а № 2). */
+  function listen(): void {
+    feed?.close();
     // Сигнал потока — только повод перечитать: статусов и сумм в нём нет (правило 4, инвариант 6 в редакции П31).
     feed = openFeed(
       (id) => {
         if (id === purchaseId) void readPurchase();
       },
+      (closed) => {
+        // Временный обрыв: браузер переподключится сам (пауза приходит полем `retry:`), показанные данные помечаются
+        // возможно устаревшими — но не исчезают и не подменяются догадкой. Закрытый поток — отдельный случай: сигналов
+        // не будет вовсе, и об этом говорится прямо.
+        feedClosed = closed;
+        if (purchase !== null) stale = true;
+      },
       () => {
-        // Браузер переподключится сам (пауза приходит полем `retry:`); человеку это видно как «нет связи», пока
-        // перечитывание не удалось.
-        if (purchase === null) offline = true;
+        // Подключение вернулось: пока поток молчал, покупка могла измениться, и перечитывание — единственный способ
+        // это узнать (правило 4).
+        feedClosed = false;
+        if (purchase !== null) void readPurchase();
       },
     );
+  }
+
+  /** Явное обновление человеком: перечитать покупку и поднять поток заново. */
+  async function refresh(): Promise<void> {
+    await readPurchase();
+    listen();
+  }
+
+  onMount(() => {
+    void start();
+    listen();
   });
 
   onDestroy(() => feed?.close());
 </script>
 
 {#if shell === null}
-  <!-- Словарь ещё не пришёл: рисовать нечем, а своей строки «загрузка» у экрана нет (правило 3). Пустое место с
-       признаком занятости честнее подставленного литерала, который не прошёл бы парность ru/en. -->
-  <div class="boot" aria-busy="true"></div>
+  {#if fail === null}
+    <!-- Словарь ещё в пути: рисовать нечем, а своей строки «загрузка» у экрана нет (правило 3). Пустое место с
+         признаком занятости честнее подставленного литерала, который не прошёл бы парность ru/en. -->
+    <div class="boot" aria-busy="true"></div>
+  {:else}
+    <!-- Словарь не доехал. Строки — со страницы (их положил сервер на выбранном им языке), причина названа своя:
+         «нет связи», «вход не выполнен» и «сбой» это разные случаи. Выход есть всегда: при отсутствии сессии —
+         страница, которая её выдаёт (повтор того же чтения крутился бы без толку), иначе — повтор. -->
+    <section class="box state" role="alert">
+      <p>
+        {fail.reason === "offline"
+          ? boot["state.offline"]
+          : fail.reason === "no_session"
+            ? boot["state.no_session"]
+            : boot["state.broken"]}
+      </p>
+      {#if fail.reason === "no_session"}
+        <a class="as-button" href={pageHref()}>{boot["action.retry"]}</a>
+      {:else}
+        <button type="button" onclick={() => void start()}>{boot["action.retry"]}</button>
+      {/if}
+    </section>
+  {/if}
 {:else}
   <header class="top">
     {#if shell.brand.logo !== null}
@@ -97,7 +162,8 @@
     {/if}
     <span class="brand">{shell.brand.name}</span>
     <nav class="lang" aria-label={shell.text["lang.switch"]}>
-      <a href={langHref(shell.other)} hreflang={shell.other} lang={shell.other}>{shell.other}</a>
+      <!-- Подпись — название языка на нём самом (его даёт сервер), а не его код: код человеку ничего не говорит. -->
+      <a href={langHref(shell.other)} hreflang={shell.other} lang={shell.other}>{shell.other_name}</a>
     </nav>
   </header>
 
@@ -136,21 +202,49 @@
     </ul>
   </nav>
 
+  {#if purchase !== null && (feedClosed || stale)}
+    <p class="stale" role="status">
+      {feedClosed ? shell.text["state.feed_closed"] : shell.text["state.stale"]}
+      <button type="button" onclick={() => void refresh()}>{shell.text["action.refresh"]}</button>
+    </p>
+  {/if}
+
   <main>
-    {#if failure !== null}
+    <!-- Ошибка чтения покупки заслоняет только **шаг покупки**: человек, открывший раздел У8–У10, должен видеть
+         «экран скоро появится», а не отказ чтения, к которому этот раздел не относится (находка ревью К3а № 9). -->
+    {#if fail !== null && isPlace(current)}
+      <section class="box soon">
+        <h2>{labelOf(current)}</h2>
+        <p>{shell.text["state.soon"]}</p>
+      </section>
+    {:else if fail !== null && fail.reason === "contract"}
       <section class="box error" role="alert">
         <h2>{shell.text["error.title"]}</h2>
-        <p class="said">{failure.text}</p>
-        <p class="what">{shell.retry[failure.retry]}</p>
-        <p class="code"><code>{failure.code}</code></p>
-        {#if failure.retry !== "never"}
+        <p class="said">{fail.error.text}</p>
+        <!-- Класса повтора нет в перечне сервера (ядро добавило новый) — показывается сам класс, а не пустое место:
+             тот же приём, что у подписи раздела (находка ревью К3а № 6). -->
+        <p class="what">{shell.retry[fail.error.retry] ?? fail.error.retry}</p>
+        <p class="code"><code>{fail.error.code}</code></p>
+        <!-- Кнопка — только когда «повторите то же тем же ключом»: при `after_fix` и `after_human` повтор того же
+             чтения расходился бы с подписью действия (находка ревью К3 № 8), а при `never` не помог бы никогда. -->
+        {#if fail.error.retry === "same_key"}
           <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
         {/if}
       </section>
-    {:else if offline}
+    {:else if fail !== null}
       <section class="box state" role="alert">
-        <p>{shell.text["state.offline"]}</p>
-        <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
+        <p>
+          {fail.reason === "offline"
+            ? shell.text["state.offline"]
+            : fail.reason === "no_session"
+              ? shell.text["state.no_session"]
+              : shell.text["state.broken"]}
+        </p>
+        {#if fail.reason === "no_session"}
+          <a class="as-button" href={pageHref()}>{shell.text["action.retry"]}</a>
+        {:else}
+          <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
+        {/if}
       </section>
     {:else if loading}
       <p class="state" role="status">{shell.text["state.loading"]}</p>
@@ -162,13 +256,13 @@
         <!-- Обе строки собраны сервером: ни сложения, ни форматирования суммы здесь нет (инвариант 2, правило № 2). -->
         <p class="done">{purchase.done_line.done}</p>
         <p class="not-spent">{purchase.done_line.not_spent}</p>
+        <!-- Доступность и причину недоступности решает **сервер** (правило 3): экран их не выводит и своей подписи
+             под кнопкой не придумывает. В ИН-0 метода остановки нет, и говорит об этом сервер полем `why_disabled`. -->
         <p class="action">
-          <button type="button" disabled aria-disabled="true">{purchase.actions.stop.label}</button>
-          <span class="why">
-            {purchase.actions.stop.enabled
-              ? shell.text["state.action_soon"]
-              : (purchase.actions.stop.why_disabled ?? shell.text["state.action_soon"])}
-          </span>
+          <button type="button" disabled={!purchase.actions.stop.enabled}>{purchase.actions.stop.label}</button>
+          {#if purchase.actions.stop.why_disabled !== null}
+            <span class="why">{purchase.actions.stop.why_disabled}</span>
+          {/if}
         </p>
       </section>
     {:else}
@@ -293,7 +387,9 @@
     gap: 4px;
   }
   .action button,
-  .box > button {
+  .box > button,
+  .box > .as-button,
+  .stale button {
     min-height: 44px;
     padding: 8px 14px;
     border: 1px solid var(--brand-primary, #333);
@@ -311,6 +407,25 @@
   }
   .why,
   .state {
+    color: #555;
+  }
+  /* Выход из «вход не выполнен» — переход на страницу, то есть ссылка; выглядит как кнопка, но ведёт по адресу. */
+  .box > .as-button {
+    display: inline-block;
+    text-decoration: none;
+    text-align: center;
+  }
+  /* «Данные могли устареть» — рамкой и начертанием, а не одним цветом: разница читается без цвета. */
+  .stale {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 6px 8px;
+    border: 1px dashed #777;
+    border-radius: 8px;
+    font-weight: 600;
     color: #555;
   }
 </style>

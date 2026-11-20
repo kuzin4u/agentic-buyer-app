@@ -25,6 +25,7 @@ import { extname } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
 import { UI_STEPS, type UiLang, type UiRetryClass, type UiStep } from "../contract/ui-v1/index.js";
 import { PARTIES, PARTY_LABEL, type Party } from "../pult/rules89.js";
+import { BOOT_KEYS, bootAttr } from "./boot-text.js";
 import { t, UI_LANGS, type Phrase } from "./lang.js";
 import type { Sessions } from "./session.js";
 
@@ -64,6 +65,18 @@ export const SHELL_TEXT = {
   /** место под будущий экран: каркас честно говорит, что экрана ещё нет, а не рисует пустоту */
   "state.soon": { ru: "Экран скоро появится.", en: "This screen is coming soon." },
   "state.loading": { ru: "Загрузка…", en: "Loading…" },
+  /** ответ есть, но он не по форме (служебный `text/plain`, 500, 421): причина **не та же**, что «нет связи», и
+   *  называть её «нет связи» значило бы сказать человеку неправду (находка ревью К3 № 2) */
+  "state.broken": { ru: "Сбой на нашей стороне. Попробуйте ещё раз.", en: "Something went wrong on our side. Please try again." },
+  /** поток оборвался при уже показанных данных: они не исчезают, но свежими больше не считаются (находка ревью К3 № 7) */
+  "state.stale": { ru: "Связь с потоком прервалась — данные могли устареть.", en: "The signal stream dropped — the data may be out of date." },
+  /** поток **закрыт** и сам не переподключится (403, 404): сигналов не будет вовсе, и молчать об этом нельзя —
+   *  человек считал бы показанное свежим (находка ревью К3а № 2) */
+  "state.feed_closed": {
+    ru: "Поток сигналов закрыт: об изменениях не сообщат. Обновите состояние сами.",
+    en: "The signal stream is closed: changes will not be announced. Refresh the state yourself.",
+  },
+  "action.refresh": { ru: "Обновить", en: "Refresh" },
   /** связь с сервером приложения потеряна: по правилу 4 показывать нечего, пока не перечитаем */
   "state.offline": { ru: "Нет связи с приложением.", en: "No connection to the app." },
   "state.no_purchase": {
@@ -93,6 +106,10 @@ export const SHELL_TEXT = {
 
 export type ShellTextKey = keyof typeof SHELL_TEXT;
 
+/** Название языка **на нём самом**: в переключателе человек ищет свой язык, а не его код. Пары `{ ru, en }` здесь не
+ *  нужны и были бы ошибкой — «Русский» по-английски в переключателе не помогает никому (находка ревью К3 № 9). */
+export const LANG_NAME: Readonly<Record<UiLang, string>> = { ru: "Русский", en: "English" };
+
 /** Шаг в навигации: опознаватель шага контракта и подпись человеку. */
 export interface ShellStepView {
   readonly id: UiStep;
@@ -118,10 +135,20 @@ export interface ShellData {
   readonly langs: readonly UiLang[];
   /** другой язык — для переключателя; выбор языка остаётся за сервером, экран его не выводит */
   readonly other: UiLang;
+  /** название другого языка на нём самом — подпись переключателя человеку, а не его код */
+  readonly other_name: string;
   readonly brand: { readonly name: string; readonly logo: string | null };
   readonly steps: readonly ShellStepView[];
   readonly places: readonly ShellPlaceView[];
-  /** подписи ролей — один словарь с пультом, своих у каркаса нет (требование владельца 14.11) */
+  /**
+   * Подписи ролей — один словарь с пультом, своих у каркаса нет (требование владельца 14.11).
+   *
+   * В К3 ни один экран роли ещё не называет, то есть поле отдаётся **для экранов ИН-П\*, И-1, И-2** — и именно поэтому
+   * оно закрыто тестом К4 «`parties` равны `PARTY_LABEL` на оба языка» (находка ревью К3 № 5): иначе словарь разъехался
+   * бы молча до того, как подпись впервые появится на экране. Форма подписей (множественное число каталога правил —
+   * «Клиенты», «Агенты») для пользовательского экрана, возможно, не та: вопрос владельцу вместе с расхождением № 19,
+   * словарь лежит в `src/pult/` и окном Б не правится (находка ревью К3 № 6).
+   */
   readonly parties: Readonly<Record<Party, string>>;
   readonly text: Readonly<Record<ShellTextKey, string>>;
   readonly retry: Readonly<Record<UiRetryClass, string>>;
@@ -136,10 +163,12 @@ export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean): ShellDa
     string
   >;
   const parties = Object.fromEntries(PARTIES.map((p) => [p, PARTY_LABEL[p][lang]])) as Record<Party, string>;
+  const other: UiLang = lang === "ru" ? "en" : "ru";
   return {
     lang,
     langs: UI_LANGS,
-    other: lang === "ru" ? "en" : "ru",
+    other,
+    other_name: LANG_NAME[other],
     brand: { name: brand.name, logo: hasLogo ? "/brand/logo" : null },
     steps: UI_STEPS.map((id) => ({ id, label: st(lang, `step.${id}`) })),
     places: SHELL_PLACES.map((id) => ({ id, label: st(lang, `place.${id}`) })),
@@ -175,9 +204,16 @@ export function brandCss(b: Brand): string {
  * иначе язык страницы и язык ответов `/ui/v1` могли бы разойтись.
  * `width=device-width` и ширина без фиксированных величин — основа мобильной раскладки 360–430 (Р-1601); раскрытие до
  * веба шире 430 — ИН-ВЕБ.
+ *
+ * Четыре текста уходят **атрибутами** точки монтирования: без них экран, у которого не доехал `GET /ui/shell`, не
+ * может сказать по-человечески ни «нет связи», ни «сбой», ни «вход не выполнен», ни «повторить» — и остаётся пустым
+ * навсегда (находки ревью К3 № 1 и К3а № 1). Своего словаря у экрана по-прежнему нет: строки приходят с сервера и на
+ * языке, который выбрал сервер. Имена атрибутов — одной копией в `boot-text.ts` (находка ревью К3а № 4). Атрибутами, а
+ * не `<script type="application/json">`: исполняемого куска на странице быть не должно вовсе (П4 п. 3).
  */
 export function page(lang: UiLang, brand: Brand): string {
   const title = `${escapeHtml(brand.name)} — ${escapeHtml(st(lang, "app.title"))}`;
+  const boot = BOOT_KEYS.map((k) => `${bootAttr(k)}="${escapeHtml(st(lang, k))}"`).join(" ");
   return `<!doctype html>
 <html lang="${lang}">
 <head>
@@ -188,7 +224,7 @@ export function page(lang: UiLang, brand: Brand): string {
 <link rel="stylesheet" href="/ui.css">
 </head>
 <body>
-<div id="app" data-lang="${lang}"></div>
+<div id="app" data-lang="${lang}" ${boot}></div>
 <script type="module" src="/ui.js"></script>
 </body>
 </html>
@@ -290,6 +326,11 @@ export function createShellHandler(o: ShellOptions, headers: Readonly<Record<str
         // покажет «покупка не найдена» вместо данных.
         const owner = o.ownerOnPage(req);
         if (owner === null) return text(res, 403, lang, "state.no_session");
+        // Живая сессия того же человека **переиспользуется**: иначе каждая перезагрузка страницы и каждое
+        // переключение языка выпускали бы новую запись, а на пределе `MAX_SESSIONS` вытеснялась бы самая давняя
+        // живая — то есть сессия **другого** человека (находка ревью К3 № 3). Сессия другого владельца или её
+        // отсутствие — выдаём новую.
+        if (o.sessions.ownerOf(req) === owner) return send(res, 200, "text/html; charset=utf-8", page(lang, brand));
         const session = o.sessions.issue(owner);
         return send(res, 200, "text/html; charset=utf-8", page(lang, brand), { "set-cookie": session.setCookie });
       }
@@ -303,12 +344,23 @@ export function createShellHandler(o: ShellOptions, headers: Readonly<Record<str
         // файл всегда, и 404 на нём выглядел бы поломкой.
         return send(res, 200, "text/css; charset=utf-8", body ?? "");
       }
+      // Бренд и словарь — **с сессией**, как маршруты контракта (§ 3 «Авторизация»): данных покупки в них нет, но
+      // название банка, цвета, логотип и весь набор текстов — это лицо приложения, и отдавать его всякому, кто
+      // постучался на петлю, незачем (находки ревью К3 № 11 и К3а № 8: довод один и тот же для всех трёх адресов).
+      // Страница сессию уже выдала, и cookie `SameSite=Strict` уходит со своими же подресурсами, поэтому свой экран
+      // получает их всегда.
       case "/brand.css":
-        return send(res, 200, "text/css; charset=utf-8", css);
+        return o.sessions.ownerOf(req) === null ? text(res, 403, lang, "state.no_session") : send(res, 200, "text/css; charset=utf-8", css);
       case "/brand/logo":
+        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.no_session");
         return logo === null ? http(res, 404, lang, "http.not_found") : send(res, 200, logoType, logo);
-      default:
+      case "/ui/shell":
+        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.no_session");
         return send(res, 200, "application/json; charset=utf-8", JSON.stringify(shellData(lang, brand, logo !== null)));
+      default:
+        // Адрес попал в `known`, но своей ветки не получил: это ошибка сборки раздачи, и отдавать по нему словарь «по
+        // умолчанию» нельзя — новый маршрут начал бы молча отвечать чужим содержимым (находка ревью К3а № 7).
+        return http(res, 404, lang, "http.not_found");
     }
   };
 }
