@@ -15,7 +15,7 @@
     "prepublishOnly": "node -e \"process.exit(1)\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc --noEmit && eslint .",
+    "check": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit && eslint .",
     "scan:secrets": "python3 .claude/hooks/scan_secrets.py .",
     "build": "tsc -p tsconfig.build.json && npm run build:ui",
     "build:ui": "vite build --config vite.ui.config.ts",

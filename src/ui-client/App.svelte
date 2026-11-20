@@ -18,6 +18,7 @@
   import type { PurchaseResponse } from "../contract/ui-v1/index.js";
   import type { ShellData } from "../ui-server/shell.js";
   import { langHref, loadPurchase, loadShell, openFeed, pageHref, purchaseIdOf, type BootText, type ReadFail } from "./api";
+  import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine } from "./view";
 
   /**
    * `lang` — язык страницы: его выбрал **сервер** и положил в `data-lang` точки монтирования. Экран язык не выбирает
@@ -46,41 +47,20 @@
   /** Открытый раздел: выбор человека, иначе шаг с сервера. Своей таблицы шагов здесь нет — только одно поле ответа. */
   const current = $derived(opened ?? purchase?.step ?? null);
 
-  /** Раздел ли это пути (У8–У10), а не шаг покупки. Перечни — с сервера, своих у экрана нет. */
-  const isPlace = (id: string | null): boolean => id !== null && shell !== null && shell.places.some((p) => p.id === id);
-
-  /** Подпись раздела по опознавателю — из перечней сервера. Опознавателя нет в перечнях (сервер и экран разошлись
-   *  версиями) — показывается сам опознаватель, а не пустой заголовок (находка ревью К3 № 13). */
-  const labelOf = (id: string | null): string => {
-    if (id === null) return "";
-    if (shell === null) return id;
-    return [...shell.steps, ...shell.places].find((x) => x.id === id)?.label ?? id;
-  };
-
-  /**
-   * Поколение чтения и число чтений в полёте.
-   *
-   * Чтение покупки запускают уже четыре повода (сигнал потока, возврат потока, «Обновить», «Повторить»), и они
-   * накладываются: ответ **более старого** чтения мог прийти последним и перезаписать показанное более ранним
-   * состоянием — вплоть до откатa с итогового шага на предыдущий (находка ревью К3б № 1). Применяется только ответ
-   * последнего чтения; счётчик в полёте нужен, чтобы не запускать пятое чтение поверх уже идущего.
-   */
-  let generation = 0;
-  let pending = 0;
+  /** Порядок чтений и признак «чтение идёт» — вынесены в `view.ts`, где они закрыты тестом (К4). */
+  const reads = latest();
 
   async function readPurchase(): Promise<void> {
     if (purchaseId === null) {
       loading = false;
       return;
     }
-    const mine = ++generation;
-    pending += 1;
     loading = true;
-    const got = await loadPurchase(purchaseId, lang);
-    pending -= 1;
-    // Ответ обогнало более новое чтение — он уже не описывает состояние, и показывать его нельзя (правило 4:
-    // показывается только прочитанное, и именно последнее прочитанное).
-    if (mine !== generation) return;
+    const id = purchaseId;
+    // `null` — ответ обогнало более новое чтение: показывать его нельзя (правило 4 — показывается последнее
+    // прочитанное), и состояние экрана он не меняет.
+    const got = await reads.run(() => loadPurchase(id, lang));
+    if (got === null) return;
     loading = false;
     if (got.ok) {
       purchase = got.value;
@@ -131,7 +111,7 @@
         // это узнать (правило 4). Если чтение уже идёт, второго не нужно: `open` наступает сразу после открытия
         // потока, и на каждое «Обновить» уходило по два одинаковых запроса (находка ревью К3б № 3).
         feedClosed = false;
-        if (purchase !== null && pending === 0) void readPurchase();
+        if (purchase !== null && !reads.busy) void readPurchase();
       },
     );
   }
@@ -161,14 +141,8 @@
          «нет связи», «вход не выполнен» и «сбой» это разные случаи. Выход есть всегда: при отсутствии сессии —
          страница, которая её выдаёт (повтор того же чтения крутился бы без толку), иначе — повтор. -->
     <section class="box state" role="alert">
-      <p>
-        {fail.reason === "offline"
-          ? boot["state.offline"]
-          : fail.reason === "no_session"
-            ? boot["state.no_session"]
-            : boot["state.broken"]}
-      </p>
-      {#if fail.reason === "no_session"}
+      <p>{bootLine(boot, fail)}</p>
+      {#if needsPage(fail)}
         <a class="as-button" href={pageHref()}>{boot["action.retry"]}</a>
       {:else}
         <button type="button" onclick={() => void start()}>{boot["action.retry"]}</button>
@@ -232,9 +206,9 @@
   <main>
     <!-- Ошибка чтения покупки заслоняет только **шаг покупки**: человек, открывший раздел У8–У10, должен видеть
          «экран скоро появится», а не отказ чтения, к которому этот раздел не относится (находка ревью К3а № 9). -->
-    {#if fail !== null && isPlace(current)}
+    {#if fail !== null && isPlace(shell, current)}
       <section class="box soon">
-        <h2>{labelOf(current)}</h2>
+        <h2>{labelOf(shell, current)}</h2>
         <p>{shell.text["state.soon"]}</p>
       </section>
     {:else if fail !== null && fail.reason === "contract"}
@@ -243,24 +217,18 @@
         <p class="said">{fail.error.text}</p>
         <!-- Класса повтора нет в перечне сервера (ядро добавило новый) — показывается сам класс, а не пустое место:
              тот же приём, что у подписи раздела (находка ревью К3а № 6). -->
-        <p class="what">{shell.retry[fail.error.retry] ?? fail.error.retry}</p>
+        <p class="what">{retryLine(shell, fail.error)}</p>
         <p class="code"><code>{fail.error.code}</code></p>
         <!-- Кнопка — только когда «повторите то же тем же ключом»: при `after_fix` и `after_human` повтор того же
              чтения расходился бы с подписью действия (находка ревью К3 № 8), а при `never` не помог бы никогда. -->
-        {#if fail.error.retry === "same_key"}
+        {#if canRetryInPlace(fail.error)}
           <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
         {/if}
       </section>
     {:else if fail !== null}
       <section class="box state" role="alert">
-        <p>
-          {fail.reason === "offline"
-            ? shell.text["state.offline"]
-            : fail.reason === "no_session"
-              ? shell.text["state.no_session"]
-              : shell.text["state.broken"]}
-        </p>
-        {#if fail.reason === "no_session"}
+        <p>{failLine(shell, fail)}</p>
+        {#if needsPage(fail)}
           <a class="as-button" href={pageHref()}>{shell.text["action.retry"]}</a>
         {:else}
           <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
@@ -272,7 +240,7 @@
       <p class="state" role="status">{shell.text["state.no_purchase"]}</p>
     {:else if current === purchase.step}
       <section class="box step">
-        <h2>{labelOf(current)}</h2>
+        <h2>{labelOf(shell, current)}</h2>
         <!-- Обе строки собраны сервером: ни сложения, ни форматирования суммы здесь нет (инвариант 2, правило № 2). -->
         <p class="done">{purchase.done_line.done}</p>
         <p class="not-spent">{purchase.done_line.not_spent}</p>
@@ -287,7 +255,7 @@
       </section>
     {:else}
       <section class="box soon">
-        <h2>{labelOf(current)}</h2>
+        <h2>{labelOf(shell, current)}</h2>
         <p>{shell.text["state.soon"]}</p>
       </section>
     {/if}
