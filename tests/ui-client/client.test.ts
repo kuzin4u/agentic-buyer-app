@@ -18,7 +18,7 @@ import { expect, test } from "vitest";
 import { UI_STEPS } from "../../src/contract/ui-v1/index.js";
 import { BOOT_KEYS, bootAttr, bootDatasetKey, SHELL_PLACES, type ShellData } from "../../src/ui-server/index.js";
 import { mountBootText, mountLang, openFeed, type ReadFailPlain, type UiFailure } from "../../src/ui-client/api.js";
-import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, triggers } from "../../src/ui-client/view.js";
+import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, signedByLine, triggers } from "../../src/ui-client/view.js";
 
 const read = (path: string): string => readFileSync(path, "utf8");
 
@@ -220,6 +220,28 @@ test("порядок чтений: признак «чтение идёт» сн
   await expect(reads.run(() => Promise.reject(new Error("сбой")))).rejects.toThrow("сбой");
   // Иначе после одной неудачи поток больше никогда не перечитывал бы покупку.
   expect(reads.busy).toBe(false);
+});
+
+// ── Пометка «подписывает не человек» (К6) ───────────────────────────────────────────────────────────────────────────
+
+test("пометка о подписи: есть у прогона и эмулятора, нет у человека", () => {
+  const withBy = (signed_by: string, text: Record<string, string> = {}): ShellData =>
+    ({ ...shellLike, signed_by, text: { ...shellLike.text, "signed.test": "подписано прогоном", "signed.emulator": "подписано эмулятором", ...text } }) as unknown as ShellData;
+  expect(signedByLine(withBy("test"))).toBe("подписано прогоном");
+  expect(signedByLine(withBy("emulator"))).toBe("подписано эмулятором");
+  // У человека пометки нет: лишняя пометка у обычного человека обесценила бы её там, где она важна.
+  expect(signedByLine(withBy("human"))).toBeNull();
+  // Признак, которого экран не знает, пометки не даёт — врать про него нельзя.
+  expect(signedByLine(withBy("робот"))).toBeNull();
+});
+
+test("пометка показывается в шапке и строками из словаря, а не словами экрана", () => {
+  const markup = code("src/ui-client/App.svelte");
+  // Пометка выводится до навигации и содержимого: она относится ко всему, что будет подписано в этом окне.
+  expect(markup.indexOf("signedByLine(shell)")).toBeLessThan(markup.indexOf('aria-label={shell.text["nav.steps"]}'));
+  expect(markup).toContain('<p class="signed" role="status">{signedByLine(shell)}</p>');
+  // Своих слов о том, кто подписывает, у экрана нет (правило 3).
+  for (const word of ["прогон", "эмулятор", "test run", "emulator"]) expect(markup.toLowerCase()).not.toContain(word.toLowerCase());
 });
 
 // ── Поводы перечитать покупку ───────────────────────────────────────────────────────────────────────────────────────

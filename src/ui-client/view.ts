@@ -80,6 +80,19 @@ export const canRetryInPlace = (failure: UiFailure): boolean => failure.retry ==
 export const needsPage = (fail: ReadFail): boolean => fail.reason === "no_session";
 
 /**
+ * Пометка «подписывает не человек» (кирпич К6; П26, П5 п. 3).
+ *
+ * `null` — подписывает человек, и пометки нет: лишняя пометка у обычного человека обесценила бы её там, где она
+ * важна. Строку выбирает **не экран по смыслу**, а словарь по признаку, который поставил сервер: своих слов о том,
+ * кто нажал, у экрана нет (правило 3). Признак, которого экран не знает, пометки не даёт — врать про него нельзя.
+ */
+export const signedByLine = (shell: ShellData): string | null => {
+  if (shell.signed_by === "test") return shell.text["signed.test"];
+  if (shell.signed_by === "emulator") return shell.text["signed.emulator"];
+  return null;
+};
+
+/**
  * Поводы перечитать покупку — одним местом.
  *
  * Было в разметке, и там это ничем не держалось: убери `!busy` из `App.svelte` — все тесты оставались бы зелёными, а

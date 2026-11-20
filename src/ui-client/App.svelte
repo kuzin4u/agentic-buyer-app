@@ -18,7 +18,7 @@
   import type { PurchaseResponse } from "../contract/ui-v1/index.js";
   import type { ShellData } from "../ui-server/shell.js";
   import { langHref, loadPurchase, loadShell, openFeed, pageHref, purchaseIdOf, type BootText, type ReadFail } from "./api";
-  import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, triggers } from "./view";
+  import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, signedByLine, triggers } from "./view";
 
   /**
    * `lang` — язык страницы: его выбрал **сервер** и положил в `data-lang` точки монтирования. Экран язык не выбирает
@@ -158,6 +158,12 @@
 
   <h1>{shell.text["app.title"]}</h1>
   <p class="subtitle">{shell.text["app.subtitle"]}</p>
+
+  <!-- Подписывает не человек (К6, П26 и П5 п. 3). Пометка стоит в шапке, а не у кнопки: она относится ко всему, что
+       будет подписано в этом окне, и человек должен видеть её до нажатия, а не после. -->
+  {#if signedByLine(shell) !== null}
+    <p class="signed" role="status">{signedByLine(shell)}</p>
+  {/if}
 
   <nav class="rail" aria-label={shell.text["nav.steps"]}>
     <ol>
@@ -397,6 +403,15 @@
     display: inline-block;
     text-decoration: none;
     text-align: center;
+  }
+  /* «Подписывает не человек» — сплошной рамкой и начертанием: пометка о провенансе должна читаться без цвета, как и
+     вердикты (П28 п. 4), и не теряться рядом с заголовком. */
+  .signed {
+    margin: 0 0 12px;
+    padding: 6px 8px;
+    border: 2px solid var(--brand-accent, #333);
+    border-radius: 8px;
+    font-weight: 600;
   }
   /* «Данные могли устареть» — рамкой и начертанием, а не одним цветом: разница читается без цвета. */
   .stale {
