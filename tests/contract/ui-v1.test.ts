@@ -10,9 +10,11 @@ import {
   IDEMPOTENCY_HEADER,
   isIdempotencyKey,
   isUiErrorCode,
+  isUiSignedBy,
   UI_CONTRACT_VERSION,
   UI_ERROR_CODES,
   UI_ERROR_STATUS,
+  UI_SIGNED_BY,
   UI_V1_BASE,
   type UiMoney,
   type UiRetryClass,
@@ -63,7 +65,12 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
   /** Коды, добавленные решением владельца **до выхода К-Б v1.1**: в таблице § 6 документа v1.0 их нет, и сверять их
    *  с ним нечем. Таблицу v1.1 выпускает чат; после замены файла ожидание «в документе кода нет» станет красным —
    *  это и есть сигнал свести перечень к общей сверке и убрать отсюда строку (П32 дополнение 1). */
-  const PENDING_V1_1 = [["PRINCIPLES_ORDER_INVALID", 400]] as const;
+  const PENDING_V1_1 = [
+    ["PRINCIPLES_ORDER_INVALID", 400],
+    // `SESSION_REQUIRED` — решение владельца 20.11.2026 (Р-1665), кирпич К7 ИН-0: «вход истёк» своим кодом, иначе
+    // человек видит «покупка не найдена» и пути войти заново у него нет.
+    ["SESSION_REQUIRED", 401],
+  ] as const;
 
   it("таблица § 6 прочитана — девять строк", () => {
     expect(fromDoc).toHaveLength(9);
@@ -77,7 +84,7 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     for (const [code, status] of fromDoc) expect(UI_ERROR_STATUS[code as keyof typeof UI_ERROR_STATUS], code).toBe(status);
   });
 
-  it("`PRINCIPLES_ORDER_INVALID` — 400, и в документе v1.0 его ещё нет (К-Б v1.1, решение владельца 19.11)", () => {
+  it("коды, решённые владельцем до К-Б v1.1, объявлены со своим статусом, и в документе v1.0 их ещё нет", () => {
     for (const [code, status] of PENDING_V1_1) {
       expect(isUiErrorCode(code), code).toBe(true);
       expect(UI_ERROR_STATUS[code], code).toBe(status);
@@ -95,6 +102,19 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     for (const field of ["notes", "readonly on", "locked_id"]) expect(body, field).toContain(field);
     const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
     for (const field of ["notes", '"on"', "locked_id"]) expect(docSection, field).not.toContain(field);
+  });
+
+  /** Признак «кто нажал» (П26): перечень закрыт константой, потому что уходит в подписанную версию, журнал и акт.
+   *  Третье значение `test` — решение владельца 19.11, 22:10: прогон должен быть отличим от нажатия в эмуляторе
+   *  интерфейса, иначе в акте для НСПК «не человек» и «прогон» читаются одинаково. В § 5.14 документа v1.0 его нет —
+   *  как и самого поля `by`; оба войдут с К-Б v1.1, и тогда ожидание «в документе значения нет» станет красным. */
+  it("`by` — закрытый перечень из трёх значений, и `test` в документе v1.0 его ещё нет (К-Б v1.1)", () => {
+    expect(UI_SIGNED_BY).toEqual(["human", "emulator", "test"]);
+    expect(isUiSignedBy("test")).toBe(true);
+    expect(isUiSignedBy("robot")).toBe(false);
+    expect(isUiSignedBy("toString")).toBe(false);
+    const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
+    for (const value of UI_SIGNED_BY) expect(docSection, value).not.toContain(`"${value}"`);
   });
 
   it("код вне перечня не опознаётся как код `/ui` (это код ядра)", () => {

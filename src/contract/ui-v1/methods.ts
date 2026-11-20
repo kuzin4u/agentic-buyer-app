@@ -14,7 +14,18 @@ import type {
   ScopeCheck,
   SignatureLevel,
 } from "agentic-buyer-ref/src/shared/domain.js";
-import type { ShownHash, UiAction, UiDoneLine, UiInstant, UiLine, UiMoney, UiPress, UiStep, UiView } from "./common.js";
+import type {
+  ShownHash,
+  UiAction,
+  UiDoneLine,
+  UiInstant,
+  UiLine,
+  UiMoney,
+  UiPress,
+  UiSignedBy,
+  UiStep,
+  UiView,
+} from "./common.js";
 
 /** Состояние покупки — **состояние машины ядра** (`PURCHASE_STATES`), не своё перечисление (§ 4). */
 export type UiState = PurchaseState;
@@ -403,11 +414,12 @@ export interface ActCardResponse {
  *  (правка 6 канвы; правило 3 — вес исполнения не ниже веса цены живёт у сервера, ст. 19). */
 export interface PrinciplesResponse {
   readonly items: readonly { readonly id: string; readonly text: string; readonly rank: number; readonly on: boolean }[];
-  /** `by` — кто подтвердил порядок: человек или эмулятор клиента демо-стенда. Ставит **сервер** по своему знанию
-   *  (`DEMO_FAULTS=1`, режим «Авто», П5); из тела запроса признак не берётся — экран недоверенная среда. Пометку
-   *  «подписано эмулятором клиента (прогон)» рисует экран И-2. Поля `by` в § 5.14 документа v1.0 нет — решение
-   *  владельца 19.11, 17:52 (П32 доп. 1), войдёт в К-Б v1.1. */
-  readonly signed: { readonly at: UiInstant; readonly version: string; readonly by: "human" | "emulator" } | null;
+  /** `by` — кто подтвердил порядок: человек, эмулятор клиента демо-стенда или прогон тестов (`UiSignedBy`, перечень
+   *  закрыт константой в `common.ts`). Ставит **сервер** по своему знанию (`DEMO_FAULTS=1`, режим «Авто», П5); из тела
+   *  запроса признак не берётся — экран недоверенная среда. Пометку «подписано эмулятором клиента» и «подписано
+   *  прогоном» рисует экран И-2. Поля `by` в § 5.14 документа v1.0 нет — решение владельца 19.11, 17:52 (П32 доп. 1);
+   *  значения `test` там тоже нет — решение владельца 19.11, 22:10. **И поле, и третье значение войдут в К-Б v1.1.** */
+  readonly signed: { readonly at: UiInstant; readonly version: string; readonly by: UiSignedBy } | null;
   /** Строки-пояснения под списком: про то, что надёжность исполнения учитывается всегда, и — когда ст. 19 опустила
    *  вес цены — про потолок цены. Сами тексты лежат в `config/` на двух языках, литералом здесь их нет (правило
    *  планов № 3); сюда они приходят готовыми, на языке запроса: экран ничего не выводит сам (правило 3).
