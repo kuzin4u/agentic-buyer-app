@@ -21,6 +21,7 @@ import { langOf, t } from "./lang.js";
 import { RepeatStore } from "./idempotency.js";
 import type { UiCorePort } from "./port.js";
 import { purchaseResponse } from "./purchase.js";
+import { createShellHandler, type ShellHandler, type ShellOptions } from "./shell.js";
 
 export { UI_CONTRACT_VERSION, UI_V1_BASE };
 export * from "./errors.js";
@@ -31,6 +32,7 @@ export * from "./money.js";
 export * from "./port.js";
 export * from "./purchase.js";
 export * from "./session.js";
+export * from "./shell.js";
 
 /** Политика безопасности страницы — только `'self'`, без исключений (П4 п. 3): скрипт и стили каркаса отдаются
  *  файлами, inline на странице нет. Раздача самого экрана — кирпич К3. */
@@ -63,6 +65,14 @@ export interface UiServerOptions {
   readonly hosts?: readonly string[];
   /** Память повторов (правило 2); не передана — своя. */
   readonly repeats?: RepeatStore;
+  /**
+   * Раздача каркаса экрана (кирпич К3): страница, `/ui.js`, `/ui.css`, бренд, `GET /ui/shell`.
+   *
+   * Не передана — обработчик отвечает только под `/ui/v1`, как в К2: сервер контракта и раздача экрана соединяются
+   * **настройкой**, а не тем, что страница вшита в маршрутизатор. Так же проверяются тесты контракта — им страница
+   * не нужна, и нечитаемой зависимости от каталога сборки у них нет.
+   */
+  readonly shell?: ShellOptions;
 }
 
 /** Готовый ответ маршрутизатора. */
@@ -111,6 +121,7 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
   const fallback: UiLang = o.defaultLang ?? "ru";
   const repeats = o.repeats ?? new RepeatStore();
   const hosts: ReadonlySet<string> = new Set(o.hosts ?? []);
+  const shell: ShellHandler | null = o.shell === undefined ? null : createShellHandler(o.shell, HEADERS);
 
   const send = (res: ServerResponse, a: Answer, extra: Readonly<Record<string, string>> = {}): void => {
     if (res.writableEnded || res.headersSent) return;
@@ -140,6 +151,10 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
       }
       const lang = langOf(u.searchParams.get("lang"), fallback);
       if (!u.pathname.startsWith(`${UI_V1_BASE}/`)) {
+        // Раздача каркаса (К3) — вне контракта: страница, код, стили и бренд это **наши** адреса, а `/ui/v1` —
+        // граница К-Б. Поэтому раздача пробуется только тогда, когда адрес не под `/ui/v1`: ни один адрес контракта
+        // не может быть перехвачен страницей, даже если в раздаче появится новый маршрут.
+        if (shell !== null && shell(req, res, u, lang)) return;
         return send(res, { status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
       }
       const path = u.pathname.slice(UI_V1_BASE.length);
