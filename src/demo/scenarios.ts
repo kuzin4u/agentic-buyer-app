@@ -141,11 +141,21 @@ export const INTENT_CARD_UPK: IntentCard = { ...INTENT_CARD, limit: { amount: 50
 /** Поручение сюжета 8 (П-06): только один продавец — «Масса Мадре» (merchant_id — из набора витрин стенда, не литералом).
  *  Демо-правило выбора (самый дешёвый хлеб в контуре без A5) выбирает товар другого продавца — вне поручения. */
 const SCOPE_SHOPS = [MASSA_MADRE];
+
+/** Подпись витрины для карточки — «имя (merchant_id)». Одна формула на стенд: её же берёт карточка поручения § 5.1
+ *  (К2 П-К4), поэтому она живёт здесь, а не повторяется у каждого, кому подписи нужны (Р-1511; ревью К2 В3). */
+export const merchantLabel = (shop: { readonly name: string; readonly merchant_id: string }): string =>
+  `${shop.name} (${shop.merchant_id})`;
+
+/** Подписи продавцов этого поручения: названные сюжетом — или все витрины стенда, когда поручение без сужения. */
+export const intentCardLabels = (card: IntentCard): readonly string[] =>
+  card.scopeLabels ?? MERCHANT_FIXTURES.map(merchantLabel);
+
 export const INTENT_CARD_SCOPE: IntentCard = {
   ...INTENT_CARD,
   merchants: SCOPE_SHOPS.length,
   scope: SCOPE_SHOPS.map((s) => s.merchant_id),
-  scopeLabels: SCOPE_SHOPS.map((s) => `${s.name} (${s.merchant_id})`),
+  scopeLabels: SCOPE_SHOPS.map(merchantLabel),
 };
 
 /** Срок поручения сюжета 10 на мониторе (П-11.1д): человек успевает подписать его в банке, затем сюжет ждёт конца срока. */

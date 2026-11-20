@@ -6,6 +6,7 @@
 //   4) инвариант 1 — в типах контракта нет полей реквизитов, номера карты, криптограммы и `kid`.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { ALLOWED_EXAMPLES, FORBIDDEN_EXAMPLES, hitsForbidden } from "../support/forbidden-fields.js";
 import {
   IDEMPOTENCY_HEADER,
   isIdempotencyKey,
@@ -145,19 +146,9 @@ describe("К2.4 п. 3: идемпотентность (§ 3, правило 2)",
 });
 
 describe("К2.4 п. 4: инвариант 1 — реквизитов в типах контракта нет", () => {
-  /** Запрещённые имена полей: реквизит, номер карты и его части, криптограмма, ключ подписи агента.
-   *  Разрешены только идентификаторы (`order_id`, `mandate_id`, `instrument_token` — CLAUDE.md, инвариант 1). */
-  const FORBIDDEN = [
-    /\bpan\b/i,
-    /card_?number/i,
-    /\bcvv\b/i,
-    /\bcvc\b/i,
-    /cryptogram|криптограмм/i,
-    /\bkid\b/i,
-    /expiry|exp_?month|exp_?year/i,
-    /\btrack2?\b/i,
-    /\bcredential(s)?\b/i,
-  ];
+  /** Запрещённые имена полей — один перечень на все тесты (`tests/support/forbidden-fields.ts`): реквизит, номер
+   *  карты и его части, криптограмма, ключ подписи агента. Разрешены только идентификаторы (`order_id`, `mandate_id`,
+   *  `instrument_token` — CLAUDE.md, инвариант 1). Своя копия жила здесь до ревью К2 (Б1). */
 
   /** Имена полей, объявленных в модуле: `readonly x: …` и `x: …` в интерфейсах и типах. */
   const declaredKeys = sources.flatMap(({ file, text }) =>
@@ -169,19 +160,15 @@ describe("К2.4 п. 4: инвариант 1 — реквизитов в типа
   });
 
   it("ни одно объявленное поле не несёт реквизита, номера карты, криптограммы или `kid`", () => {
-    for (const { file, key } of declaredKeys)
-      for (const re of FORBIDDEN) expect(re.test(key), `${file}: ${key}`).toBe(false);
+    for (const { file, key } of declaredKeys) expect(hitsForbidden(key), `${file}: ${key}`).toBe(false);
   });
 
   it("проверка ловит подделку: поле `card_number` было бы красным", () => {
-    expect(FORBIDDEN.some((re) => re.test("card_number"))).toBe(true);
-    expect(FORBIDDEN.some((re) => re.test("kid"))).toBe(true);
-    expect(FORBIDDEN.some((re) => re.test("pan"))).toBe(true);
+    for (const bad of FORBIDDEN_EXAMPLES) expect(hitsForbidden(bad), bad).toBe(true);
   });
 
   it("разрешённые идентификаторы проверкой не задеты", () => {
-    for (const ok of ["order_id", "mandate_id", "instrument_token", "purchase_id", "merchant_id", "view_id"])
-      expect(FORBIDDEN.some((re) => re.test(ok)), ok).toBe(false);
+    for (const ok of ALLOWED_EXAMPLES) expect(hitsForbidden(ok), ok).toBe(false);
   });
 
   it("документ контракта говорит то же: у экрана нет ключа агента, `kid`, криптограммы и номера карты", () => {

@@ -6,6 +6,7 @@ import { MERCHANT_FIXTURES } from "agentic-ps-platform/fixtures";
 import { missingTerms } from "agentic-buyer-ref/src/agent/mandates/client.js";
 import type { MandateDraft } from "agentic-buyer-ref/src/shared/domain.js";
 import { describe, expect, it } from "vitest";
+import { ALLOWED_EXAMPLES, FORBIDDEN_EXAMPLES, hitsForbidden } from "../support/forbidden-fields.js";
 import {
   CONFIRMATION_MODES,
   DRAFT_KEYS,
@@ -62,17 +63,8 @@ describe("К1: черновик поручения — годная форма",
    *  позже в `DraftProblem` или в соседний тип, не поймался бы. Приём тот же, что в `tests/contract/ui-v1.test.ts`
    *  (К2.4 п. 4). `instrument_token` инвариантом 1 разрешён, поэтому слова `token` в запретном перечне нет. */
   describe("инвариант 1: реквизитов в модели нет", () => {
-    const FORBIDDEN = [
-      /\bpan\b/i,
-      /card_?number/i,
-      /\bcvv\b/i,
-      /\bcvc\b/i,
-      /cryptogram|криптограмм/i,
-      /\bkid\b/i,
-      /expiry|exp_?month|exp_?year/i,
-      /\btrack2?\b/i,
-      /\bcredential(s)?\b/i,
-    ];
+    // Перечень — один на все тесты (`tests/support/forbidden-fields.ts`): до ревью К2 он лежал тремя копиями, и
+    // копия К2 была уже сужена (ревью К2 Б1).
     const text = readFileSync(new URL("../../src/intent/model.ts", import.meta.url), "utf8");
     // Имена ищутся **по всему тексту**, а не по началу строки: в этом модуле поля причин объявлены внутри строки
     // (`| { readonly reason: …; readonly field: string }`), и разбор по началу строки их пропускал бы — ровно та
@@ -86,13 +78,12 @@ describe("К1: черновик поручения — годная форма",
     });
 
     it("ни одно объявленное поле не несёт реквизита, номера карты, криптограммы или `kid`", () => {
-      for (const key of declaredKeys) for (const re of FORBIDDEN) expect(re.test(key), key).toBe(false);
+      for (const key of declaredKeys) expect(hitsForbidden(key), key).toBe(false);
     });
 
-    it("проверка ловит подделку: `card_number` и `kid` были бы красными, а `instrument_token` — нет", () => {
-      expect(FORBIDDEN.some((re) => re.test("card_number"))).toBe(true);
-      expect(FORBIDDEN.some((re) => re.test("kid"))).toBe(true);
-      expect(FORBIDDEN.some((re) => re.test("instrument_token"))).toBe(false);
+    it("проверка ловит подделку: запретные имена красные, идентификаторы инварианта 1 — нет", () => {
+      for (const bad of FORBIDDEN_EXAMPLES) expect(hitsForbidden(bad), bad).toBe(true);
+      for (const ok of ALLOWED_EXAMPLES) expect(hitsForbidden(ok), ok).toBe(false);
     });
   });
 
