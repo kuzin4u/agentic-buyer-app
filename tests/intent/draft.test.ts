@@ -29,7 +29,7 @@ import {
 } from "../../src/intent/draft.js";
 import { DRAFT_KEYS, type IntentDraft } from "../../src/intent/model.js";
 // Строки-пояснения — те же, что на стенде: разбор `config/intent.default.json` (К3), не фикстура в тесте.
-import { linesFor, parseIntentTexts } from "../../src/intent/texts.js";
+import { parseIntentTexts } from "../../src/intent/texts.js";
 
 const TEXTS = parseIntentTexts(JSON.parse(readFileSync(new URL("../../config/intent.default.json", import.meta.url), "utf8")));
 
@@ -41,24 +41,8 @@ const MONEY_TEXT = (m: { readonly amount: number; readonly currency: string }, l
 const NOW = "2026-11-20T09:00:00.000Z";
 const PHRASE = "хлеб на выходные, до 1000 ₽, один раз";
 
-/** Тексты вопросов на двух языках: до К3 они живут в фикстуре, после — данными `config/`. Перечень ключей — это
- *  `QUESTION_CODES`, поэтому забытый вопрос здесь не соберётся. */
-const QUESTION_TEXTS: Record<"ru" | "en", Record<IntentQuestionCode, string>> = {
-  ru: {
-    subject: "Что покупаем?",
-    limit: "Сколько денег не больше?",
-    valid_to: "До какого срока?",
-    merchants: "У кого покупаем?",
-    confirmation_mode: "Подтверждать каждую покупку?",
-  },
-  en: {
-    subject: "What are we buying?",
-    limit: "What is the spending limit?",
-    valid_to: "Until when?",
-    merchants: "Which merchants?",
-    confirmation_mode: "Confirm every purchase?",
-  },
-};
+// Фикстуры текстов вопросов здесь больше нет: со К4а и вопросы, и строки сборка берёт из разобранного
+// `config/intent.default.json` — того же файла, что в работе (Р-1511), а не из копии в тесте.
 
 /** Шаблон стенда в форме порта: предмет, предел и продавцы — из сюжета 1, срок — момент времени (перевод «7 дней» в
  *  момент делает тот, кто подаёт шаблон), режим подтверждения — из `demoIntent`, где его и держит стенд. */
@@ -87,10 +71,13 @@ function deps(over: Partial<DraftDeps> = {}): DraftDeps & { readonly entries: In
   const entries: IntentDraftEntry[] = [];
   let no = 0;
   return {
+    // К4а: язык, тексты, показ суммы и пояс — **один источник** показанного; строки и вопросы сборка берёт из них
+    // сама, двух независимых портов больше нет.
     lang: "ru",
+    texts: TEXTS,
+    money: MONEY_TEXT,
+    timeZone: "Europe/Moscow",
     template: standTemplate(),
-    questionText: (code) => QUESTION_TEXTS.ru[code],
-    lines: (d) => linesFor(d, { lang: "ru", texts: TEXTS, money: MONEY_TEXT, timeZone: "Europe/Moscow" }),
     store: createIntentDraftStore(),
     journal: { write: (entry) => entries.push(entry) },
     newDraftId: () => `drf_k2_${++no}`,
@@ -150,25 +137,45 @@ describe("К2: карточка из шаблона", () => {
     expect(out.draft.merchants).toEqual(INTENT_CARD_SCOPE.scope);
   });
 
-  /** Строки К2 не выдумывает: он их не составляет и не правит, а берёт у порта. Проверяется подменой порта — так
-   *  видно, что на карточку уехало именно отданное, в том же порядке. */
-  it("строки-пояснения карточка берёт у порта, своих не добавляет", () => {
-    const given = [{ code: "LIMIT", text: "строка порта" }];
-    const out = buildIntentDraft(PHRASE, deps({ lines: () => given }));
-    expect(out.kind === "card" && out.card.lines).toEqual(given);
+  /** Показ назван в исходе целиком — язык **и** перечень текстов: из него же сборка тела § 5.1 берёт подпись
+   *  действия и версию текстов для хэша, поэтому подать их врозь нечем (К4а). */
+  it("исход несёт показ целиком: тот самый перечень текстов и язык", () => {
+    const out = buildIntentDraft(PHRASE, deps());
+    if (out.kind !== "card") throw new Error("ожидалась карточка");
+    expect(out.show.lang).toBe("ru");
+    expect(out.show.texts).toBe(TEXTS);
+    expect(out.show.texts.text_version).toBe("u1-card@1.0");
   });
 
-  it("строки собираются по тому же черновику, который уехал в хранилище", () => {
-    let seen: unknown = null;
-    const d = deps({
-      lines: (draft) => {
-        seen = draft;
-        return [];
-      },
-    });
+  /** Строки К2 не составляет и не правит. Ожидание — **данными из `config/`** с подставленными значениями этого
+   *  черновика, а не вызовом того же `linesFor` (сравнение функции с собой зелено при любой её правке — находка
+   *  повторного ревью К4а № 3; постановка п. 67). Так же закрывается и № 4: видно, что строки собраны по тому
+   *  черновику, который уехал в хранилище. */
+  it("строки-пояснения собраны по этому черновику из текстов `config/`", () => {
+    const d = deps();
     const out = buildIntentDraft(PHRASE, d);
-    expect(out.kind === "card" && out.draft).toBe(seen);
-    expect(out.kind === "card" && d.store.get(out.draft_id)).toBe(seen);
+    if (out.kind !== "card") throw new Error("ожидалась карточка");
+    expect(d.store.get(out.draft_id)).toBe(out.draft);
+
+    const text = (code: "SUBJECT" | "LIMIT" | "MERCHANTS"): string | undefined =>
+      out.card.lines.find((l) => l.code === code)?.text;
+    expect(text("SUBJECT")).toBe(TEXTS.lines.SUBJECT.ru.replace("{subject}", out.draft.subject));
+    expect(text("MERCHANTS")).toBe(TEXTS.lines.MERCHANTS.ru.replace("{count}", String(out.draft.merchants.length)));
+    expect(text("LIMIT")).toBe(
+      TEXTS.lines.LIMIT.ru.replace("{limit}", MONEY_TEXT({ amount: out.draft.limit.amount, currency: out.draft.limit.currency }, "ru")),
+    );
+    // Строка режима — своя у значения этого черновика, а не первая из перечня.
+    expect(out.card.lines.at(-1)?.code).toBe("CONFIRMATION_IMMEDIATE");
+  });
+
+  it("английский показ — те же коды строк, другие тексты, английский язык в показе", () => {
+    const en = buildIntentDraft(PHRASE, deps({ lang: "en" }));
+    const ru = buildIntentDraft(PHRASE, deps());
+    if (en.kind !== "card" || ru.kind !== "card") throw new Error("ожидались карточки");
+    expect(en.show.lang).toBe("en");
+    expect(en.card.lines.map((l) => l.code)).toEqual(ru.card.lines.map((l) => l.code));
+    expect(en.card.lines[0]?.text).toBe(TEXTS.lines.SUBJECT.en.replace("{subject}", en.draft.subject));
+    expect(en.card.lines[0]?.text).not.toBe(ru.card.lines[0]?.text);
   });
 });
 
@@ -180,9 +187,10 @@ describe("К2: уточняющие вопросы — чего шаблон н�
     expect(out).toEqual({
       kind: "questions",
       draft_id: "drf_k2_1",
-      questions: [{ id: "confirmation_mode", text: "Подтверждать каждую покупку?" }],
-      // Язык показа назван в исходе: тело § 5.1 не собирается из русской карточки и английской кнопки (ревью К4 № 3).
-      lang: "ru",
+      questions: [{ id: "confirmation_mode", text: TEXTS.questions.confirmation_mode.ru }],
+      // Показ назван в исходе целиком: тело § 5.1 не собирается из русской карточки и английской кнопки, и хэш не
+      // заверяет версию, которой показанные строки не принадлежат (ревью К4 № 3, К4а № 1 и № 2).
+      show: { lang: "ru", texts: TEXTS },
     });
     // Ни карточки, ни черновика: нечего подписывать, пока человек не ответил.
     expect(d.store.get("drf_k2_1")).toBeNull();
@@ -208,18 +216,21 @@ describe("К2: уточняющие вопросы — чего шаблон н�
   });
 
   it("вопросы приходят на языке запроса — английский даёт те же коды и другие тексты", () => {
-    const out = buildIntentDraft(PHRASE, deps({ template: {}, questionText: (c) => QUESTION_TEXTS.en[c] }));
-    expect(out.kind === "questions" && out.questions).toEqual([
-      { id: "subject", text: "What are we buying?" },
-      { id: "limit", text: "What is the spending limit?" },
-      { id: "valid_to", text: "Until when?" },
-      { id: "merchants", text: "Which merchants?" },
-      { id: "confirmation_mode", text: "Confirm every purchase?" },
-    ]);
+    const en = buildIntentDraft(PHRASE, deps({ template: {}, lang: "en" }));
+    const ru = buildIntentDraft(PHRASE, deps({ template: {} }));
+    if (en.kind !== "questions" || ru.kind !== "questions") throw new Error("ожидались вопросы");
+    expect(en.show.lang).toBe("en");
+    expect(en.questions.map((q) => q.id)).toEqual(ru.questions.map((q) => q.id));
+    // Тексты — из `config/`, того же файла, откуда их берёт код (Р-1511), а не из фикстуры в тесте.
+    expect(en.questions).toEqual(QUESTION_CODES.map((code) => ({ id: code, text: TEXTS.questions[code].en })));
+    for (const [i, q] of en.questions.entries()) expect(q.text).not.toBe(ru.questions[i]?.text);
   });
 
   it("вопрос без текста — ошибка сборки, а не вопрос без слов", () => {
-    expect(() => buildIntentDraft(PHRASE, deps({ template: {}, questionText: () => "  " }))).toThrow(/нет текста/);
+    // Негодный перечень текстов: у одного вопроса пустая строка. Разбор `config/` такого не пропустит, поэтому
+    // случай строится прямо из разобранных текстов.
+    const broken = { ...TEXTS, questions: { ...TEXTS.questions, limit: { ru: "  ", en: "  " } } };
+    expect(() => buildIntentDraft(PHRASE, deps({ template: {}, texts: broken }))).toThrow(/нет текста/);
   });
 });
 
@@ -292,21 +303,32 @@ describe("К2: негодный шаблон — ошибка сборки, а �
     expect(() => buildIntentDraft(PHRASE, bad)).toThrow();
     expect(bad.entries).toEqual([]);
 
-    const noText = deps({ template: {}, questionText: () => "" });
+    const noText = deps({
+      template: {},
+      texts: { ...TEXTS, questions: { ...TEXTS.questions, subject: { ru: "", en: "" } } },
+    });
     expect(() => buildIntentDraft(PHRASE, noText)).toThrow();
     expect(noText.entries).toEqual([]);
   });
 
-  /** Порт строк бросает по замыслу К3 (валюта вне таблицы ISO 4217, срок не по форме, неизвестный пояс). Тогда ни
+  /** Сборка строк бросает по замыслу К3 (валюта вне таблицы ISO 4217, срок не по форме, неизвестный пояс). Тогда ни
    *  записи, ни черновика быть не должно: иначе в журнале осталась бы «карточка собралась целиком», а в хранилище —
-   *  черновик под выданным `draft_id` (ревью К3 Б1). */
-  it("порт строк бросил — ни записи в журнале, ни черновика в хранилище", () => {
+   *  черновик под выданным `draft_id` (ревью К3 Б1). Со К4а сборка зовёт `linesFor` сама, поэтому случай строится
+   *  негодным показом суммы — тем самым портом, который единственный и остался (Р-1667). */
+  it("показ суммы бросил — ни записи в журнале, ни черновика в хранилище", () => {
     const d = deps({
-      lines: () => {
+      money: () => {
         throw new RangeError("сумма /ui/v1: валюты XXX нет в таблице ISO 4217");
       },
     });
     expect(() => buildIntentDraft(PHRASE, d)).toThrow(/ISO 4217/);
+    expect(d.entries).toEqual([]);
+    expect(d.store.get("drf_k2_1")).toBeNull();
+  });
+
+  it("неизвестный пояс — тоже ни записи, ни черновика", () => {
+    const d = deps({ timeZone: "Europe/Атлантида" });
+    expect(() => buildIntentDraft(PHRASE, d)).toThrow();
     expect(d.entries).toEqual([]);
     expect(d.store.get("drf_k2_1")).toBeNull();
   });

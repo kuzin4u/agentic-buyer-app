@@ -18,6 +18,7 @@
 import type { UiInstant, UiLang } from "../contract/ui-v1/common.js";
 import type { IntentCard, IntentQuestion } from "../contract/ui-v1/methods.js";
 import { DRAFT_KEYS, checkDraft, type DraftField, type IntentDraft } from "./model.js";
+import { linesFor, questionTextFor, type IntentTexts, type MoneyText } from "./texts.js";
 
 /** Шаблон поручения — **порт**. Поля необязательны: шаблон заявляет только то, что знает про это поручение, и ничего
  *  не достраивает. Срок приходит **готовым моментом времени**: перевод «7 дней» или «180 секунд» в момент делает тот,
@@ -85,25 +86,38 @@ export function createIntentDraftStore(): IntentDraftStore {
   };
 }
 
+/** К4а (повторное ревью К4, находки № 1 и № 2). **Показанное и его описатели приходят из одного источника.**
+ *  Было: язык и строки-пояснения подавались двумя независимыми портами (`lang` и `lines`), а версия текстов бралась
+ *  уже третьим местом — при сборке тела. Тогда собиралась карточка с русскими строками и английской кнопкой, а хэш
+ *  заверял версию текстов, которой показанные строки не принадлежат. Проверка на расхождение сверяла два
+ *  **объявления**, а не язык содержимого, и покраснеть на такой смеси не могла.
+ *  Стало: сборка берёт перечень текстов целиком (`texts`) и язык (`lang`), строки собирает сама (`linesFor`), тексты
+ *  вопросов — оттуда же, а в исход кладёт и язык, и `text_version` того же перечня. Показ суммы остаётся **портом**
+ *  (Р-1667: общая функция у окна Б), пояс — названным (ревью К3 В4). */
 export interface DraftDeps {
-  /** язык этого показа: на нём приходят и вопросы, и строки-пояснения. Язык назван **в исходе**, чтобы тело § 5.1
-   *  нельзя было собрать из русской карточки и английской кнопки — два независимых языка в одном показанном
-   *  (находка ревью К4 № 3) */
+  /** язык этого показа: на нём и вопросы, и строки-пояснения, и подпись действия */
   readonly lang: UiLang;
+  /** тексты карточки целиком — `config/intent.default.json` (К3): из них берутся и строки, и вопросы, и версия */
+  readonly texts: IntentTexts;
+  /** показ суммы — порт (Р-1667); своей копии окно А не держит */
+  readonly money: MoneyText;
+  /** названный пояс человека для срока: пояс процесса в хэшируемый текст не попадает (ревью К3 В4) */
+  readonly timeZone: string;
   /** шаблон этого поручения; фразу он не разбирает (до ВР-5 её не разбирает никто) */
   readonly template: IntentTemplate;
-  /** текст вопроса на языке запроса — данными `config/` (К3); умолчания у текста нет */
-  readonly questionText: (code: IntentQuestionCode) => string;
-  /** строки-пояснения карточки на языке запроса — `linesFor` из `texts.ts` (К3): сумма и срок уже в виде текста по
-   *  валюте, языку и названному поясу; число продавцов `linesFor` берёт у самого черновика, поэтому отдельным
-   *  параметром оно не подаётся (находка ревью К3 В2) */
-  readonly lines: (draft: IntentDraft) => IntentCard["lines"];
   readonly store: IntentDraftStore;
   readonly journal: IntentJournal;
   /** `drf_…` — идентификатор черновика; его выдаёт сервер, а не экран */
   readonly newDraftId: () => string;
   /** время сервера (не из тела: время устройства живёт в провенансе, П26) */
   readonly now: () => UiInstant;
+}
+
+/** Показ: язык и перечень текстов, из которых собрано показанное. Один объект, а не пара независимых значений, —
+ *  чтобы подать язык от одного перечня, а тексты от другого было **нечем** (К4а). */
+export interface IntentShow {
+  readonly lang: UiLang;
+  readonly texts: IntentTexts;
 }
 
 /** Исход сборки.
@@ -121,15 +135,17 @@ export type DraftOutcome =
       readonly draft: IntentDraft;
       readonly card: IntentCard;
       readonly questions: readonly [];
-      /** язык, на котором собраны строки карточки */
-      readonly lang: UiLang;
+      /** **Показ целиком**: язык и перечень текстов, из которых собрано показанное. Сборка тела § 5.1 берёт отсюда и
+       *  подпись действия, и версию текстов для хэша — своего перечня у неё нет (К4а, повторное ревью К4 № 1 и № 2:
+       *  пока перечень действий был вторым источником, тело с русскими строками и английской кнопкой собиралось
+       *  молча, а сторожки сверяли лишь объявления `lang` и `text_version`). */
+      readonly show: IntentShow;
     }
   | {
       readonly kind: "questions";
       readonly draft_id: string;
       readonly questions: readonly [IntentQuestion, ...IntentQuestion[]];
-      /** язык, на котором собраны тексты вопросов */
-      readonly lang: UiLang;
+      readonly show: IntentShow;
     }
   | { readonly kind: "phrase_empty" };
 
@@ -219,7 +235,7 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
     // `id` вопроса — код поля: экран связывает ответ с полем кодом, а не текстом. Текст приходит готовым, на языке
     // запроса (К3); пустой текст — ошибка сборки, а не вопрос без слов.
     const questions = missing.map((code) => {
-      const text = deps.questionText(code);
+      const text = questionTextFor(deps.texts, deps.lang)(code);
       if (typeof text !== "string" || text.trim() === "") throw new Error(`intent: у вопроса ${code} нет текста`);
       return { id: code, text } satisfies IntentQuestion;
     });
@@ -228,7 +244,12 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
     // единого вопроса — это ветка карточки, и тип тела § 5.1 такого не допускает (ревью К4 № 2).
     const [first, ...rest] = questions;
     if (first === undefined) throw new Error("intent: ветка вопросов без вопросов");
-    return { kind: "questions", draft_id: draftId, questions: [first, ...rest], lang: deps.lang };
+    return {
+      kind: "questions",
+      draft_id: draftId,
+      questions: [first, ...rest],
+      show: { lang: deps.lang, texts: deps.texts },
+    };
   }
 
   // `missing` пуст — значит заявлены все пять полей, и шаблон полный. Это сужение делается **проверкой полей**, а не
@@ -250,7 +271,12 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
   // Строки — **до** записи: порт строк бросает по замыслу (валюта вне таблицы ISO 4217, срок не по форме), и запись о
   // собравшейся карточке рядом с исключением читалась бы на разборе как удача, а черновик остался бы в хранилище под
   // выданным `draft_id` (находка ревью К3 Б1; тот же приём, что В4 в К2 — журнал последним).
-  const lines = deps.lines(draft);
+  const lines = linesFor(draft, {
+    lang: deps.lang,
+    texts: deps.texts,
+    money: deps.money,
+    timeZone: deps.timeZone,
+  });
 
   deps.store.put(draftId, draft);
   journal([]);
@@ -272,6 +298,6 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
       lines,
     },
     questions: [],
-    lang: deps.lang,
+    show: { lang: deps.lang, texts: deps.texts },
   };
 }

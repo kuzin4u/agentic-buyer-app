@@ -11,24 +11,24 @@
 //
 // Чего здесь нет: кода отказа на негодное тело (`phrase_empty`) — коды `/ui` заводит К5 (`INTENT_DRAFT_INVALID`,
 // Р-1650), поэтому исход отдаётся как есть, а код и статус приставляет сервис метода.
-import type { UiAction, UiLang, UiView } from "../contract/ui-v1/common.js";
+import type { UiAction, UiView } from "../contract/ui-v1/common.js";
 import type { IntentDraftResponse } from "../contract/ui-v1/methods.js";
 import { viewOf, type ShownPayload } from "../contract/ui-v1/shown-hash.js";
-import type { DraftOutcome } from "./draft.js";
-import type { IntentTexts } from "./texts.js";
+import type { DraftOutcome, IntentShow } from "./draft.js";
 
 /** То, что человек видел, — для расчёта хэша и для своей копии карточки (правило 1): сервер пересчитывает хэш по
- *  **своей** копии, ни одного значения из тела запроса в расчёт не берёт. */
-export function shownOf(texts: IntentTexts, card: IntentDraftResponse["card"]): ShownPayload {
-  // Карточки нет — значит и показывать нечего: хэш по пустому месту был бы хэшем, который ничего не доказывает.
-  if (card === null) throw new Error("intent: показанного нет — карточка не собрана");
-  return { text_version: texts.text_version, card };
+ *  **своей** копии, ни одного значения из тела запроса в расчёт не берёт.
+ *  Принимает **исход сборки целиком**, а не карточку с версией по отдельности: произвольная строка версии рядом с
+ *  карточкой — это та самая дверь, через которую хэш начинает заверять тексты, которых человеку не показывали
+ *  (К4а, повторное ревью К4 № 2). Собрать такую пару снаружи больше нечем. */
+export function shownOf(outcome: Extract<DraftOutcome, { kind: "card" }>): ShownPayload {
+  return { text_version: outcome.show.texts.text_version, card: outcome.card };
 }
 
 export interface ResponseDeps {
-  readonly lang: UiLang;
-  readonly texts: IntentTexts;
-  /** идентификатор своей копии показанного: по нему сервер находит карточку, чей хэш сверяет (§ 3, правило 1) */
+  /** идентификатор своей копии показанного: по нему сервер находит карточку, чей хэш сверяет (§ 3, правило 1).
+   *  Ни языка, ни текстов здесь больше нет: подпись действия берётся из **того же** показа, что и карточка
+   *  (`outcome.show`), и подать их врозь нечем — сторожки-сравнения для этого не нужны (К4а, находка № 1). */
   readonly viewId: (draftId: string) => string;
 }
 
@@ -42,8 +42,8 @@ export type DraftBodyOutcome =
 
 /** Действие «Сохранить поручение». Подпись — всегда, доступность — по тому, остались ли вопросы; `why_disabled`
  *  непустой ровно тогда, когда действие недоступно (§ 3 «Действие с объяснением недоступного»). */
-function submitAction(enabled: boolean, deps: ResponseDeps): UiAction {
-  const { lang, texts } = deps;
+function submitAction(enabled: boolean, show: IntentShow): UiAction {
+  const { lang, texts } = show;
   return {
     enabled,
     label: texts.actions.submit_label[lang],
@@ -54,11 +54,6 @@ function submitAction(enabled: boolean, deps: ResponseDeps): UiAction {
 export function draftBody(outcome: DraftOutcome, deps: ResponseDeps): DraftBodyOutcome {
   if (outcome.kind === "phrase_empty") return { ok: false, reason: "phrase_empty" };
 
-  // Язык показанного — один на тело: карточка с английской кнопкой и русскими строками была бы показанным, которого
-  // человек целиком не читал, и хэш считался бы по нему же (находка ревью К4 № 3). Это дефект сборки, а не отказ.
-  if (outcome.lang !== deps.lang)
-    throw new Error(`intent: язык карточки (${outcome.lang}) и язык действия (${deps.lang}) разошлись`);
-
   if (outcome.kind === "questions")
     return {
       ok: true,
@@ -67,19 +62,25 @@ export function draftBody(outcome: DraftOutcome, deps: ResponseDeps): DraftBodyO
         // Ни карточки, ни хэша: подписывать нечего, пока человек не ответил (Р-1666).
         card: null,
         questions: outcome.questions,
-        actions: { submit: submitAction(false, deps) },
+        actions: { submit: submitAction(false, outcome.show) },
         view: null,
       },
     };
 
-  const view: UiView = viewOf(deps.viewId(outcome.draft_id), shownOf(deps.texts, outcome.card));
+  // `view_id` — своей копии показанного; форма проверяется здесь, потому что по нему К5 ищет показанное, и пустое
+  // или чужое значение видно только на разборе, когда искать уже поздно (замечание повторного ревью К4 № 4).
+  const viewId = deps.viewId(outcome.draft_id);
+  if (!/^vw_[A-Za-z0-9_-]+$/.test(viewId))
+    throw new Error(`intent: сервер выдал идентификатор показанного не в форме vw_…: ${viewId}`);
+
+  const view: UiView = viewOf(viewId, shownOf(outcome));
   return {
     ok: true,
     body: {
       draft_id: outcome.draft_id,
       card: outcome.card,
       questions: [],
-      actions: { submit: submitAction(true, deps) },
+      actions: { submit: submitAction(true, outcome.show) },
       view,
     },
   };
