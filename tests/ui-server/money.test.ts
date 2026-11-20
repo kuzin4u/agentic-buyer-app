@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { ISO4217_MINOR_UNITS } from "../../src/iso4217.js";
+import { formatMoneyText } from "../../src/money.js";
 import { formatUiMoney, purchaseResponse, UI_LANGS, UI_TEXT, type CorePurchase } from "../../src/ui-server/index.js";
 
 /** Пробел в выводе `Intl` — неразрывный и может быть узким: сравниваем по значащим знакам, а не по виду пробела.
@@ -77,11 +78,25 @@ test("таблица ISO 4217 одна на монитор и на /ui/v1 — в
   // местах по-разному (находка ревью К4 № 3).
   const table = readFileSync("src/iso4217.ts", "utf8");
   expect(table).toContain("ISO4217_MINOR_UNITS");
-  for (const file of ["src/ui-server/money.ts", "src/demo/money.ts"]) {
+  for (const file of ["src/money.ts", "src/demo/money.ts"]) {
     const text = readFileSync(file, "utf8");
     expect(text, file).toContain("ISO4217_MINOR_UNITS");
     expect(text, file).toMatch(/from "\.\.?\/(\.\.\/)?iso4217\.js"/);
     // Своего перечня знаков у потребителя нет: ни объявления таблицы, ни «по умолчанию два знака».
     expect(text, file).not.toMatch(/MINOR_UNITS\s*[:=]\s*\{/);
   }
+});
+
+test("показ суммы один на всё приложение: в src/money.ts, и второй функции нет (Р-1667)", () => {
+  // Окно А (П-К4) показывает сумму через порт `MoneyText` и из `src/ui-server/` импортировать не может по границе.
+  // Пока показ жил в сервере, у приложения появилась бы вторая функция показа — и одна величина печаталась бы в двух
+  // местах по-разному.
+  const neutral = readFileSync("src/money.ts", "utf8");
+  expect(neutral).toContain("Intl.NumberFormat");
+  // В сервере остаётся только привязка к типам контракта: своего `Intl` там больше нет.
+  const server = readFileSync("src/ui-server/money.ts", "utf8");
+  expect(server).not.toContain("Intl.NumberFormat");
+  expect(server).toContain('from "../money.js"');
+  // Поведение от переноса не изменилось — обе ошибки и обе локали те же (проверки выше вызывают `formatUiMoney`).
+  expect(formatUiMoney({ amount: 632_000, currency: "RUB" }, "ru")).toBe(formatMoneyText({ amount: 632_000, currency: "RUB" }, "ru"));
 });
