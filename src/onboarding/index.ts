@@ -1,5 +1,18 @@
 // ИН-П1 «знакомство, условия, согласия» (решение П34) — внешняя поверхность модуля.
-// Запись согласия — кирпич К2, сервисы § 5.17–§ 5.19 — К3 и К4, экраны П1 и П3 — К5.
+// Сервисы § 5.17–§ 5.19 — кирпичи К3 и К4, экраны П1 и П3 — К5.
+// Поверхность собрана **целиком**, как у образца (`src/principles/index.ts`): в К2 шапка обещала запись согласия, а
+// экспортов не было, и потребители ходили глубоким импортом (находка ревью К2 № 10).
+export type {
+  ConsentAcceptedEntry,
+  ConsentJournal,
+  ConsentStore,
+  ConsentView,
+  RecordConsentDeps,
+  SignedConsent,
+} from "./consent.js";
+
+export { FIRST_CONSENT_NO, allRequiredAccepted, createConsentStore, nextConsentVersion, recordConsent } from "./consent.js";
+
 export type {
   AgentModel,
   AgentModelId,
