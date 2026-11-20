@@ -20,6 +20,7 @@ import { feedChunk } from "./feed.js";
 import { langOf, t } from "./lang.js";
 import { RepeatStore } from "./idempotency.js";
 import type { UiCorePort } from "./port.js";
+import { claimsSignedBy, createProvenance, type Provenance, type ProvenanceOptions } from "./provenance.js";
 import { purchaseResponse } from "./purchase.js";
 import { createShellHandler, type ShellHandler, type ShellOptions } from "./shell.js";
 
@@ -31,6 +32,7 @@ export * from "./idempotency.js";
 export * from "./lang.js";
 export * from "./money.js";
 export * from "./port.js";
+export * from "./provenance.js";
 export * from "./purchase.js";
 export * from "./session.js";
 export * from "./shell.js";
@@ -74,6 +76,14 @@ export interface UiServerOptions {
    * не нужна, и нечитаемой зависимости от каталога сборки у них нет.
    */
   readonly shell?: ShellOptions;
+  /**
+   * Признак «кто нажал» (П26, кирпич К5): вне режима прогона тестов сервер ставит `human`, в режиме признак
+   * обязателен. Не передан — режима нет, то есть `human`.
+   *
+   * Настройкой, а не выводом по месту: признак уходит в журнал покупки и в акт, и решать его должен тот, кто поднял
+   * стенд, а не маршрут.
+   */
+  readonly provenance?: ProvenanceOptions;
 }
 
 /** Готовый ответ маршрутизатора. */
@@ -122,7 +132,10 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
   const fallback: UiLang = o.defaultLang ?? "ru";
   const repeats = o.repeats ?? new RepeatStore();
   const hosts: ReadonlySet<string> = new Set(o.hosts ?? []);
-  const shell: ShellHandler | null = o.shell === undefined ? null : createShellHandler(o.shell, HEADERS);
+  // Собирается **при создании обработчика**: негодная настройка провенанса не должна доживать до запроса (К5).
+  const signedBy: Provenance = createProvenance(o.provenance ?? { faults: false });
+  // Признак уходит и в словарь каркаса: человек должен видеть, что подпись здесь делает не он (К6, П5 п. 3).
+  const shell: ShellHandler | null = o.shell === undefined ? null : createShellHandler(o.shell, HEADERS, signedBy);
 
   const send = (res: ServerResponse, a: Answer, extra: Readonly<Record<string, string>> = {}): void => {
     if (res.writableEnded || res.headersSent) return;
@@ -174,6 +187,9 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         let check;
         try {
           const body: unknown = raw.length === 0 ? null : JSON.parse(raw);
+          // Экран не говорит, кто нажал (К5, П26): тело с полем `by` — негодное тело, а не тело с лишним полем.
+          // Проверка стоит **до** памяти повторов: отклонённое тело не должно запоминаться как ответ на ключ.
+          if (claimsSignedBy(body)) return send(res, { status: 400, type: TEXT_TYPE, body: t(lang, "http.bad_request") });
           check = repeats.check(req.headers[IDEMPOTENCY_HEADER.toLowerCase()] as string | undefined, owner, {
             method,
             path,

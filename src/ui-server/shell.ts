@@ -23,10 +23,11 @@ import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname } from "node:path";
 import { parseBrand, type Brand } from "../brand.js";
-import { UI_STEPS, type UiLang, type UiRetryClass, type UiStep } from "../contract/ui-v1/index.js";
+import { UI_STEPS, type UiLang, type UiRetryClass, type UiSignedBy, type UiStep } from "../contract/ui-v1/index.js";
 import { PARTIES, PARTY_LABEL, type Party } from "../pult/rules89.js";
 import { BOOT_KEYS, bootAttr } from "./boot-text.js";
 import { t, UI_LANGS, type Phrase } from "./lang.js";
+import type { Provenance } from "./provenance.js";
 import type { Sessions } from "./session.js";
 
 /**
@@ -91,6 +92,12 @@ export const SHELL_TEXT = {
   // под кнопкой, а по правилу 3 причину недоступности называет сервер — она переехала в `action.stop.not_yet`
   // (`lang.ts`, кирпич К3а). Мёртвую строку словаря убираем сразу: оставленная, она позже была бы подхвачена «по
   // смыслу» и разошлась с решением сервера (находка ревью К3б № 6).
+  // ── Кто подписывает (П26, П5 п. 3; кирпич К6) ──
+  /** подпись здесь делает **прогон тестов**, а не человек: человек должен видеть это на экране, а не только в записи
+   *  журнала — акты уходят в НСПК, где «не человек» и «прогон» читаются по-разному (П26 доп. 2) */
+  "signed.test": { ru: "Подписано прогоном тестов, не вами", en: "Signed by the test run, not by you" },
+  /** подпись делает эмулятор клиента демо-стенда (`DEMO_FAULTS=1`, режим «Авто», П5) */
+  "signed.emulator": { ru: "Подписано эмулятором клиента, не вами", en: "Signed by the client emulator, not by you" },
   "error.title": { ru: "Действие не выполнено", en: "The action did not complete" },
   "action.retry": { ru: "Повторить", en: "Retry" },
   "lang.switch": { ru: "Язык", en: "Language" },
@@ -153,12 +160,21 @@ export interface ShellData {
   readonly parties: Readonly<Record<Party, string>>;
   readonly text: Readonly<Record<ShellTextKey, string>>;
   readonly retry: Readonly<Record<UiRetryClass, string>>;
+  /**
+   * Кто поставит подпись, если нажать прямо сейчас (П26, кирпичи К5 и К6).
+   *
+   * Отдаётся **сервером**, а не выводится экраном: признак знает тот, кто поднял стенд. Не `human` — значит подпись
+   * здесь делает прогон или эмулятор, и человек должен видеть это на экране, а не только в журнале (П5 п. 3, П26;
+   * строка STATUS «Признак „кто нажал“ видно только в журнале» — находка ревью К1.3 № 8).
+   */
+  readonly signed_by: UiSignedBy;
 }
 
 const st = (lang: UiLang, key: ShellTextKey): string => SHELL_TEXT[key][lang];
 
-/** Данные каркаса на языке запроса. Ни одной величины здесь не вычисляется — это перекладка словарей и конфигурации. */
-export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean): ShellData {
+/** Данные каркаса на языке запроса. Ни одной величины здесь не вычисляется — это перекладка словарей, конфигурации и
+ *  признака «кто нажал» от сервера. */
+export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean, signedBy: UiSignedBy = "human"): ShellData {
   const text = Object.fromEntries((Object.keys(SHELL_TEXT) as ShellTextKey[]).map((k) => [k, st(lang, k)])) as Record<
     ShellTextKey,
     string
@@ -181,6 +197,7 @@ export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean): ShellDa
       after_human: st(lang, "retry.after_human"),
       never: st(lang, "retry.never"),
     },
+    signed_by: signedBy,
   };
 }
 
@@ -280,7 +297,7 @@ export type ShellHandler = (req: IncomingMessage, res: ServerResponse, u: URL, l
  * Все ответы — с теми же заголовками, что у `/ui/v1` (их передаёт вызывающий через `headers`): набор заголовков в двух
  * местах расходился бы молча — это была находка ревью К2 № 9.
  */
-export function createShellHandler(o: ShellOptions, headers: Readonly<Record<string, string>>): ShellHandler {
+export function createShellHandler(o: ShellOptions, headers: Readonly<Record<string, string>>, signedBy: Provenance): ShellHandler {
   // Язык приходит аргументом от сервера `/ui/v1` (`langOf`): своего умолчания у раздачи нет — иначе страница и ответы
   // контракта могли бы разойтись в языке.
   const dist = o.distDir ?? "dist/ui";
@@ -357,7 +374,7 @@ export function createShellHandler(o: ShellOptions, headers: Readonly<Record<str
         return logo === null ? http(res, 404, lang, "http.not_found") : send(res, 200, logoType, logo);
       case "/ui/shell":
         if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.no_session");
-        return send(res, 200, "application/json; charset=utf-8", JSON.stringify(shellData(lang, brand, logo !== null)));
+        return send(res, 200, "application/json; charset=utf-8", JSON.stringify(shellData(lang, brand, logo !== null, signedBy())));
       default:
         // Адрес попал в `known`, но своей ветки не получил: это ошибка сборки раздачи, и отдавать по нему словарь «по
         // умолчанию» нельзя — новый маршрут начал бы молча отвечать чужим содержимым (находка ревью К3а № 7).
