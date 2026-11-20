@@ -15,7 +15,7 @@
 // **Чего здесь нет.** Строки-пояснения `lines` — К3 (здесь карточка отдаёт пустой перечень). `view` и `actions.submit`
 // с `why_disabled` — К4. `POST /ui/v1/intent`, перевод в `MandateDraft` ядра и код отказа на негодное тело — К5.
 // Пределы, остаток и допустимость валюты не считаются и здесь (инвариант 2, правило 3 К-Б).
-import type { UiInstant } from "../contract/ui-v1/common.js";
+import type { UiInstant, UiLang } from "../contract/ui-v1/common.js";
 import type { IntentCard, IntentQuestion } from "../contract/ui-v1/methods.js";
 import { DRAFT_KEYS, checkDraft, type DraftField, type IntentDraft } from "./model.js";
 
@@ -86,6 +86,10 @@ export function createIntentDraftStore(): IntentDraftStore {
 }
 
 export interface DraftDeps {
+  /** язык этого показа: на нём приходят и вопросы, и строки-пояснения. Язык назван **в исходе**, чтобы тело § 5.1
+   *  нельзя было собрать из русской карточки и английской кнопки — два независимых языка в одном показанном
+   *  (находка ревью К4 № 3) */
+  readonly lang: UiLang;
   /** шаблон этого поручения; фразу он не разбирает (до ВР-5 её не разбирает никто) */
   readonly template: IntentTemplate;
   /** текст вопроса на языке запроса — данными `config/` (К3); умолчания у текста нет */
@@ -117,8 +121,16 @@ export type DraftOutcome =
       readonly draft: IntentDraft;
       readonly card: IntentCard;
       readonly questions: readonly [];
+      /** язык, на котором собраны строки карточки */
+      readonly lang: UiLang;
     }
-  | { readonly kind: "questions"; readonly draft_id: string; readonly questions: readonly IntentQuestion[] }
+  | {
+      readonly kind: "questions";
+      readonly draft_id: string;
+      readonly questions: readonly [IntentQuestion, ...IntentQuestion[]];
+      /** язык, на котором собраны тексты вопросов */
+      readonly lang: UiLang;
+    }
   | { readonly kind: "phrase_empty" };
 
 /** Разделители **внутри** цифрового ряда, которые его не разрывают: пробелы любого вида (включая неразрывный — он
@@ -212,7 +224,11 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
       return { id: code, text } satisfies IntentQuestion;
     });
     journal(missing);
-    return { kind: "questions", draft_id: draftId, questions };
+    // Перечень непустой по условию ветки (`missing.length > 0`), но типу это надо сказать: ветка вопросов без
+    // единого вопроса — это ветка карточки, и тип тела § 5.1 такого не допускает (ревью К4 № 2).
+    const [first, ...rest] = questions;
+    if (first === undefined) throw new Error("intent: ветка вопросов без вопросов");
+    return { kind: "questions", draft_id: draftId, questions: [first, ...rest], lang: deps.lang };
   }
 
   // `missing` пуст — значит заявлены все пять полей, и шаблон полный. Это сужение делается **проверкой полей**, а не
@@ -256,5 +272,6 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
       lines,
     },
     questions: [],
+    lang: deps.lang,
   };
 }

@@ -137,7 +137,19 @@ describe("К3: тексты карточки — данными в `config/`", (
     });
 
     it("лишнее поле верхнего уровня", () => {
-      expect(() => parseIntentTexts(broken((r) => (r["actions"] = {})))).toThrow(/intent\.actions: лишнее поле/);
+      // `actions` — законный раздел с К4, поэтому «лишнее» проверяется на разделе, которого в файле нет.
+      expect(() => parseIntentTexts(broken((r) => (r["brand"] = {})))).toThrow(/intent\.brand: лишнее поле/);
+    });
+
+    it("лишний ключ действия и пропавший ключ действия", () => {
+      expect(() =>
+        parseIntentTexts(broken((r) => ((r["actions"] as Record<string, unknown>)["cancel_label"] = { ru: "и", en: "and" }))),
+      ).toThrow(/ключа нет в перечне/);
+      // Сверяется **текст своей** ошибки разбора, а не любой с этим путём: иначе случай прошёл бы и при падении по
+      // другой причине (ревью К4 № 7).
+      expect(() =>
+        parseIntentTexts(broken((r) => delete (r["actions"] as Record<string, unknown>)["submit_label"])),
+      ).toThrow("intent.actions.submit_label: ожидается объект");
     });
 
     it("пустой или пропавший `text_version`", () => {

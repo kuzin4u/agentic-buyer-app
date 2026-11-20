@@ -17,6 +17,8 @@ import {
   UI_ERROR_STATUS,
   UI_SIGNED_BY,
   UI_V1_BASE,
+  type IntentCard,
+  type IntentDraftResponse,
   type UiMoney,
   type UiRetryClass,
 } from "../../src/contract/ui-v1/index.js";
@@ -52,6 +54,80 @@ describe("К2.4 п. 1: деньги — только парой (§ 3 «День
     // @ts-expect-error — смена ключа подписи агента принадлежит серверу, не экрану
     const bad: UiRetryClass = "new_key";
     expect(bad).toBe("new_key");
+  });
+});
+
+/** Р-1666 (решение владельца 20.11, 17:07): в § 5.1 либо карточка с `view` и пустыми вопросами, либо вопросы без
+ *  карточки и без `view`. Проверяется **компиляцией**, а не комментарием: тела собирает и сервер ИН-0 окна Б, и
+ *  запрещённое тело должно ломать сборку (ревью К4 № 2). */
+describe("Р-1666: тело § 5.1 — либо карточка, либо вопросы", () => {
+  const card: IntentCard = {
+    subject: "хлеб",
+    limit: { amount: 100_000, currency: "RUB" },
+    valid_to: "2026-11-27T09:00:00.000Z",
+    merchants: { count: 1, labels: ["Масса Мадре (MER-7001)"] },
+    confirmation_mode: "IMMEDIATE",
+    lines: [{ code: "LIMIT", text: "Не больше 1 000,00 ₽ за всё поручение" }],
+  };
+  const view = { view_id: "vw_k4", text_version: "u1-card@1.0", hash: `sha256:${"a".repeat(64)}` };
+  const submit = { enabled: true, label: "Сохранить поручение", why_disabled: null };
+
+  it("карточка с `view` и пустыми вопросами — годится", () => {
+    const body: IntentDraftResponse = { draft_id: "drf_1", card, questions: [], actions: { submit }, view };
+    expect(body.card).not.toBeNull();
+  });
+
+  it("вопросы без карточки и без `view` — годятся", () => {
+    const body: IntentDraftResponse = {
+      draft_id: "drf_2",
+      card: null,
+      questions: [{ id: "limit", text: "Сколько денег не больше?" }],
+      actions: { submit: { enabled: false, label: "Сохранить поручение", why_disabled: "Ответьте на вопросы" } },
+      view: null,
+    };
+    expect(body.view).toBeNull();
+  });
+
+  it("карточка вместе с непустыми вопросами типом не допускается", () => {
+    // @ts-expect-error — есть карточка, значит вопросов не осталось (Р-1666)
+    const body: IntentDraftResponse = {
+      draft_id: "drf_3",
+      card,
+      questions: [{ id: "limit", text: "Сколько денег не больше?" }],
+      actions: { submit },
+      view,
+    };
+    expect(body.draft_id).toBe("drf_3");
+  });
+
+  it("карточка без `view` типом не допускается: хэш считается только по полной карточке", () => {
+    // @ts-expect-error — карточка подтверждается, значит у неё есть `view` с хэшем (правило 1)
+    const body: IntentDraftResponse = { draft_id: "drf_4", card, questions: [], actions: { submit }, view: null };
+    expect(body.draft_id).toBe("drf_4");
+  });
+
+  it("`view` без карточки типом не допускается: хэш по пустому месту ничего не доказывает", () => {
+    // @ts-expect-error — нет карточки, значит нет и показанного, по которому считается хэш
+    const body: IntentDraftResponse = {
+      draft_id: "drf_5",
+      card: null,
+      questions: [{ id: "limit", text: "Сколько денег не больше?" }],
+      actions: { submit },
+      view,
+    };
+    expect(body.draft_id).toBe("drf_5");
+  });
+
+  it("ветка вопросов без единого вопроса типом не допускается — это ветка карточки", () => {
+    // @ts-expect-error — пустой перечень вопросов означает собранную карточку, а её тут нет
+    const body: IntentDraftResponse = {
+      draft_id: "drf_6",
+      card: null,
+      questions: [],
+      actions: { submit },
+      view: null,
+    };
+    expect(body.draft_id).toBe("drf_6");
   });
 });
 
@@ -98,6 +174,35 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     for (const field of ["notes", "readonly on", "locked_id"]) expect(body, field).toContain(field);
     const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
     for (const field of ["notes", '"on"', "locked_id"]) expect(docSection, field).not.toContain(field);
+  });
+
+  /** `card` и `view` § 5.1 — необязательные при непустых `questions` (решение владельца 20.11, 17:07, Р-1666;
+   *  К-Б v1.1 выпускает чат). В документе v1.0 они обязательны: в примере § 5.1 стоит полная карточка и
+   *  `"questions": []`, а слова `null` у них нет. Выйдет v1.1 — ожидание «в документе этого нет» станет красным, и
+   *  строка отсюда уйдёт. */
+  it("`card` и `view` § 5.1 допускают `null` в модуле, а в документе v1.0 — ещё нет", () => {
+    const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
+    const section = methods.slice(methods.indexOf("export type IntentDraftResponse"));
+    const body = section.slice(0, section.indexOf("\n\n"));
+    // Два тела, а не одно с необязательными полями: карточка идёт с пустыми вопросами и с `view`, ветка вопросов —
+    // без карточки и без `view` (ревью К4 № 2).
+    expect(body).toContain("card: IntentCard");
+    expect(body).toContain("questions: readonly []");
+    expect(body).toContain("card: null");
+    expect(body).toContain("view: null");
+    expect(body).toContain("questions: readonly [IntentQuestion, ...IntentQuestion[]]");
+    // Сторожок якорится на **версию документа**, а не на буквальный `"card": null`: v1.1 может описать правило
+    // прозой или через `card?`, и ожидание по тексту примера осталось бы зелёным, не дав обещанного сигнала «пора
+    // убрать строку» (находка ревью К4 № 5). Пришёл другой файл контракта — этот случай красный, и перечень
+    // пересобирается по нему.
+    expect(UI_CONTRACT_VERSION).toBe("1.0");
+    expect(doc).toContain("версия 1.0 от 18.11.2026");
+    // И, пока это v1.0: в § 5.1 стоит полная карточка и `"questions": []`, а `null` у `card` и `view` не упомянут
+    // (слово `null` в разделе есть — у `why_disabled`, это другое поле).
+    const docSection = doc.slice(doc.indexOf("## 5.1 "), doc.indexOf("## 5.2 "));
+    expect(docSection).not.toMatch(/"card"\s*:\s*null/);
+    expect(docSection).not.toMatch(/"view"\s*:\s*null/);
+    expect(docSection).toContain('"questions": []');
   });
 
   /** Признак «кто нажал» (П26): перечень закрыт константой, потому что уходит в подписанную версию, журнал и акт.

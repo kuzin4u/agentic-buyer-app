@@ -26,6 +26,16 @@
       "en": "Purchases go without separate confirmation, within the mandate limits"
     }
   },
+  "actions": {
+    "submit_label": {
+      "ru": "Сохранить поручение",
+      "en": "Save the mandate"
+    },
+    "submit_blocked_by_questions": {
+      "ru": "Ответьте на вопросы",
+      "en": "Answer the questions"
+    }
+  },
   "questions": {
     "subject": {
       "ru": "Что покупаем?",

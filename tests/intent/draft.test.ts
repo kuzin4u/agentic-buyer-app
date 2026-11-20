@@ -87,6 +87,7 @@ function deps(over: Partial<DraftDeps> = {}): DraftDeps & { readonly entries: In
   const entries: IntentDraftEntry[] = [];
   let no = 0;
   return {
+    lang: "ru",
     template: standTemplate(),
     questionText: (code) => QUESTION_TEXTS.ru[code],
     lines: (d) => linesFor(d, { lang: "ru", texts: TEXTS, money: MONEY_TEXT, timeZone: "Europe/Moscow" }),
@@ -180,6 +181,8 @@ describe("К2: уточняющие вопросы — чего шаблон н�
       kind: "questions",
       draft_id: "drf_k2_1",
       questions: [{ id: "confirmation_mode", text: "Подтверждать каждую покупку?" }],
+      // Язык показа назван в исходе: тело § 5.1 не собирается из русской карточки и английской кнопки (ревью К4 № 3).
+      lang: "ru",
     });
     // Ни карточки, ни черновика: нечего подписывать, пока человек не ответил.
     expect(d.store.get("drf_k2_1")).toBeNull();
