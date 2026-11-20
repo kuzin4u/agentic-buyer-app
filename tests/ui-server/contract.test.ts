@@ -123,7 +123,8 @@ test("правило 2: POST без сессии не пишет в память
         headers: { cookie: c, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
         body: JSON.stringify({ a: 1 }),
       });
-    expect((await send("")).status).toBe(UI_ERROR_STATUS.PURCHASE_NOT_FOUND);
+    // Без сессии — `SESSION_REQUIRED` (кирпич К7, Р-1665); до него здесь отдавался `PURCHASE_NOT_FOUND`.
+    expect((await send("")).status).toBe(UI_ERROR_STATUS.SESSION_REQUIRED);
     expect(repeats.size).toBe(0);
     expect((await send(cookie)).status).toBe(404);
     expect(repeats.size).toBe(1);
@@ -158,11 +159,21 @@ test("адрес, перестающий быть адресом покупки,
   expect(up.headers.get("content-type")).toContain("text/plain");
 });
 
-test("без сессии маршрут контракта не отличается от неизвестной покупки", async () => {
-  const mine = await get("/ui/v1/purchase/pur_000");
-  const none = await get("/ui/v1/purchase/pur_71", "");
-  expect(none.status).toBe(mine.status);
-  expect(await none.text()).toBe(await mine.text());
+test("без сессии — свой код SESSION_REQUIRED, и по нему всё равно не видно, есть ли покупка", async () => {
+  // Правило менялось решением владельца **Р-1665** (кирпич К7): прежде отсутствие сессии отвечало тем же
+  // `PURCHASE_NOT_FOUND`, и человеку на истёкшем входе называлась неверная причина. Теперь причина своя, но
+  // **неразличимость сохранена**: ответ один и тот же на живую покупку, чужую и неизвестный адрес.
+  const live = await get("/ui/v1/purchase/pur_71", "");
+  const alien = await get("/ui/v1/purchase/pur_92", "");
+  const unknown = await get("/ui/v1/offers", "");
+  expect(live.status).toBe(UI_ERROR_STATUS.SESSION_REQUIRED);
+  const body = await live.text();
+  for (const res of [alien, unknown]) {
+    expect(res.status).toBe(live.status);
+    expect(await res.text()).toBe(body);
+  }
+  // Полный разбор кода, класса повтора и всех причин отсутствия сессии — в `session-required.test.ts`.
+  expect(JSON.parse(body).error.code).toBe("SESSION_REQUIRED");
 });
 
 test("своя покупка: ответ § 5.3 с шагом из STEP_OF_STATE и без реквизитов", async () => {

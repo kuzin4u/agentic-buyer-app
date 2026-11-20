@@ -138,7 +138,9 @@
     <section class="box state" role="alert">
       <p>{bootLine(boot, fail)}</p>
       {#if needsPage(fail)}
-        <a class="as-button" href={pageHref()}>{boot["action.retry"]}</a>
+        <!-- «Открыть заново», а не «Повторить»: сессию выдаёт **страница**, и повтор того же чтения крутился бы без
+             выхода (кирпич К7, Р-1665). -->
+        <a class="as-button" href={pageHref()}>{boot["action.reopen"]}</a>
       {:else}
         <button type="button" onclick={() => void start()}>{boot["action.retry"]}</button>
       {/if}
@@ -230,7 +232,7 @@
       <section class="box state" role="alert">
         <p>{failLine(shell, fail)}</p>
         {#if needsPage(fail)}
-          <a class="as-button" href={pageHref()}>{shell.text["action.retry"]}</a>
+          <a class="as-button" href={pageHref()}>{shell.text["action.reopen"]}</a>
         {:else}
           <button type="button" onclick={() => void readPurchase()}>{shell.text["action.retry"]}</button>
         {/if}

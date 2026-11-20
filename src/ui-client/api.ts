@@ -60,6 +60,7 @@ export function mountBootText(host: HTMLElement): BootText {
     "state.broken": read("state.broken"),
     "state.no_session": read("state.no_session"),
     "action.retry": read("action.retry"),
+    "action.reopen": read("action.reopen"),
   };
 }
 
@@ -90,9 +91,11 @@ async function read<T>(url: string): Promise<Read<T>> {
     // Сети нет — это «нет связи», а не ошибка контракта: кода у неё не существует, и выдумывать его нельзя.
     return { ok: false, reason: "offline", error: null };
   }
-  // Сессии нет — отдельная причина и отдельное лечение: страница, а не повтор того же чтения. Статус проверяется до
-  // разбора тела: ответ на 403 служебный, `text/plain`.
-  if (res.status === 403) return { ok: false, reason: "no_session", error: null };
+  // Сессии нет — отдельная причина и отдельное лечение: открыть страницу заново, а не повторять то же чтение.
+  // **401** — код контракта `SESSION_REQUIRED` у маршрутов `/ui/v1` (кирпич К7, Р-1665); **403** — тот же случай у
+  // раздачи каркаса, где кодов контракта нет и ответ служебный (`text/plain`). Статус проверяется до разбора тела:
+  // причина одна, и тело для неё не нужно.
+  if (res.status === 401 || res.status === 403) return { ok: false, reason: "no_session", error: null };
   let body: unknown;
   try {
     body = await res.json();
