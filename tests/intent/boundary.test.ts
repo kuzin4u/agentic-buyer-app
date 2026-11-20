@@ -17,7 +17,9 @@ const INTENT = join(ROOT, "src/intent");
 const FORBIDDEN_PACKAGES = [/^agentic-ps-platform(\/|$)/, /^vitest(\/|$)/];
 
 /** Свои каталоги, которые модулю поручения ввозить нельзя: сборка стенда, экраны и пульт. */
-const FORBIDDEN_LOCAL = [/^src\/demo\//, /^src\/dashboards\//, /^src\/pult\//];
+/** `src/ui-server/` — файлы окна Б (ИН-0): окно А их не импортирует (указание владельца 20.11), и на этом стоит весь
+ *  К3 — показ суммы подаётся портом, а не берётся оттуда (ревью К3 З5). Граница закреплена здесь, а не комментарием. */
+const FORBIDDEN_LOCAL = [/^src\/demo\//, /^src\/dashboards\//, /^src\/pult\//, /^src\/ui-server\//, /^src\/ui-client\//];
 
 describe("граница src/intent (правило 1 планов: только через порт)", () => {
   const files = filesUnder(INTENT);
@@ -55,6 +57,7 @@ describe("граница src/intent (правило 1 планов: только
 
   it("проверка ловит подделку: импорт сборки стенда и пакета Платформы был бы красным", () => {
     expect(FORBIDDEN_LOCAL.some((re) => re.test("src/demo/scenarios.ts"))).toBe(true);
+    expect(FORBIDDEN_LOCAL.some((re) => re.test("src/ui-server/money.ts"))).toBe(true);
     expect(FORBIDDEN_PACKAGES.some((re) => re.test("agentic-ps-platform/fixtures"))).toBe(true);
     // А ядро — нет: домен и канонизация берутся у него.
     expect(FORBIDDEN_PACKAGES.some((re) => re.test("agentic-buyer-ref/src/shared/domain.js"))).toBe(false);

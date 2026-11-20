@@ -4,6 +4,7 @@
 // правило 3 К-Б). Банк профиль не подписывает; на Платформу и продавцу он не уходит.
 // Здесь только модель: подпись — `signature.ts` (К1.3), чтение для выбора — К1.4, сервис `/ui/v1/principles` — К1.5.
 // Маршрут и экран И-2 — ИН-0 окна Б.
+import { obj, str } from "../config-parse.js";
 import type { ShownHash, UiInstant, UiLang, UiPress, UiSignedBy } from "../contract/ui-v1/common.js";
 
 /** Опознаватель принципа, который уходит на экран (§ 5.14 К-Б, поле `items[].id`). */
@@ -236,16 +237,9 @@ const CODE = /^[A-Z][A-Z0-9_]*$/;
  *  было бы положить `"weight": 99` и ждать, что его кто-нибудь прочитает. Веса в перечне нет (П32, правка 6 канвы). */
 const ITEM_KEYS: readonly string[] = ["id", "code", "role", "text", "params", "scope"];
 
-function str(raw: Record<string, unknown>, key: string, where: string): string {
-  const v = raw[key];
-  if (typeof v !== "string" || v.trim() === "") throw new Error(`${where}.${key}: пустая строка`);
-  return v;
-}
-
-function obj(raw: unknown, where: string): Record<string, unknown> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${where}: ожидается объект`);
-  return raw as Record<string, unknown>;
-}
+// `obj` и `str` — общие примитивы разбора `config/` (`src/config-parse.ts`): их спрашивают и этот разбор, и разбор
+// текстов карточки поручения (К3 П-К4), а две копии расходятся по строгости молча (находка ревью К3 З6). Сообщения
+// об ошибке те же, что были здесь.
 
 /** Разбор перечня по умолчанию (`config/principles.default.json`). Перечень — **данные**, не код: тексты банка и
  *  состав установок меняются настройкой (инвариант 7 читается так же, как для бренда). Неверная форма — ошибка:

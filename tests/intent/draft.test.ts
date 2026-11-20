@@ -28,6 +28,15 @@ import {
   type IntentTemplate,
 } from "../../src/intent/draft.js";
 import { DRAFT_KEYS, type IntentDraft } from "../../src/intent/model.js";
+// Строки-пояснения — те же, что на стенде: разбор `config/intent.default.json` (К3), не фикстура в тесте.
+import { linesFor, parseIntentTexts } from "../../src/intent/texts.js";
+
+const TEXTS = parseIntentTexts(JSON.parse(readFileSync(new URL("../../config/intent.default.json", import.meta.url), "utf8")));
+
+/** Показ суммы — порт К3 (`MoneyText`): в приложении он один и живёт у окна Б (`formatUiMoney`,
+ *  `src/ui-server/money.ts`), поэтому здесь метка, а не формат. */
+const MONEY_TEXT = (m: { readonly amount: number; readonly currency: string }, lang: string): string =>
+  `«сумма ${m.amount} ${m.currency} на ${lang}»`;
 
 const NOW = "2026-11-20T09:00:00.000Z";
 const PHRASE = "хлеб на выходные, до 1000 ₽, один раз";
@@ -80,6 +89,7 @@ function deps(over: Partial<DraftDeps> = {}): DraftDeps & { readonly entries: In
   return {
     template: standTemplate(),
     questionText: (code) => QUESTION_TEXTS.ru[code],
+    lines: (d) => linesFor(d, { lang: "ru", texts: TEXTS, money: MONEY_TEXT, timeZone: "Europe/Moscow" }),
     store: createIntentDraftStore(),
     journal: { write: (entry) => entries.push(entry) },
     newDraftId: () => `drf_k2_${++no}`,
@@ -109,7 +119,15 @@ describe("К2: карточка из шаблона", () => {
         labels: MERCHANT_FIXTURES.map(merchantLabel),
       },
       confirmation_mode: "IMMEDIATE",
-      lines: [],
+      // Строки-пояснения приходят портом (К3). Ожидание записано **кодами по § 5.1**, а не вызовом того же
+      // `linesFor`: сравнение функции с собой зелено при любой её правке (ревью К3 З1; постановка, п. 67).
+      lines: [
+        { code: "SUBJECT", text: expect.stringContaining(DEMO_TEMPLATE_CARD.subject) as unknown as string },
+        { code: "LIMIT", text: expect.any(String) as unknown as string },
+        { code: "VALID_TO", text: expect.any(String) as unknown as string },
+        { code: "MERCHANTS", text: `Продавцов: ${MERCHANT_FIXTURES.length}` },
+        { code: "CONFIRMATION_IMMEDIATE", text: expect.any(String) as unknown as string },
+      ],
     });
     // Черновик — не карточка: продавцы списком идентификаторов, `lines` у него нет (К1).
     expect(d.store.get(out.draft_id)).toEqual({
@@ -131,9 +149,25 @@ describe("К2: карточка из шаблона", () => {
     expect(out.draft.merchants).toEqual(INTENT_CARD_SCOPE.scope);
   });
 
-  it("строки-пояснения К2 не выдумывает: перечень пуст, а не заполнен шаблонным текстом", () => {
-    const out = buildIntentDraft(PHRASE, deps());
-    expect(out.kind === "card" && out.card.lines).toEqual([]);
+  /** Строки К2 не выдумывает: он их не составляет и не правит, а берёт у порта. Проверяется подменой порта — так
+   *  видно, что на карточку уехало именно отданное, в том же порядке. */
+  it("строки-пояснения карточка берёт у порта, своих не добавляет", () => {
+    const given = [{ code: "LIMIT", text: "строка порта" }];
+    const out = buildIntentDraft(PHRASE, deps({ lines: () => given }));
+    expect(out.kind === "card" && out.card.lines).toEqual(given);
+  });
+
+  it("строки собираются по тому же черновику, который уехал в хранилище", () => {
+    let seen: unknown = null;
+    const d = deps({
+      lines: (draft) => {
+        seen = draft;
+        return [];
+      },
+    });
+    const out = buildIntentDraft(PHRASE, d);
+    expect(out.kind === "card" && out.draft).toBe(seen);
+    expect(out.kind === "card" && d.store.get(out.draft_id)).toBe(seen);
   });
 });
 
@@ -258,6 +292,20 @@ describe("К2: негодный шаблон — ошибка сборки, а �
     const noText = deps({ template: {}, questionText: () => "" });
     expect(() => buildIntentDraft(PHRASE, noText)).toThrow();
     expect(noText.entries).toEqual([]);
+  });
+
+  /** Порт строк бросает по замыслу К3 (валюта вне таблицы ISO 4217, срок не по форме, неизвестный пояс). Тогда ни
+   *  записи, ни черновика быть не должно: иначе в журнале осталась бы «карточка собралась целиком», а в хранилище —
+   *  черновик под выданным `draft_id` (ревью К3 Б1). */
+  it("порт строк бросил — ни записи в журнале, ни черновика в хранилище", () => {
+    const d = deps({
+      lines: () => {
+        throw new RangeError("сумма /ui/v1: валюты XXX нет в таблице ISO 4217");
+      },
+    });
+    expect(() => buildIntentDraft(PHRASE, d)).toThrow(/ISO 4217/);
+    expect(d.entries).toEqual([]);
+    expect(d.store.get("drf_k2_1")).toBeNull();
   });
 
   it("срок шаблона в прошлом — исключение с причиной от `checkDraft`", () => {

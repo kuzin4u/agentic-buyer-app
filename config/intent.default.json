@@ -1,0 +1,51 @@
+{
+  "text_version": "u1-card@1.0",
+  "lines": {
+    "SUBJECT": {
+      "ru": "Покупаем: {subject}",
+      "en": "Buying: {subject}"
+    },
+    "LIMIT": {
+      "ru": "Не больше {limit} за всё поручение",
+      "en": "No more than {limit} for the whole mandate"
+    },
+    "VALID_TO": {
+      "ru": "Действует до {valid_to}",
+      "en": "Valid until {valid_to}"
+    },
+    "MERCHANTS": {
+      "ru": "Продавцов: {count}",
+      "en": "Merchants: {count}"
+    },
+    "CONFIRMATION_IMMEDIATE": {
+      "ru": "Каждую покупку подтверждаете вы",
+      "en": "You confirm every purchase"
+    },
+    "CONFIRMATION_AUTONOMOUS": {
+      "ru": "Покупки идут без отдельного подтверждения, в пределах поручения",
+      "en": "Purchases go without separate confirmation, within the mandate limits"
+    }
+  },
+  "questions": {
+    "subject": {
+      "ru": "Что покупаем?",
+      "en": "What are we buying?"
+    },
+    "limit": {
+      "ru": "Сколько денег не больше — за всё поручение?",
+      "en": "What is the spending limit for the whole mandate?"
+    },
+    "valid_to": {
+      "ru": "До какого срока действует поручение?",
+      "en": "Until when is the mandate valid?"
+    },
+    "merchants": {
+      "ru": "У кого покупаем?",
+      "en": "Which merchants should the agent buy from?"
+    },
+    "confirmation_mode": {
+      "ru": "Подтверждать каждую покупку?",
+      "en": "Confirm every purchase?"
+    }
+  }
+}

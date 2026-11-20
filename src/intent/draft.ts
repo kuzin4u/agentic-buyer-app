@@ -90,6 +90,10 @@ export interface DraftDeps {
   readonly template: IntentTemplate;
   /** текст вопроса на языке запроса — данными `config/` (К3); умолчания у текста нет */
   readonly questionText: (code: IntentQuestionCode) => string;
+  /** строки-пояснения карточки на языке запроса — `linesFor` из `texts.ts` (К3): сумма и срок уже в виде текста по
+   *  валюте, языку и названному поясу; число продавцов `linesFor` берёт у самого черновика, поэтому отдельным
+   *  параметром оно не подаётся (находка ревью К3 В2) */
+  readonly lines: (draft: IntentDraft) => IntentCard["lines"];
   readonly store: IntentDraftStore;
   readonly journal: IntentJournal;
   /** `drf_…` — идентификатор черновика; его выдаёт сервер, а не экран */
@@ -227,6 +231,11 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
   const check = checkDraft(draft, at);
   if (!check.ok) throw new Error(`intent: шаблон дал негодный черновик: ${check.reason}`);
 
+  // Строки — **до** записи: порт строк бросает по замыслу (валюта вне таблицы ISO 4217, срок не по форме), и запись о
+  // собравшейся карточке рядом с исключением читалась бы на разборе как удача, а черновик остался бы в хранилище под
+  // выданным `draft_id` (находка ревью К3 Б1; тот же приём, что В4 в К2 — журнал последним).
+  const lines = deps.lines(draft);
+
   deps.store.put(draftId, draft);
   journal([]);
 
@@ -242,9 +251,9 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
       // не может сказать «продавцов: 3», когда в поручении их два.
       merchants: { count: merchants.length, labels: merchants.map((m) => m.label) },
       confirmation_mode: draft.confirmation_mode,
-      // Строки-пояснения заводит К3 — данными `config/` на двух языках. Пустой перечень здесь честнее выдуманной
-      // строки: карточка без пояснений читается, карточка с неверным пояснением — нет.
-      lines: [],
+      // Строки-пояснения — данными `config/` на двух языках (К3), и приходят готовыми: что покупаем, предел, срок,
+      // продавцы, режим подтверждения. Порядок строк — часть показанного и входит в хэш (правило 1).
+      lines,
     },
     questions: [],
   };
