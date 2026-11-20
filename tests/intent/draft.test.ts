@@ -118,13 +118,16 @@ describe("К2: карточка из шаблона", () => {
       ],
     });
     // Черновик — не карточка: продавцы списком идентификаторов, `lines` у него нет (К1).
-    expect(d.store.get(out.draft_id)).toEqual({
+    expect(d.store.get(out.draft_id)?.draft).toEqual({
       subject: DEMO_TEMPLATE_CARD.subject,
       limit: DEMO_TEMPLATE_CARD.limit,
       valid_to: "2026-11-27T09:00:00.000Z",
       merchants: MERCHANT_FIXTURES.map((f) => f.merchant_id),
       confirmation_mode: "IMMEDIATE",
     } satisfies IntentDraft);
+    // Рядом с черновиком лежит **показанное**: версия текстов и та же карточка, что уехала экрану. По нему К5
+    // пересчитает хэш своей копией, не воспроизводя язык, пояс и версию текстов (находка ревью К4 № 8).
+    expect(d.store.get(out.draft_id)?.shown).toEqual({ text_version: TEXTS.text_version, card: out.card });
   });
 
   it("число продавцов на карточке равно длине перечня в поручении — у поручения с одним продавцом тоже", () => {
@@ -155,7 +158,8 @@ describe("К2: карточка из шаблона", () => {
     const d = deps();
     const out = buildIntentDraft(PHRASE, d);
     if (out.kind !== "card") throw new Error("ожидалась карточка");
-    expect(d.store.get(out.draft_id)).toBe(out.draft);
+    expect(d.store.get(out.draft_id)?.draft).toBe(out.draft);
+    expect(d.store.get(out.draft_id)?.shown.card).toBe(out.card);
 
     const text = (code: "SUBJECT" | "LIMIT" | "MERCHANTS"): string | undefined =>
       out.card.lines.find((l) => l.code === code)?.text;

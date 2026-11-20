@@ -7,7 +7,8 @@ import type { UiErrorCode } from "../contract/ui-v1/errors.js";
 import type { IdempotencyKey } from "../contract/ui-v1/idempotency.js";
 import { isIdempotencyKey } from "../contract/ui-v1/idempotency.js";
 import type { ShownHash, UiInstant, UiPress, UiView } from "../contract/ui-v1/common.js";
-import { isUiDevice, isUiGesture } from "../contract/ui-v1/common.js";
+import { bodyFingerprint as uiBodyFingerprint } from "../contract/ui-v1/fingerprint.js";
+import { checkUiPress } from "../contract/ui-v1/press.js";
 import type { ShownPayload } from "../contract/ui-v1/shown-hash.js";
 import { showingHash, shownMatches, viewOf } from "../contract/ui-v1/shown-hash.js";
 import type {
@@ -128,38 +129,16 @@ export interface SignDeps {
   readonly by: () => SignedBy;
 }
 
-/** Версия формы отпечатка тела: входит в отпечаток, чтобы смена формы не выдала чужой повтор за свой. */
-const BODY_FINGERPRINT_VERSION = "principles.sign-body@1.0";
-
-/** Снимок тела как оно пришло — «сырые байты» этого слоя: ключи объектов по алфавиту (чтобы порядок ключей в JSON на
- *  «то же тело» не влиял), значения вне JSON — явными пометками, а не исключением.
- *  Нужен потому, что отпечаток считается **до** проверки формы: негодное тело тоже занимает ключ (решение владельца
- *  19.11, 18:20), а канонизация ядра на `undefined` в массиве, `NaN` или `Date` бросает `TypeError` — и маршрут отдал
- *  бы 500 вместо 400. */
-function rawDump(value: unknown): string {
-  if (value === undefined) return "u";
-  if (value === null) return "n";
-  if (typeof value === "number") return Number.isFinite(value) ? `d${value}` : `d!${String(value)}`;
-  if (typeof value === "boolean" || typeof value === "bigint") return `b${String(value)}`;
-  if (typeof value === "string") return `s${JSON.stringify(value)}`;
-  if (typeof value === "function" || typeof value === "symbol") return `x${typeof value}`;
-  if (Array.isArray(value)) return `[${value.map(rawDump).join(",")}]`;
-  const o = value as Record<string, unknown>;
-  const keys = Object.keys(o).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${rawDump(o[k])}`).join(",")}}`;
-}
-
-/** Отпечаток тела для правила 2. Хэш считает канонизация ядра (`showingHash`), та же, что считает хэш показанного —
- *  своей копии правила хэширования здесь нет (П30 доп. 1, П7 доп. 3); канонизируется **строка снимка**, поэтому
- *  негодное тело отпечаток получает так же, как годное. */
+/** Отпечаток тела для правила 2 — **общий** для всех `POST` (`src/contract/ui-v1/fingerprint.ts`): его же считает
+ *  отправка поручения на подпись (К5 П-К4), а две копии расходились бы молча (находка ревью К5 В1). Имя метода в
+ *  области отпечатка: один ключ, пришедший в два разных метода, повтором не считается. */
 export function bodyFingerprint(body: SignRequest): string {
-  return showingHash({ text_version: BODY_FINGERPRINT_VERSION, card: rawDump(body) });
+  return uiBodyFingerprint("principles.sign", body);
 }
 
 /** Поля тела и провенанса — ровно те, что в § 5.14 и § 3. Лишнее поле — негодное тело, а не «то же тело с
  *  примечанием»: иначе `{…, extra: 1}` считалось бы повтором (находка ревью К1.3 № 4). */
 const BODY_KEYS: readonly string[] = ["order", "shown_hash", "press"];
-const PRESS_KEYS: readonly string[] = ["at", "device", "text_version", "gesture"];
 
 /** **Форма** тела: то, что можно проверить, не зная ни карточки, ни перечня принципов. Идёт **до** отпечатка, иначе
  *  `order: 5` бросал бы `TypeError` наружу и маршрут отвечал бы 500 вместо 400 (находка ревью К1.3 № 3). */
@@ -168,17 +147,13 @@ function checkBodyShape(body: SignRequest): BodyProblem | null {
   for (const key of Object.keys(raw)) if (!BODY_KEYS.includes(key)) return { reason: "UNKNOWN_FIELD", field: key };
   if (!Array.isArray(body.order) || body.order.some((id) => typeof id !== "string")) return { reason: "ORDER_NOT_LIST" };
   if (typeof body.shown_hash !== "string") return { reason: "PRESS_INVALID", field: "shown_hash" };
-  const press = body.press as unknown;
-  if (press === undefined || press === null || typeof press !== "object") return { reason: "PRESS_MISSING" };
-  for (const key of Object.keys(press)) if (!PRESS_KEYS.includes(key)) return { reason: "UNKNOWN_FIELD", field: key };
-  const p = press as Record<string, unknown>;
-  for (const key of PRESS_KEYS) if (p[key] === undefined) return { reason: "PRESS_MISSING" };
-  if (typeof p["at"] !== "string" || p["at"] === "") return { reason: "PRESS_INVALID", field: "at" };
-  if (typeof p["text_version"] !== "string" || p["text_version"] === "")
-    return { reason: "PRESS_INVALID", field: "text_version" };
-  if (!isUiDevice(p["device"])) return { reason: "PRESS_INVALID", field: "device" };
-  if (!isUiGesture(p["gesture"])) return { reason: "PRESS_INVALID", field: "gesture" };
-  return null;
+  // Форма провенанса — **общая** проверка контракта (`src/contract/ui-v1/press.ts`): её же зовёт отправка поручения
+  // на подпись (К5 П-К4), а две копии разошлись бы молча (находка ревью К3 З6). Коды и тексты остаются здешними.
+  const press = checkUiPress(body.press);
+  if (press === null) return null;
+  if (press.kind === "missing") return { reason: "PRESS_MISSING" };
+  if (press.kind === "unknown_field") return { reason: "UNKNOWN_FIELD", field: press.field };
+  return { reason: "PRESS_INVALID", field: press.field };
 }
 
 /** Подпись порядка принципов. Порядок проверок важен и выбран так, чтобы каждый отказ был о своём: **форма →

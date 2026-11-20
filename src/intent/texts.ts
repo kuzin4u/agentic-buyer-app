@@ -52,15 +52,39 @@ export type Bilingual = Readonly<Record<UiLang, string>>;
 
 /** Тексты действия «Сохранить поручение» (§ 5.1, `actions.submit`): подпись кнопки и объяснение, почему она сейчас
  *  недоступна. Перечень закрытый — недоступное объясняется текстом, а не молчанием (К4), и текст не берётся по месту. */
-export const ACTION_TEXT_KEYS = ["submit_label", "submit_blocked_by_questions"] as const;
+export const ACTION_TEXT_KEYS = ["submit_label", "submit_blocked_by_questions", "sign_in_bank"] as const;
 
 export type ActionTextKey = (typeof ACTION_TEXT_KEYS)[number];
+
+/** Ключи текстов отказа — **по причине**, а не по коду (Р-1650, Р-1670): экрану уходит один код
+ *  `INTENT_DRAFT_INVALID` и готовый текст, а какая именно причина — видно только из текста. Соответствие
+ *  «причина → ключ» закрыто на компиляции в `src/intent/service.ts` (К5), перечень ключей — здесь. */
+export const ERROR_TEXT_KEYS = [
+  "phrase_empty",
+  "subject_empty",
+  "limit_form",
+  "limit_not_positive",
+  "valid_to_form",
+  "valid_to_past",
+  "merchants",
+  "confirmation_mode",
+  "body_form",
+  "press",
+  "shown_stale",
+  "not_found",
+  "step_not_allowed",
+  "idempotency_required",
+  "idempotency_conflict",
+] as const;
+
+export type ErrorTextKey = (typeof ERROR_TEXT_KEYS)[number];
 
 export interface IntentTexts {
   /** версия текстов карточки: входит в `view.text_version` и в хэш показанного (правило 1 К-Б) */
   readonly text_version: string;
   readonly lines: Readonly<Record<LineCode, Bilingual>>;
   readonly actions: Readonly<Record<ActionTextKey, Bilingual>>;
+  readonly errors: Readonly<Record<ErrorTextKey, Bilingual>>;
   readonly questions: Readonly<Record<DraftField, Bilingual>>;
 }
 
@@ -86,7 +110,7 @@ function bilingual(raw: unknown, where: string, slots: readonly string[]): Bilin
 export function parseIntentTexts(raw: unknown): IntentTexts {
   const r = obj(raw, "intent");
   for (const key of Object.keys(r))
-    if (!["text_version", "lines", "actions", "questions"].includes(key))
+    if (!["text_version", "lines", "errors", "actions", "questions"].includes(key))
       throw new Error(`intent.${key}: лишнее поле`);
 
   const rawLines = obj(r["lines"], "intent.lines");
@@ -94,6 +118,13 @@ export function parseIntentTexts(raw: unknown): IntentTexts {
     if (!(LINE_CODES as readonly string[]).includes(key)) throw new Error(`intent.lines.${key}: кода нет в перечне`);
   const lines = {} as Record<LineCode, Bilingual>;
   for (const code of LINE_CODES) lines[code] = bilingual(rawLines[code], `intent.lines.${code}`, LINE_SLOTS[code]);
+
+  const rawErrors = obj(r["errors"], "intent.errors");
+  for (const key of Object.keys(rawErrors))
+    if (!(ERROR_TEXT_KEYS as readonly string[]).includes(key))
+      throw new Error(`intent.errors.${key}: ключа нет в перечне`);
+  const errors = {} as Record<ErrorTextKey, Bilingual>;
+  for (const key of ERROR_TEXT_KEYS) errors[key] = bilingual(rawErrors[key], `intent.errors.${key}`, []);
 
   const rawActions = obj(r["actions"], "intent.actions");
   for (const key of Object.keys(rawActions))
@@ -110,7 +141,7 @@ export function parseIntentTexts(raw: unknown): IntentTexts {
   for (const field of DRAFT_KEYS)
     questions[field] = bilingual(rawQuestions[field], `intent.questions.${field}`, []);
 
-  return { text_version: str(r, "text_version", "intent"), lines, actions, questions };
+  return { text_version: str(r, "text_version", "intent"), lines, errors, actions, questions };
 }
 
 /** Показ суммы — **порт**, а не своя функция: она уже есть у окна Б (`formatUiMoney`, `src/ui-server/money.ts`, ИН-0

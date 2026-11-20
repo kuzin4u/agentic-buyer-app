@@ -41,7 +41,13 @@ export function shownMatches(shown: ShownPayload, got: string): boolean {
   return isShownHash(got) && got === showingHash(shown);
 }
 
+/** Форма идентификатора показанного: `vw_…`. Проверяется там, где `view` собирается, — по нему сервер находит свою
+ *  копию показанного, и чужое или пустое значение видно только на разборе, когда искать уже поздно (находка ревью К4
+ *  № 4, замечание повторного ревью К5 З6: у § 5.1 проверка была, у § 5.2 — нет). */
+export const isViewId = (s: unknown): s is string => typeof s === "string" && /^vw_[A-Za-z0-9_-]+$/.test(s);
+
 /** Объект `view` для карточки: идентификатор своей копии, версия текстов и хэш (§ 3, правило 1). */
 export function viewOf(viewId: string, shown: ShownPayload): UiView {
+  if (!isViewId(viewId)) throw new Error(`ui: идентификатор показанного не в форме vw_…: ${String(viewId)}`);
   return { view_id: viewId, text_version: shown.text_version, hash: showingHash(shown) };
 }

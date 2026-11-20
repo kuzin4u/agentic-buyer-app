@@ -13,7 +13,7 @@
 // Р-1650), поэтому исход отдаётся как есть, а код и статус приставляет сервис метода.
 import type { UiAction, UiView } from "../contract/ui-v1/common.js";
 import type { IntentDraftResponse } from "../contract/ui-v1/methods.js";
-import { viewOf, type ShownPayload } from "../contract/ui-v1/shown-hash.js";
+import { isViewId, viewOf, type ShownPayload } from "../contract/ui-v1/shown-hash.js";
 import type { DraftOutcome, IntentShow } from "./draft.js";
 
 /** То, что человек видел, — для расчёта хэша и для своей копии карточки (правило 1): сервер пересчитывает хэш по
@@ -22,7 +22,8 @@ import type { DraftOutcome, IntentShow } from "./draft.js";
  *  карточкой — это та самая дверь, через которую хэш начинает заверять тексты, которых человеку не показывали
  *  (К4а, повторное ревью К4 № 2). Собрать такую пару снаружи больше нечем. */
 export function shownOf(outcome: Extract<DraftOutcome, { kind: "card" }>): ShownPayload {
-  return { text_version: outcome.show.texts.text_version, card: outcome.card };
+  // Показанное **не собирается заново**: исход несёт тот самый объект, который лёг и в хранилище (З5).
+  return outcome.shown;
 }
 
 export interface ResponseDeps {
@@ -69,9 +70,10 @@ export function draftBody(outcome: DraftOutcome, deps: ResponseDeps): DraftBodyO
 
   // `view_id` — своей копии показанного; форма проверяется здесь, потому что по нему К5 ищет показанное, и пустое
   // или чужое значение видно только на разборе, когда искать уже поздно (замечание повторного ревью К4 № 4).
+  // Форма — **общая** проверка контракта (`isViewId`), а не второй регуляркой здесь: `viewOf` её и так требует, но
+  // свой текст ошибки называет место сборки (замечание повторного ревью К5 З6).
   const viewId = deps.viewId(outcome.draft_id);
-  if (!/^vw_[A-Za-z0-9_-]+$/.test(viewId))
-    throw new Error(`intent: сервер выдал идентификатор показанного не в форме vw_…: ${viewId}`);
+  if (!isViewId(viewId)) throw new Error(`intent: сервер выдал идентификатор показанного не в форме vw_…: ${viewId}`);
 
   const view: UiView = viewOf(viewId, shownOf(outcome));
   return {

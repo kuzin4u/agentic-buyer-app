@@ -17,6 +17,7 @@
 // Пределы, остаток и допустимость валюты не считаются и здесь (инвариант 2, правило 3 К-Б).
 import type { UiInstant, UiLang } from "../contract/ui-v1/common.js";
 import type { IntentCard, IntentQuestion } from "../contract/ui-v1/methods.js";
+import type { ShownPayload } from "../contract/ui-v1/shown-hash.js";
 import { DRAFT_KEYS, checkDraft, type DraftField, type IntentDraft } from "./model.js";
 import { linesFor, questionTextFor, type IntentTexts, type MoneyText } from "./texts.js";
 
@@ -67,20 +68,29 @@ export interface IntentJournal {
   write(entry: IntentDraftEntry): void;
 }
 
+/** Что сервер помнит о показе: черновик, который уедет ядру, и **показанное** — версия текстов и карточка, по которым
+ *  считался хэш (правило 1). Показанное хранится рядом с черновиком намеренно: иначе К5, чтобы пересчитать хэш «своей
+ *  копией», пришлось бы воспроизводить язык, пояс и версию текстов того же показа, и честная подпись получала бы
+ *  `SHOWN_STALE` (находка ревью К4 № 8). */
+export interface DraftRecord {
+  readonly draft: IntentDraft;
+  readonly shown: ShownPayload;
+}
+
 /** Хранение черновиков — **портом**, как состояние профиля принципов (`PrinciplesStore`): `draft_id` в § 5.1 выдаётся
- *  затем, чтобы К5 нашёл по нему **тот самый** черновик, который человек видел. Замены и удаления у порта нет. */
+ *  затем, чтобы К5 нашёл по нему **тот самый** показ, который человек видел. Замены и удаления у порта нет. */
 export interface IntentDraftStore {
-  put(draftId: string, draft: IntentDraft): void;
-  get(draftId: string): IntentDraft | null;
+  put(draftId: string, record: DraftRecord): void;
+  get(draftId: string): DraftRecord | null;
 }
 
 /** Состояние сервера в памяти процесса; снаружи виден только порт. */
 export function createIntentDraftStore(): IntentDraftStore {
-  const drafts = new Map<string, IntentDraft>();
+  const drafts = new Map<string, DraftRecord>();
   return {
-    put: (draftId, draft) => {
+    put: (draftId, record) => {
       if (drafts.has(draftId)) throw new Error(`intent: черновик ${draftId} уже выдан — замены у порта нет`);
-      drafts.set(draftId, draft);
+      drafts.set(draftId, record);
     },
     get: (draftId) => drafts.get(draftId) ?? null,
   };
@@ -140,6 +150,9 @@ export type DraftOutcome =
        *  пока перечень действий был вторым источником, тело с русскими строками и английской кнопкой собиралось
        *  молча, а сторожки сверяли лишь объявления `lang` и `text_version`). */
       readonly show: IntentShow;
+      /** Показанное — **один объект** на исход, хранилище и расчёт хэша: раньше его собирали дважды по одним данным,
+       *  и разойтись им было нечем только пока обе сборки совпадали (замечание повторного ревью К5 З5). */
+      readonly shown: ShownPayload;
     }
   | {
       readonly kind: "questions";
@@ -278,26 +291,34 @@ export function buildIntentDraft(phrase: unknown, deps: DraftDeps): DraftOutcome
     timeZone: deps.timeZone,
   });
 
-  deps.store.put(draftId, draft);
+  const card: IntentCard = {
+    subject: draft.subject,
+    limit: draft.limit,
+    valid_to: draft.valid_to,
+    // Число продавцов — длина перечня, который и уехал в поручение (повтор в нём отвергнут `checkDraft`): карточка
+    // не может сказать «продавцов: 3», когда в поручении их два.
+    merchants: { count: merchants.length, labels: merchants.map((m) => m.label) },
+    confirmation_mode: draft.confirmation_mode,
+    // Строки-пояснения — данными `config/` на двух языках (К3), и приходят готовыми: что покупаем, предел, срок,
+    // продавцы, режим подтверждения. Порядок строк — часть показанного и входит в хэш (правило 1).
+    lines,
+  };
+
+  // Вместе с черновиком запоминается **показанное**: по нему К5 пересчитает хэш своей копией (правило 1). Этот же
+  // объект уходит в исход — одна сборка на всех (З5).
+  const shown: ShownPayload = { text_version: deps.texts.text_version, card };
+  deps.store.put(draftId, { draft, shown });
   journal([]);
 
+  // Карточка в исходе — **та же**, что запомнена в показанном: один объект, а не две сборки по одним данным, иначе
+  // хэш и показанное разошлись бы при любой правке одной из них.
   return {
     kind: "card",
     draft_id: draftId,
     draft,
-    card: {
-      subject: draft.subject,
-      limit: draft.limit,
-      valid_to: draft.valid_to,
-      // Число продавцов — длина перечня, который и уехал в поручение (повтор в нём отвергнут `checkDraft`): карточка
-      // не может сказать «продавцов: 3», когда в поручении их два.
-      merchants: { count: merchants.length, labels: merchants.map((m) => m.label) },
-      confirmation_mode: draft.confirmation_mode,
-      // Строки-пояснения — данными `config/` на двух языках (К3), и приходят готовыми: что покупаем, предел, срок,
-      // продавцы, режим подтверждения. Порядок строк — часть показанного и входит в хэш (правило 1).
-      lines,
-    },
+    card,
     questions: [],
     show: { lang: deps.lang, texts: deps.texts },
+    shown,
   };
 }

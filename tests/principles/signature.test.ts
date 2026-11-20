@@ -32,7 +32,9 @@ const priceId = byRole(catalog, "price")?.id as string;
  *  **Версия текстов у карточки и у провенанса — одна и та же величина** (§ 3 контракта, пример: у `view` и у `press`
  *  один `u1-card@1.0`), поэтому здесь она одна, и её расхождение — отдельный случай ниже. */
 const CARD_TEXT_VERSION = "principles-card@1.0";
-const VIEW_ID = "viw_principles_1";
+/** Форма идентификатора показанного — `vw_…` (§ 3 контракта); в фикстурах стояло `viw_…`, формы, которой контракт не
+ *  определяет. Нашлось проверкой формы в `viewOf` (К5 П-К4). */
+const VIEW_ID = "vw_principles_1";
 const KEY_A = "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5";
 const KEY_B = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
