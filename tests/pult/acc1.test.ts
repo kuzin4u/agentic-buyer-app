@@ -22,6 +22,8 @@ import {
   type Acc1Record,
   type KnownNote,
 } from "../../src/pult/acc1.js";
+import { UI_SIGNED_BY } from "../../src/contract/ui-v1/common.js";
+import { REACTION_BY } from "../../src/demo/pult-act.js";
 import { PULT_ACTIONS } from "../../src/pult/actions.js";
 import { PULT } from "../../src/pult/phrases.js";
 import { PROTO_STATUSES } from "../../src/pult/protocol.js";
@@ -315,6 +317,26 @@ describe("Р-1553 (П8): время сборки — внутри акта", () 
         expect(last.filter((c, i) => i !== 5).join("")).toBe("");
       }
     }
+  });
+});
+
+describe("К0б П-К4 (П26 доп. 2, решение владельца 19.11, 22:55): два словаря провенанса — соответствие названо", () => {
+  // Абзац соответствия стоит в шапке `Acc1Opts` (`src/pult/acc1.ts`). Тест держит его правдой: разойдутся словари —
+  // покраснеет здесь, и абзац будет пересмотрен вместе с ними, а не останется устаревшим текстом рядом со сборкой.
+  // Перечни берутся из источников, литералом здесь не переписаны (Р-1511).
+  // Чего этот тест **не** держит: закрытость самих перечней — она у их носителей (`tests/contract/ui-v1.test.ts`,
+  // «`by` — закрытый перечень из трёх значений», и `tests/demo/pult-actions.test.ts`), и состав акта. Связь теста с
+  // абзацем держится только именем `describe`: уедет абзац — тест об этом не узнает, и это принято осознанно
+  // (находка своего ревью К0б № 4), иначе пришлось бы сверять текст комментария, а это проверка текста, а не правила.
+  it("`test` — в обоих перечнях; человек у пульта `operator`, у `/ui` `human` плюс `emulator`; `human` пульт не принимает", () => {
+    expect(REACTION_BY).toContain("test");
+    expect(UI_SIGNED_BY).toContain("test");
+    expect(REACTION_BY).toContain("operator");
+    expect(UI_SIGNED_BY).toContain("human");
+    expect(UI_SIGNED_BY).toContain("emulator");
+    expect(REACTION_BY as readonly string[]).not.toContain("human");
+    expect(REACTION_BY as readonly string[]).not.toContain("emulator");
+    expect(UI_SIGNED_BY as readonly string[]).not.toContain("operator");
   });
 });
 

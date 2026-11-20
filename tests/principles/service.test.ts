@@ -103,6 +103,13 @@ describe("К1.5: `GET /ui/v1/principles` — тело по § 5.14", () => {
     expect(written[0]?.by).toBe("emulator");
   });
 
+  it("подпись прогоном видна в `GET` как `by: \"test\"`, отдельно от эмулятора (решение владельца 19.11, 22:10)", () => {
+    who = "test";
+    expect(postPrinciples(bodyFor(ids), KEY_A, "ru", deps()).ok).toBe(true);
+    expect(getPrinciplesView("ru", deps()).signed).toEqual({ at: "2026-11-19T11:00:05Z", version: "1", by: "test" });
+    expect(written[0]?.by).toBe("test");
+  });
+
   it("выключенные пункты — в конце, помечены `on: false`, ранги подряд", () => {
     postPrinciples(bodyFor([priceId, executionId]), KEY_A, "ru", deps());
     const body = getPrinciplesView("ru", deps());
