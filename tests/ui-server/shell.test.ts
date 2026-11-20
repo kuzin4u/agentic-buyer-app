@@ -335,9 +335,12 @@ test("ответ § 5.3 не несёт реквизитов и собирает
 test("данные словаря собираются одной функцией — без обращения к сети и к стенду", () => {
   // `shellData` вызывается напрямую: если бы в раздачу просочился стенд или адаптер ПАО, здесь была бы попытка связи.
   const brandLike = { name: "Б", colors: { primary: "#000000", onPrimary: "#FFFFFF", accent: "#123456" }, logo: "нет" };
-  const data = shellData("en", brandLike, false);
+  // Признак «кто нажал» передаётся **явно**: умолчания у него нет, иначе вызов, забывший аргумент, молча показал бы
+  // человека там, где подписывает прогон (находка ревью К5 № 2).
+  const data = shellData("en", brandLike, false, "human");
   expect(data.brand.name).toBe("Б");
   expect(data.brand.logo).toBeNull();
   expect(data.lang).toBe("en");
   expect(data.other).toBe("ru");
+  expect(data.signed_by).toBe("human");
 });

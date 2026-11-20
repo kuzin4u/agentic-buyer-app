@@ -26,7 +26,7 @@ import { parseBrand, type Brand } from "../brand.js";
 import { UI_STEPS, type UiLang, type UiRetryClass, type UiSignedBy, type UiStep } from "../contract/ui-v1/index.js";
 import { PARTIES, PARTY_LABEL, type Party } from "../pult/rules89.js";
 import { BOOT_KEYS, bootAttr } from "./boot-text.js";
-import { t, UI_LANGS, type Phrase } from "./lang.js";
+import { t, UI_LANGS, UI_TEXT, type Phrase } from "./lang.js";
 import type { Provenance } from "./provenance.js";
 import type { Sessions } from "./session.js";
 
@@ -86,10 +86,20 @@ export const SHELL_TEXT = {
   },
   /** каркас собран, но файла сборки нет — это чинится сборкой, а не перезагрузкой страницы */
   "state.not_built": { ru: "Каркас экрана не собран.", en: "The screen bundle is not built." },
-  /** действующей сессии нет: не было, истекла, закрыта или пришли две пары cookie с одним именем. Слова те же, что у
-   *  кода `SESSION_REQUIRED` сервера (`UI_TEXT`, кирпич К7): одна причина не должна называться на двух границах
-   *  по-разному */
-  "state.no_session": { ru: "Вход истёк — откройте страницу заново.", en: "Your session has expired — open the page again." },
+  /**
+   * Страницу просит тот, у кого **входа нет вовсе** (`ownerOnPage` вернул `null`): сессию выдавать некому, и совета
+   * «откройте заново» здесь быть не должно — открывать нечего, это был бы тупик и неверная причина, ровно те, ради
+   * которых делался К7 (находка ревью К7 № 1). Сюда человек попадает, только если запросил страницу без входа.
+   */
+  "state.no_session": { ru: "Вход не выполнен.", en: "Not signed in." },
+  /**
+   * Сессия приложения кончилась или её не было у **запроса экрана** — это другой случай и другое лечение: страницу
+   * выдаёт раздача каркаса, и её открытие создаёт сессию.
+   *
+   * Строка **не копия**, а та же пара, что у кода `SESSION_REQUIRED` сервера (`UI_TEXT`): одна причина на двух
+   * границах называется одними словами, и разойтись копиям нечем — ссылка, а не повтор текста (находка ревью К7 № 7).
+   */
+  "state.session_gone": UI_TEXT["error.SESSION_REQUIRED"],
   /** выход из «вход истёк» — **открыть страницу заново**: она выдаёт сессию. Не «повторить»: повтор того же запроса
    *  сессии не создаст и крутился бы без выхода (Р-1665) */
   "action.reopen": { ru: "Открыть заново", en: "Open again" },
@@ -103,6 +113,9 @@ export const SHELL_TEXT = {
   "signed.test": { ru: "Подписано прогоном тестов, не вами", en: "Signed by the test run, not by you" },
   /** подпись делает эмулятор клиента демо-стенда (`DEMO_FAULTS=1`, режим «Авто», П5) */
   "signed.emulator": { ru: "Подписано эмулятором клиента, не вами", en: "Signed by the client emulator, not by you" },
+  /** признак не `human`, но его имя экрану незнакомо (у контракта появилось новое значение): пометка всё равно
+   *  показывается — «не человек» это важная часть, и терять её молча нельзя (находка ревью К5 № 3) */
+  "signed.other": { ru: "Подписано не вами", en: "Signed, but not by you" },
   "error.title": { ru: "Действие не выполнено", en: "The action did not complete" },
   "action.retry": { ru: "Повторить", en: "Retry" },
   "lang.switch": { ru: "Язык", en: "Language" },
@@ -178,8 +191,11 @@ export interface ShellData {
 const st = (lang: UiLang, key: ShellTextKey): string => SHELL_TEXT[key][lang];
 
 /** Данные каркаса на языке запроса. Ни одной величины здесь не вычисляется — это перекладка словарей, конфигурации и
- *  признака «кто нажал» от сервера. */
-export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean, signedBy: UiSignedBy = "human"): ShellData {
+ *  признака «кто нажал» от сервера.
+ *
+ *  У `signedBy` **нет умолчания** (находка ревью К5 № 2): умолчание `"human"` означало бы, что вызов, забывший
+ *  аргумент, молча покажет человека там, где подписывает прогон, — а П26 дополнение 2 требует ровно обратного. */
+export function shellData(lang: UiLang, brand: Brand, hasLogo: boolean, signedBy: UiSignedBy): ShellData {
   const text = Object.fromEntries((Object.keys(SHELL_TEXT) as ShellTextKey[]).map((k) => [k, st(lang, k)])) as Record<
     ShellTextKey,
     string
@@ -372,13 +388,16 @@ export function createShellHandler(o: ShellOptions, headers: Readonly<Record<str
       // постучался на петлю, незачем (находки ревью К3 № 11 и К3а № 8: довод один и тот же для всех трёх адресов).
       // Страница сессию уже выдала, и cookie `SameSite=Strict` уходит со своими же подресурсами, поэтому свой экран
       // получает их всегда.
+      // Эти три адреса спрашивает **экран**, у которого сессия кончилась или не доехала, — и ему открытие страницы
+      // помогает (она выдаёт сессию), поэтому здесь `state.session_gone`, а не «вход не выполнен»: на странице
+      // (`/`, `/ui`) причина другая — входа нет вовсе (находка ревью К7 № 1).
       case "/brand.css":
-        return o.sessions.ownerOf(req) === null ? text(res, 403, lang, "state.no_session") : send(res, 200, "text/css; charset=utf-8", css);
+        return o.sessions.ownerOf(req) === null ? text(res, 403, lang, "state.session_gone") : send(res, 200, "text/css; charset=utf-8", css);
       case "/brand/logo":
-        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.no_session");
+        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.session_gone");
         return logo === null ? http(res, 404, lang, "http.not_found") : send(res, 200, logoType, logo);
       case "/ui/shell":
-        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.no_session");
+        if (o.sessions.ownerOf(req) === null) return text(res, 403, lang, "state.session_gone");
         return send(res, 200, "application/json; charset=utf-8", JSON.stringify(shellData(lang, brand, logo !== null, signedBy())));
       default:
         // Адрес попал в `known`, но своей ветки не получил: это ошибка сборки раздачи, и отдавать по нему словарь «по

@@ -16,6 +16,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { expect, test } from "vitest";
 import { UI_STEPS } from "../../src/contract/ui-v1/index.js";
+import { UI_SIGNED_BY } from "../../src/contract/ui-v1/index.js";
 import { BOOT_KEYS, bootAttr, bootDatasetKey, SHELL_PLACES, type ShellData } from "../../src/ui-server/index.js";
 import { mountBootText, mountLang, openFeed, type ReadFailPlain, type UiFailure } from "../../src/ui-client/api.js";
 import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, signedByLine, triggers } from "../../src/ui-client/view.js";
@@ -192,7 +193,7 @@ const shellLike = {
   text: {
     "state.offline": "нет связи",
     "state.broken": "сбой",
-    "state.no_session": "вход истёк",
+    "state.session_gone": "вход истёк",
     "state.soon": "скоро",
   },
   retry: { same_key: "повторите", after_fix: "исправьте", after_human: "решите заново", never: "не поможет" },
@@ -224,15 +225,36 @@ test("порядок чтений: признак «чтение идёт» сн
 
 // ── Пометка «подписывает не человек» (К6) ───────────────────────────────────────────────────────────────────────────
 
+const withBy = (signed_by: string, text: Record<string, string> = {}): ShellData =>
+  ({
+    ...shellLike,
+    signed_by,
+    text: {
+      ...shellLike.text,
+      "signed.test": "подписано прогоном",
+      "signed.emulator": "подписано эмулятором",
+      "signed.other": "подписано не вами",
+      ...text,
+    },
+  }) as unknown as ShellData;
+
 test("пометка о подписи: есть у прогона и эмулятора, нет у человека", () => {
-  const withBy = (signed_by: string, text: Record<string, string> = {}): ShellData =>
-    ({ ...shellLike, signed_by, text: { ...shellLike.text, "signed.test": "подписано прогоном", "signed.emulator": "подписано эмулятором", ...text } }) as unknown as ShellData;
   expect(signedByLine(withBy("test"))).toBe("подписано прогоном");
   expect(signedByLine(withBy("emulator"))).toBe("подписано эмулятором");
   // У человека пометки нет: лишняя пометка у обычного человека обесценила бы её там, где она важна.
   expect(signedByLine(withBy("human"))).toBeNull();
-  // Признак, которого экран не знает, пометки не даёт — врать про него нельзя.
-  expect(signedByLine(withBy("робот"))).toBeNull();
+});
+
+test("пометка не теряется у нового значения признака — перечень сверяется с источником", () => {
+  // Условие в экране — «не человек», а не перечисление поимённо: `test` уже появился решением владельца 19.11, и
+  // перечисление однажды потеряло бы пометку молча (находка ревью К5 № 3). Перечень берётся у контракта, не из копии.
+  for (const by of UI_SIGNED_BY) {
+    const line = signedByLine(withBy(by));
+    if (by === "human") expect(line, by).toBeNull();
+    else expect(line, by).toBeTruthy();
+  }
+  // Значение, которого экран не знает: пометка общая, но она **есть** — «не человек» терять нельзя.
+  expect(signedByLine(withBy("робот"))).toBe("подписано не вами");
 });
 
 test("пометка показывается в шапке и строками из словаря, а не словами экрана", () => {
@@ -240,8 +262,27 @@ test("пометка показывается в шапке и строками 
   // Пометка выводится до навигации и содержимого: она относится ко всему, что будет подписано в этом окне.
   expect(markup.indexOf("signedByLine(shell)")).toBeLessThan(markup.indexOf('aria-label={shell.text["nav.steps"]}'));
   expect(markup).toContain('<p class="signed" role="status">{signedByLine(shell)}</p>');
-  // Своих слов о том, кто подписывает, у экрана нет (правило 3).
-  for (const word of ["прогон", "эмулятор", "test run", "emulator"]) expect(markup.toLowerCase()).not.toContain(word.toLowerCase());
+  // Своих слов о том, кто подписывает, у экрана нет (правило 3). Проверяются оба файла клиента, где могла бы
+  // появиться формулировка; в `view.ts` слова `test` и `emulator` встречаются только как **значения признака** —
+  // имена из контракта, а не слова человеку (находка ревью К7 № 11).
+  for (const word of ["прогон", "эмулятор", "test run", "client emulator"]) {
+    expect(markup.toLowerCase(), word).not.toContain(word.toLowerCase());
+    expect(code("src/ui-client/view.ts").toLowerCase(), word).not.toContain(word.toLowerCase());
+  }
+});
+
+test("выход из «вход истёк» — «Открыть заново», а в прочих отказах «Повторить»", () => {
+  // Обещанное действие кирпича К7 (находка ревью К7 № 8): в разметке оно должно брать именно `action.reopen`, иначе
+  // человеку предлагалось бы повторить то, что повтором не лечится.
+  const markup = code("src/ui-client/App.svelte");
+  const reopen = [...markup.matchAll(/needsPage\(fail\)\}([\s\S]{0,400}?)\{:else\}([\s\S]{0,200}?)\{\/if\}/g)];
+  expect(reopen.length, "ветки needsPage в разметке не найдены").toBe(2);
+  for (const [, page, other] of reopen) {
+    expect(page).toContain("action.reopen");
+    expect(page).toContain("pageHref()");
+    expect(other).toContain("action.retry");
+    expect(other).not.toContain("action.reopen");
+  }
 });
 
 // ── Поводы перечитать покупку ───────────────────────────────────────────────────────────────────────────────────────
@@ -297,7 +338,9 @@ test("«Обновить» перечитывает всегда, а поток 
 });
 
 test("причины неудачи не смешиваются — ни до словаря, ни после", () => {
-  const boot = { "state.offline": "нет связи", "state.broken": "сбой", "state.no_session": "вход истёк", "action.retry": "повторить" };
+  // Ключ строки про вход — `state.session_gone`: на странице «вход не выполнен» это **другая** причина с другим
+  // лечением, и путать их нельзя (находка ревью К7 № 1).
+  const boot = { "state.offline": "нет связи", "state.broken": "сбой", "state.session_gone": "вход истёк", "action.retry": "повторить" };
   const cases: { fail: ReadFailPlain; boot: string; shell: string }[] = [
     { fail: { reason: "offline", error: null }, boot: "нет связи", shell: "нет связи" },
     { fail: { reason: "broken", error: null }, boot: "сбой", shell: "сбой" },

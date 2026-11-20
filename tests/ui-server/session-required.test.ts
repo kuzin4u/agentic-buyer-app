@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { IDEMPOTENCY_HEADER, UI_ERROR_STATUS } from "../../src/contract/ui-v1/index.js";
-import { PAO_IDEMPOTENCY_WINDOW_MS, RepeatStore, Sessions, startUiServer, type CorePurchase, type UiCorePort, type UiServer } from "../../src/ui-server/index.js";
+import { PAO_IDEMPOTENCY_WINDOW_MS, RepeatStore, Sessions, SHELL_TEXT, startUiServer, UI_TEXT, type CorePurchase, type UiCorePort, type UiServer } from "../../src/ui-server/index.js";
 
 const purchase = {
   purchase_id: "pur_71",
@@ -122,6 +122,33 @@ test("своя действующая сессия: чужая, неизвест
     expect(a.status).toBe(UI_ERROR_STATUS.PURCHASE_NOT_FOUND);
     expect(a.body).toBe(answers[0]!.body);
     expect(JSON.parse(a.body).error.code).toBe("PURCHASE_NOT_FOUND");
+  }
+});
+
+test("одна причина — одни слова на двух границах: 401 контракта и 403 раздачи", async () => {
+  // Строка раздачи — не копия текста кода, а **та же пара** (`SHELL_TEXT["state.session_gone"]` ссылается на
+  // `UI_TEXT["error.SESSION_REQUIRED"]`): копии разошлись бы на первой правке (находка ревью К7 № 7).
+  expect(SHELL_TEXT["state.session_gone"]).toBe(UI_TEXT["error.SESSION_REQUIRED"]);
+  // А на странице причина **другая** — входа нет вовсе, и совета «откройте заново» там быть не должно: открывать
+  // нечего (находка ревью К7 № 1).
+  expect(SHELL_TEXT["state.no_session"].ru).not.toContain("заново");
+  expect(SHELL_TEXT["state.session_gone"].ru).toContain("заново");
+  const noLogin = await startUiServer({
+    core,
+    owner: () => null,
+    shell: { brandPath: "config/brand.demo.json", sessions: new Sessions(), ownerOnPage: () => null },
+  });
+  try {
+    // Страница без входа: 403 со словами «вход не выполнен», без бесполезного совета.
+    const page = await fetch(`${noLogin.url}/ui`);
+    expect(page.status).toBe(403);
+    expect(await page.text()).toBe(SHELL_TEXT["state.no_session"].ru);
+    // Запрос экрана без сессии: те же слова, что у кода контракта, и совет уместен — страница выдаёт сессию.
+    const shell = await fetch(`${noLogin.url}/ui/shell`);
+    expect(shell.status).toBe(403);
+    expect(await shell.text()).toBe(SHELL_TEXT["state.session_gone"].ru);
+  } finally {
+    await noLogin.close();
   }
 });
 

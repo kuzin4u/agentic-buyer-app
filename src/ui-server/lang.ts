@@ -43,8 +43,8 @@ export const UI_TEXT = {
    *  повтором того же запроса. До этого кода человек на истёкшей сессии видел «Покупка не найдена», то есть неверную
    *  причину, и пути войти заново у него не было */
   "error.SESSION_REQUIRED": {
-    ru: "Вход истёк — откройте страницу заново.",
-    en: "Your session has expired — open the page again.",
+    ru: "Вход не выполнен или истёк — откройте страницу заново.",
+    en: "You are not signed in, or your session has expired — open the page again.",
   },
   /** код отказа ядра без своего текста: код экран показывает как есть, текст — общий */
   "error.unknown": {

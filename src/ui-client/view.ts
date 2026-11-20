@@ -60,11 +60,11 @@ export const labelOf = (shell: ShellData | null, id: string | null): string => {
 /** Строка о неудаче **до словаря** — из трёх строк, положенных на страницу сервером. Причины не смешиваются: «нет
  *  связи», «вход не выполнен» и «сбой на нашей стороне» это разные случаи (находки ревью К3 № 2 и К3а № 1). */
 export const bootLine = (boot: Readonly<Record<string, string>>, fail: ReadFailPlain): string =>
-  fail.reason === "offline" ? boot["state.offline"]! : fail.reason === "no_session" ? boot["state.no_session"]! : boot["state.broken"]!;
+  fail.reason === "offline" ? boot["state.offline"]! : fail.reason === "no_session" ? boot["state.session_gone"]! : boot["state.broken"]!;
 
 /** Та же строка **из словаря**, когда он уже доехал. Отказ по контракту сюда не попадает: у него своё тело § 3. */
 export const failLine = (shell: ShellData, fail: ReadFailPlain): string =>
-  fail.reason === "offline" ? shell.text["state.offline"] : fail.reason === "no_session" ? shell.text["state.no_session"] : shell.text["state.broken"];
+  fail.reason === "offline" ? shell.text["state.offline"] : fail.reason === "no_session" ? shell.text["state.session_gone"] : shell.text["state.broken"];
 
 /** «Что делать» по классу повтора. Класса нет в перечне сервера (ядро добавило новый) — показывается сам класс, а не
  *  пустое место (находка ревью К3а № 6). */
@@ -87,9 +87,13 @@ export const needsPage = (fail: ReadFail): boolean => fail.reason === "no_sessio
  * кто нажал, у экрана нет (правило 3). Признак, которого экран не знает, пометки не даёт — врать про него нельзя.
  */
 export const signedByLine = (shell: ShellData): string | null => {
+  // Условие **от человека**, а не перечнем не-человеческих значений: у контракта перечень закрытый, но он растёт
+  // (`test` появился решением владельца 19.11), и перечисление поимённо однажды потеряло бы пометку молча — это была
+  // находка ревью К5 № 3. Теперь незнакомое значение даёт общую пометку «подписано не вами», а не пустоту.
+  if (shell.signed_by === "human") return null;
   if (shell.signed_by === "test") return shell.text["signed.test"];
   if (shell.signed_by === "emulator") return shell.text["signed.emulator"];
-  return null;
+  return shell.text["signed.other"];
 };
 
 /**

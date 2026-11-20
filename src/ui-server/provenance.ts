@@ -16,9 +16,23 @@
 // окна А). Вторая копия перечня — ровно то, что К0а убрал.
 import { isUiSignedBy, type UiSignedBy } from "../contract/ui-v1/index.js";
 
+/**
+ * Режим прогона тестов по переменной окружения — **той самой** `DEMO_FAULTS=1` (П5).
+ *
+ * Пока режим был просто полем `faults`, разрешение на `emulator` и `test` держалось на добросовестности точки сборки:
+ * можно было поднять сервер с `faults: true` без всякого режима и пометить подпись прогоном (находка ревью К5 № 5).
+ * Теперь источник один и назван здесь.
+ *
+ * Разбор — та же форма, что у демо-стенда (`src/demo/flags.ts`): включено **только** значение «1», а «true», «0»,
+ * пустая строка и отсутствие переменной — выключено, без догадок. Своя копия, а не импорт: `src/demo/` это тестовый
+ * интерфейс (П2), и пользовательская граница на него не опирается; тождество форм закрыто тестом.
+ */
+export const faultsFromEnv = (env: Readonly<Record<string, string | undefined>> = process.env): boolean => env["DEMO_FAULTS"] === "1";
+
 export interface ProvenanceOptions {
-  /** Режим прогона тестов демо-стенда (`DEMO_FAULTS=1`, П5). */
-  readonly faults: boolean;
+  /** Режим прогона тестов демо-стенда. Не передан — читается из окружения (`DEMO_FAULTS=1`, `faultsFromEnv`): так
+   *  сборка сервера не может объявить режим, которого нет. Передаётся явно только в проверках. */
+  readonly faults?: boolean;
   /**
    * Кто нажал — **в режиме прогона тестов**. Обязателен при `faults: true` и не принимается вне режима.
    *
@@ -36,7 +50,8 @@ export type Provenance = () => UiSignedBy;
  * настройкой провенанса не должен подниматься вовсе.
  */
 export function createProvenance(o: ProvenanceOptions): Provenance {
-  if (!o.faults) {
+  const faults = o.faults ?? faultsFromEnv();
+  if (!faults) {
     if (o.by !== undefined) {
       throw new TypeError("провенанс /ui/v1: вне режима прогона тестов признак «кто нажал» не принимается — сервер ставит human (П26)");
     }
@@ -55,20 +70,19 @@ export function createProvenance(o: ProvenanceOptions): Provenance {
   };
 }
 
-/** Глубина обхода тела: провенанс лежит на первом-втором уровне (`press.by`), но искать его надо не по месту, а по
- *  имени — иначе хватило бы завернуть поле в лишний объект. Предел нужен, чтобы ссылающаяся на себя структура не
- *  зацикливала проверку. */
-const MAX_DEPTH = 6;
-
 /**
  * Есть ли в теле запроса поле `by` — то есть попытка экрана сказать, кто нажал.
  *
  * Проверяется **всё** тело, а не только ожидаемое место: поле `by` не бывает законным ни у одного метода `/ui/v1`
  * (в ответах признак приходит в `signed.by`, его ставит сервер), поэтому его появление где угодно — негодное тело.
+ *
+ * Предела глубины **нет** намеренно (находка ревью К5 № 6): он был поставлен «на случай структуры, ссылающейся на
+ * себя», но тело приходит из `JSON.parse`, где такой структуры не бывает, — зато поле `by` глубже предела проходило
+ * бы, и обещание «где угодно» не держалось. Размер тела ограничен раньше (`BODY_LIMIT`), поэтому глубина конечна.
  */
-export function claimsSignedBy(body: unknown, depth = 0): boolean {
-  if (depth > MAX_DEPTH || body === null || typeof body !== "object") return false;
-  if (Array.isArray(body)) return body.some((item) => claimsSignedBy(item, depth + 1));
+export function claimsSignedBy(body: unknown): boolean {
+  if (body === null || typeof body !== "object") return false;
+  if (Array.isArray(body)) return body.some((item) => claimsSignedBy(item));
   if (Object.prototype.hasOwnProperty.call(body, "by")) return true;
-  return Object.values(body).some((value) => claimsSignedBy(value, depth + 1));
+  return Object.values(body).some((value) => claimsSignedBy(value));
 }

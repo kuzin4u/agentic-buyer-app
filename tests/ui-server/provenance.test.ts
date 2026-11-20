@@ -5,9 +5,10 @@
 // вне режима нельзя пометить подпись не человеком; в режиме нельзя **не** пометить; из тела запроса признак не
 // берётся ни в каком режиме.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { IDEMPOTENCY_HEADER, UI_SIGNED_BY, type UiSignedBy } from "../../src/contract/ui-v1/index.js";
-import { claimsSignedBy, createProvenance, createUiHandler, RepeatStore, Sessions, startUiServer, type CorePurchase, type ShellData, type UiCorePort } from "../../src/ui-server/index.js";
+import { claimsSignedBy, createProvenance, createUiHandler, faultsFromEnv, RepeatStore, Sessions, startUiServer, type CorePurchase, type ShellData, type UiCorePort } from "../../src/ui-server/index.js";
 
 const core: UiCorePort = { purchase: async () => null as CorePurchase | null, subscribe: () => () => undefined };
 
@@ -45,6 +46,35 @@ test("негодная настройка не доживает до запро�
   expect(() => createUiHandler({ core, owner: () => "own_1" })).not.toThrow();
 });
 
+test("режим прогона — это переменная DEMO_FAULTS=1, а не поле в сборке (находка ревью К5 № 5)", () => {
+  // Пока режим был просто полем, разрешение на `emulator` и `test` держалось на добросовестности точки сборки: можно
+  // было поднять сервер «в режиме» без всякого режима и пометить подпись прогоном.
+  expect(faultsFromEnv({ DEMO_FAULTS: "1" })).toBe(true);
+  // Форма разбора — та же, что у демо-стенда (`envFlag`): включено только «1», без догадок.
+  for (const value of ["true", "0", "", "yes", undefined]) expect(faultsFromEnv({ DEMO_FAULTS: value })).toBe(false);
+  expect(faultsFromEnv({})).toBe(false);
+  const standForm = readFileSync("src/demo/flags.ts", "utf8");
+  expect(standForm).toContain('v === "1"');
+});
+
+test("без переменной окружения признак не принимается, даже если его передали", () => {
+  // Это и есть привязка: `faults` по умолчанию читается из окружения, и в обычном прогоне (переменной нет) провайдер
+  // признака — ошибка сборки.
+  const was = process.env["DEMO_FAULTS"];
+  delete process.env["DEMO_FAULTS"];
+  try {
+    expect(() => createProvenance({ by: () => "test" })).toThrow(TypeError);
+    expect(createProvenance({})()).toBe("human");
+    process.env["DEMO_FAULTS"] = "1";
+    // С переменной — обязателен, и принимается.
+    expect(() => createProvenance({})).toThrow(TypeError);
+    expect(createProvenance({ by: () => "test" })()).toBe("test");
+  } finally {
+    if (was === undefined) delete process.env["DEMO_FAULTS"];
+    else process.env["DEMO_FAULTS"] = was;
+  }
+});
+
 // ── Правило: из тела запроса признак не берётся ─────────────────────────────────────────────────────────────────────
 
 test.each([
@@ -53,6 +83,12 @@ test.each([
   { как: "глубже в объекте", body: { a: { b: { c: { by: "test" } } } } },
   { как: "в элементе перечня", body: { items: [{ code: "PRICE" }, { by: "emulator" }] } },
   { как: "со значением null", body: { by: null } },
+  {
+    как: "глубже прежнего предела в шесть уровней",
+    // Предел глубины снят (находка ревью К5 № 6): он обещал «где угодно», а на седьмом уровне поле проходило.
+    // Структуры, ссылающейся на себя, у `JSON.parse` не бывает, поэтому предел ничего не защищал.
+    body: JSON.parse(`${"{\"a\":".repeat(12)}{"by":"test"}${"}".repeat(12)}`) as unknown,
+  },
 ])("тело с полем by отклоняется: $как", ({ body }) => {
   // Поле `by` не бывает законным ни у одного метода `/ui/v1`: в ответах признак приходит в `signed.by`, и ставит его
   // сервер. Поэтому проверяется имя, а не место, — иначе хватило бы завернуть поле в лишний объект.

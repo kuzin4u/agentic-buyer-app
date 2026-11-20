@@ -11,7 +11,7 @@
 
 /** Ключи словаря `SHELL_TEXT`, которые уходят на страницу. Перечень закрытый: добавилась строка — добавилась и пара
  *  «ключ → атрибут», а не литерал по месту. */
-export const BOOT_KEYS = ["state.offline", "state.broken", "state.no_session", "action.retry", "action.reopen"] as const;
+export const BOOT_KEYS = ["state.offline", "state.broken", "state.session_gone", "action.retry", "action.reopen"] as const;
 
 export type BootKey = (typeof BOOT_KEYS)[number];
 
