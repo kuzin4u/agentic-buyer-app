@@ -342,10 +342,24 @@ export interface UiOperation {
 /** Запись об исполнении Платформы (`Fulfilment` ядра): `spent_position` экран **не пересчитывает** (инвариант 6 ядра,
  *  инвариант 2 приложения). `scope_check` вне перечня приходит как `{ other }`, и текст говорит «значение Платформы не
  *  опознано» — без догадки. */
+/** Почему значение Платформы не показано — **закрытый перечень** (решение владельца 22.11.2026, **Р-1707**; в § 5.8
+ *  входит выпуском v1.5). Пока одно значение: пришедшее значение по форме похоже на номер карты (инвариант 1, фильтр
+ *  `hasCardNumber`, R41). Просеивает **сервер**: экран ничего не прячет и не проверяет — он тогда считал бы (правило 3).
+ *  Это **не** причина отсутствия итога: `ORDER_ABSENCE_REASONS` не расширяется (Р-1695). */
+export const SCOPE_WITHHELD_REASONS = ["LOOKS_LIKE_CARD"] as const;
+
+export type ScopeWithheldReason = (typeof SCOPE_WITHHELD_REASONS)[number];
+
 export interface UiFulfilment {
   readonly final: UiMoney;
+  /** Значение Платформы как есть; **просеянное** значение не передаётся — тогда `other` равен `null`, а соседняя пара
+   *  `withheld` + `withheld_text` говорит, что значение было и почему его не показали (Р-1707). */
   readonly scope_check: ScopeCheck;
   readonly scope_text: string;
+  /** код непоказа значения; значение показано — `null` */
+  readonly withheld: ScopeWithheldReason | null;
+  /** готовый текст человеку рядом с кодом — форма пары `status` + `decline_text` и `reason` + `reason_text` */
+  readonly withheld_text: string | null;
   readonly spent_position: UiMoney;
   readonly at: UiInstant;
 }

@@ -133,6 +133,37 @@ describe("К4, пункт 3: неопознанное значение даёт 
       }
   });
 
+  it("К4а: похожее на номер карты просеивает **сервер** — уходит код непоказа и текст, а не значение", () => {
+    // Решение владельца 22.11.2026 (**Р-1707**): просеивает сервер, не экран — экран, который сам решает, что
+    // прятать, считал бы (правило 3 К-Б). Пара «код + готовый текст» — по образцу `status` + `decline_text` и
+    // `reason` + `reason_text` того же тела; в `ORDER_ABSENCE_REASONS` значение не добавлено: это причина непоказа
+    // значения, а не причина отсутствия итога (Р-1695).
+    const like = cardLikeNumber("7");
+    expect(hasCardNumber(like)).toBe(true);
+    for (const lang of LANGS) {
+      const r = read({ operation: operation({ fulfilment: fulfilment({ scopeCheck: { other: like } }) }) });
+      const body = orderBody(r, deps({ lang }));
+      // Значение не ушло ни в каком виде — ни в поле, ни в текст, ни где-то ещё в теле.
+      expect(hasCardNumber(JSON.stringify(body)), lang).toBe(false);
+      expect(body.fulfilment?.scope_check, lang).toEqual({ other: null });
+      // Вместо значения — код непоказа и готовый текст из `config/` на языке запроса.
+      expect(body.fulfilment?.withheld, lang).toBe("LOOKS_LIKE_CARD");
+      expect(body.fulfilment?.withheld_text, lang).toBe(texts.withheld.LOOKS_LIKE_CARD[lang]);
+      // Класс и его текст при этом прежние: «не распознал» от ядра — непоказ не меняет суждения о значении.
+      expect(body.fulfilment?.scope_text, lang).toBe(scopeTextOf("SCOPE_CHECK_UNRECOGNIZED", texts, lang));
+    }
+  });
+
+  it("К4а: обычное неопознанное значение уходит слово в слово от Платформы", () => {
+    // Вторая половина пары: просев срабатывает **только** на похожем на номер, а не на любом неизвестном значении.
+    for (const other of ["WEIRD_CODE", "HELD-9", "3 из 8", "2026-11-21"]) {
+      const body = orderBody(read({ operation: operation({ fulfilment: fulfilment({ scopeCheck: { other } }) }) }), deps());
+      expect(body.fulfilment?.scope_check, other).toEqual({ other });
+      expect(body.fulfilment?.withheld, other).toBeNull();
+      expect(body.fulfilment?.withheld_text, other).toBeNull();
+    }
+  });
+
   it("значение, **похожее на номер карты**, в журнал не идёт: там класс `OTHER`", () => {
     // Показ такого значения человеку — **вопрос владельцу**, заданный в PR (§ 5.8 требует «как есть», инвариант 1
     // запрещает реквизиты на экране): до ответа тестом он не закрепляется. Здесь проверяется то, что от ответа не

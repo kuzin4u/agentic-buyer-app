@@ -47,5 +47,11 @@
       "ru": "Суммы операции Платформа не сообщила",
       "en": "The Platform did not report the operation amount"
     }
+  },
+  "withheld": {
+    "LOOKS_LIKE_CARD": {
+      "ru": "Значение Платформы не показано: оно по форме похоже на номер карты",
+      "en": "The Platform value is not shown: by its form it looks like a card number"
+    }
   }
 }

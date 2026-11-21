@@ -9,6 +9,7 @@
 // П-3.2в: R20, R23, R25, R27, R31, R32, R47 — по журналу сбоев стенда (`standlog.ts`, В9), пометки «ПР» (`MARKED`) —
 // к R17, R18, R26, R37, R46, R47 (В8; решение владельца — PR #9 #pullrequestreview-5861020062); срок R31 — от «сейчас»,
 // переданного аргументом.
+import { hasCardNumber } from "../card-guard.js";
 import { FAULT_OUTCOMES } from "../dashboards/control.js";
 import { STOP_STEPS, type Interpretation } from "../dashboards/interpret.js";
 import { PULT, type Phrase } from "./phrases.js";
@@ -353,33 +354,11 @@ function raise(out: Partial<Record<CheckableCondition, CondResult>>, c: Checkabl
 const isEvent = (x: Interpretation, ref: string) => x.source === "pao_event" && x.ref === ref;
 const mid = (x: Interpretation) => x.ids?.mandate_id;
 
-const luhn = (d: string): boolean => {
-  let sum = 0;
-  for (let i = 0; i < d.length; i++) {
-    let n = d.charCodeAt(d.length - 1 - i) - 48;
-    if (i % 2 === 1) n = n * 2 > 9 ? n * 2 - 9 : n * 2;
-    sum += n;
-  }
-  return sum % 10 === 0;
-};
 
-/** Канонический UUID (8-4-4-4-12 hex) — идентификатор поручения стенда (`mnd_…`), не номер карты: группы из одних цифр,
- *  склеенные дефисом, иначе давали бы ложное R41 на настоящей шине (П-3.2б; ревью № 16). */
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-
-/** Номер карты: 13–19 цифр подряд (через пробел или дефис) с верной контрольной цифрой Луна. В каждом отрезке цифр
- *  проверяются все окна 13–19 цифр — номер рядом с другими цифрами («… 12:00», «шаг 3 …») не теряется (ревью П-3.2б № 3).
- *  Отрезок не начинается и не кончается рядом с буквой (хвосты шестнадцатеричных идентификаторов); UUID вырезаются.
- *  Значение не возвращается. */
-export function hasCardNumber(text: string): boolean {
-  const s = text.replace(UUID, " ");
-  for (const m of s.matchAll(/(?<![0-9A-Za-z])\d(?:[ -]?\d)+(?![0-9A-Za-z])/g)) {
-    const d = m[0].replace(/[ -]/g, "");
-    for (let len = 13; len <= Math.min(19, d.length); len++)
-      for (let from = 0; from + len <= d.length; from++) if (luhn(d.slice(from, from + len))) return true;
-  }
-  return false;
-}
+/** Фильтр «похоже на номер карты» живёт в **нейтральном** `src/card-guard.ts` с кирпича К4а Н-3: им просеивает записи
+ *  шины пульт и значение `scope_check` сервер итога (Р-1707), а `src/pult/` окну А импортировать нельзя по границе.
+ *  Здесь оставлено **имя** — чтобы вызовы пульта и его тесты не менялись; второй копии фильтра в приложении нет. */
+export { hasCardNumber };
 const leaks = (x: Interpretation) => [x.phrase.ru, x.phrase.en, ...Object.values(x.ids ?? {})].some((s) => typeof s === "string" && hasCardNumber(s));
 
 /** Фраза записи, похожей на номер карты (инвариант 1; ревью П-5.1 № 5). */

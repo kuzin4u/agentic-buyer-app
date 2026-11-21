@@ -12,7 +12,13 @@ import type { OperationStatus } from "agentic-buyer-ref/src/shared/domain.js";
 import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
 import { bilingual, obj, slotRe, str, type Bilingual } from "../config-parse.js";
 import type { UiLang } from "../contract/ui-v1/common.js";
-import { ORDER_ABSENCE_REASONS, type OrderAbsenceReason, type OrderResponse } from "../contract/ui-v1/methods.js";
+import {
+  ORDER_ABSENCE_REASONS,
+  SCOPE_WITHHELD_REASONS,
+  type OrderAbsenceReason,
+  type OrderResponse,
+  type ScopeWithheldReason,
+} from "../contract/ui-v1/methods.js";
 import type { OrderRead } from "./port.js";
 
 export type { Bilingual };
@@ -87,6 +93,8 @@ export interface OrderTexts {
   readonly outcomes: Readonly<Record<OutcomeCode, Bilingual>>;
   /** почему записи об исполнении или суммы нет — тексты закрытого перечня § 5.8 (Р-1695) */
   readonly reasons: Readonly<Record<OrderAbsenceReason, Bilingual>>;
+  /** почему значение Платформы не показано — тексты закрытого перечня (Р-1707) */
+  readonly withheld: Readonly<Record<ScopeWithheldReason, Bilingual>>;
 }
 
 /**
@@ -114,7 +122,7 @@ export function scopeTextOf(code: ScopeCode, texts: OrderTexts, lang: UiLang): s
   return human.ru;
 }
 
-const SECTIONS = ["sources", "scope_within", "scope_en", "outcomes", "reasons"] as const;
+const SECTIONS = ["sources", "scope_within", "scope_en", "outcomes", "reasons", "withheld"] as const;
 
 /** Раздел файла: ключи — ровно перечень кодов, ни пропуска, ни лишнего (Р-1511, приём К1.5 П-К1). Подстановок у этих
  *  текстов нет: это названия источника, класса и исхода, а не строки с величинами — величины показывает каркас. */
@@ -158,6 +166,7 @@ export function parseOrderTexts(raw: unknown): OrderTexts {
     scope_en,
     outcomes: section(r["outcomes"], "outcomes", OUTCOME_CODES),
     reasons: section(r["reasons"], "reasons", ORDER_ABSENCE_REASONS),
+    withheld: section(r["withheld"], "withheld", SCOPE_WITHHELD_REASONS),
   };
 }
 

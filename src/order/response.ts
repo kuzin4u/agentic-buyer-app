@@ -14,9 +14,10 @@
 // клиринга (это `scopeNotice` ядра, Р-1694) и не печатает суммы в строку «не списано» (это каркас портом, Р-1693).
 import { scopeNotice } from "agentic-buyer-ref/src/agent/operations/notice.js";
 import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
-import type { Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import type { Fulfilment, Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import { hasCardNumber } from "../card-guard.js";
 import type { UiLang } from "../contract/ui-v1/common.js";
-import type { OrderAbsenceReason, OrderResponse } from "../contract/ui-v1/methods.js";
+import type { OrderAbsenceReason, OrderResponse, ScopeWithheldReason } from "../contract/ui-v1/methods.js";
 import { stepOfState } from "../contract/ui-v1/steps.js";
 import type { OrderRead, ShellText } from "./port.js";
 import { isScopeCode, scopeTextOf, sourceOf, type OrderTexts, type ScopeCode } from "./texts.js";
@@ -63,6 +64,23 @@ export const absenceReasonOf = (operation: Operation): OrderAbsenceReason | null
 export const scopeCodeOfNotice = (notice: PurchaseNotice | null): ScopeCode =>
   notice === null ? "WITHIN_LIMITS" : isScopeCode(notice) ? notice : "SCOPE_CHECK_UNRECOGNIZED";
 
+/**
+ * Просеять значение `scope_check`, пришедшее от Платформы (решение владельца 22.11.2026, **Р-1707**).
+ *
+ * Просеивает **сервер**, а не экран: экран, который сам решает, что прятать, — это экран, который считает (правило 3
+ * К-Б). Похожее на номер ищет общий фильтр приложения `hasCardNumber` (R41, `src/card-guard.ts`) — своей регулярки и
+ * своего перечня здесь нет (Р-1511). Значение наружу не возвращается: функция отвечает только кодом непоказа.
+ *
+ * Просеивается **только** значение вне перечня (`{ other }`): известные классы — это коды ядра, в них цифр нет.
+ */
+export function withheldScope(fulfilment: Fulfilment | null): ScopeWithheldReason | null {
+  if (fulfilment === null) return null;
+  const s = fulfilment.scopeCheck;
+  if (typeof s !== "object" || s === null) return null;
+  const value = s.other;
+  return typeof value === "string" && hasCardNumber(value) ? "LOOKS_LIKE_CARD" : null;
+}
+
 /** Текст исхода операции человеку: отказ и отмена оплаты — в `operation.decline_text`, возврат — в `refund.text`.
  *  Причина Платформы (`declineReason`) наружу не идёт (см. `OUTCOME_CODES`). */
 const outcomeText = (operation: Operation, deps: OrderBodyDeps): string | null =>
@@ -81,6 +99,7 @@ export function orderBody(read: OrderRead, deps: OrderBodyDeps): OrderResponse {
   const operation = read.operation;
   const fulfilment = operation.fulfilment ?? null;
   const reason = absenceReasonOf(operation);
+  const withheld = withheldScope(fulfilment);
   // Шаг экрана — таблицей контракта (КТ-0), а не своим правилом: у приложения таблицы шагов нет (правило 3).
   // Линии пути числами в теле нет: см. комментарий у `OrderResponse` — числа для шагов использования не из источника.
   const step = stepOfState(read.state);
@@ -99,9 +118,12 @@ export function orderBody(read: OrderRead, deps: OrderBodyDeps): OrderResponse {
         ? null
         : {
             final: fulfilment.finalAmount,
-            // Значение Платформы переносится как есть, в том числе `{ other }`: догадки нет (П36 п. 5).
-            scope_check: fulfilment.scopeCheck,
+            // Значение Платформы переносится как есть, в том числе `{ other }`: догадки нет (П36 п. 5). Исключение
+            // одно — значение, похожее на номер карты: его просеивает **сервер** (Р-1707), см. `withheldScope`.
+            scope_check: withheld === null ? fulfilment.scopeCheck : { other: null },
             scope_text: scopeTextOf(scopeCodeOfNotice(scopeNotice(operation)), deps.texts, deps.lang),
+            withheld,
+            withheld_text: withheld === null ? null : deps.texts.withheld[withheld][deps.lang],
             // `spent_position` — величина Платформы: ни сложения, ни пересчёта (инвариант 6 ядра).
             spent_position: fulfilment.spentPosition,
             at: fulfilment.at,

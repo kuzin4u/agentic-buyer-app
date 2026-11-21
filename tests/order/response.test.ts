@@ -31,6 +31,9 @@ describe("К2: тело § 5.8 — из прочитанного", () => {
         final: { amount: 36_150, currency: "RUB" },
         scope_check: "WITHIN_LIMITS",
         scope_text: "В пределах поручения",
+        // Значение показано — пары непоказа нет (Р-1707, кирпич К4а).
+        withheld: null,
+        withheld_text: null,
         spent_position: { amount: 41_200, currency: "RUB" },
         at: "2026-11-21T18:05:00.000Z",
       },
