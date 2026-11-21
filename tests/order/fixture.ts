@@ -53,6 +53,7 @@ export const unsettled = (over: Partial<Operation> = {}): Operation =>
   operation({ status: "AUTHORIZED", fulfilment: null, ...over });
 
 export const read = (over: Partial<OrderRead> = {}): OrderRead => ({
+  purchase_id: "pur_2255",
   operation: operation(),
   checked_at: CHECKED_AT,
   state: "DONE",
