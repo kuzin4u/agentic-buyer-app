@@ -102,8 +102,31 @@ export interface ConsentAcceptedEntry {
   readonly received_at: UiInstant;
 }
 
+/**
+ * Запись журнала об **отказе** принять согласие (кирпич К4; находка ревью К4 № 7).
+ *
+ * Причина отказа (`reason`) экрану не уходит — ему хватает кода и готового текста (П32 дополнение 1), — но в журнале
+ * она нужна: иначе на разборе «человек жаловался, что не смог согласиться» нечего посмотреть. Прежде причина
+ * вычислялась и выбрасывалась, а комментарий обещал «для журнала и разбора» — обещание без поведения.
+ *
+ * Реквизитов, сумм и самого показанного текста здесь нет (инвариант 1): код отказа, причина, модель и провенанс.
+ */
+export interface ConsentRefusedEntry {
+  readonly event: "consent.refused";
+  readonly owner: string;
+  readonly code: string;
+  /** уточнение причины — для разбора, не для экрана */
+  readonly reason: string;
+  /** модель из тела, если она была по форме; иначе `null` */
+  readonly model: string | null;
+  readonly by: UiSignedBy;
+  readonly received_at: UiInstant;
+}
+
 export interface ConsentJournal {
   write(entry: ConsentAcceptedEntry): void;
+  /** Отказ пишется, когда исход определён, тем же журналом: удача и отказ читаются рядом. */
+  refused(entry: ConsentRefusedEntry): void;
 }
 
 /**

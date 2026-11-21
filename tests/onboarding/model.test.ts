@@ -76,13 +76,10 @@ describe("данные экранов знакомства: перечни по�
     // Перечень закреплён **литералом**, а не сравнением с самим собой: `catalog.errors` построен ровно из
     // `ONBOARDING_ERROR_KEYS`, и прежняя проверка была тождественно зелёной — она не поймала бы случай «код убрали из
     // перечня и из `config/` вместе», когда сервер § 5.18 отвечает 409 без текста человеку (находка ревью К1 № 3).
-    expect([...ONBOARDING_ERROR_KEYS]).toEqual([
-      "CONSENT_INVALID",
-      "MODEL_NOT_AVAILABLE",
-      "SHOWN_STALE",
-      "IDEMPOTENCY_REQUIRED",
-      "IDEMPOTENCY_CONFLICT",
-    ]);
+    // Два кода правила 2 (`IDEMPOTENCY_REQUIRED`, `IDEMPOTENCY_CONFLICT`) из перечня **убраны** кирпичом К4: их
+    // текст человеку отдаёт общий слой сервера, и копии в `config/` не читал никто — они уже разошлись пунктуацией
+    // (находка ревью К4 № 5). Один код — один текст.
+    expect([...ONBOARDING_ERROR_KEYS]).toEqual(["CONSENT_INVALID", "MODEL_NOT_AVAILABLE", "SHOWN_STALE"]);
     expect(Object.keys(catalog.errors).sort()).toEqual([...ONBOARDING_ERROR_KEYS].sort());
   });
 

@@ -5,6 +5,7 @@
 export type {
   ConsentAcceptedEntry,
   ConsentJournal,
+  ConsentRefusedEntry,
   ConsentStore,
   ConsentView,
   RecordConsentDeps,
@@ -13,9 +14,9 @@ export type {
 
 export { FIRST_CONSENT_NO, allRequiredAccepted, createConsentStore, nextConsentVersion, recordConsent } from "./consent.js";
 
-export type { OnboardingServiceDeps, TermsOutcome } from "./service.js";
+export type { ConsentOutcome, ConsentProblem, OnboardingServiceDeps, TermsCard, TermsOutcome, TermsShown } from "./service.js";
 
-export { getOnboarding, getOnboardingTerms, shownTerms, termsView } from "./service.js";
+export { getOnboarding, getOnboardingTerms, postConsent, shownTerms, termsView } from "./service.js";
 
 export type {
   AgentModel,

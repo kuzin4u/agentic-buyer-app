@@ -17,6 +17,7 @@ import {
   isUiErrorCode,
   UI_ERROR_STATUS,
   UI_RETRY,
+  uiErrorBody,
   type UiErrorBody,
   type UiFailureCode,
   type UiLang,
@@ -65,15 +66,10 @@ export function uiError(
   o: { readonly retry?: UiRetryClass; readonly text?: string; readonly view?: UiView | null } = {},
 ): UiErrorOut {
   const ui = isUiErrorCode(code);
+  // Тело собирает **общий** `uiErrorBody` контракта, а не этот маршрут: один сборщик на приложение (§ 3), иначе
+  // новое поле тела ошибки пришло бы не всем (находка ревью К4 № 4).
   return {
     status: ui ? UI_ERROR_STATUS[code] : CORE_STATUS,
-    body: {
-      error: {
-        code,
-        retry: o.retry ?? (ui ? UI_RETRY[code] : coreRetry(code)),
-        text: o.text ?? textOf(code, lang),
-        view: o.view ?? null,
-      },
-    },
+    body: uiErrorBody(code, o.retry ?? (ui ? UI_RETRY[code] : coreRetry(code)), o.text ?? textOf(code, lang), o.view ?? null),
   };
 }

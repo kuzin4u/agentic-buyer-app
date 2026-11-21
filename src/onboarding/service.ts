@@ -11,6 +11,8 @@
 // Чего здесь нет: записи согласия и правил HTTP — это кирпич К4 (`POST /ui/v1/consent`), и `view` этой карточки
 // сверяется там же по правилу 1.
 import type {
+  ConsentRequest,
+  ConsentResponse,
   OnboardingResponse,
   OnboardingTermsResponse,
   UiAction,
@@ -18,7 +20,18 @@ import type {
   UiLang,
   UiView,
 } from "../contract/ui-v1/index.js";
-import { UI_ERROR_STATUS, UI_RETRY, viewOf, type ShownPayload } from "../contract/ui-v1/index.js";
+import {
+  checkUiPress,
+  frozenShown,
+  isShownHash,
+  showingHash,
+  UI_ERROR_STATUS,
+  UI_RETRY,
+  uiErrorBody,
+  viewOf,
+  type ShownPayload,
+} from "../contract/ui-v1/index.js";
+import { allRequiredAccepted, recordConsent, type RecordConsentDeps, type SignedConsent } from "./consent.js";
 import { formatMoneyText } from "../money.js";
 import {
   AGENT_MODELS,
@@ -26,9 +39,11 @@ import {
   CONSENT_IDS,
   MONEY_PLACEHOLDER,
   isAgentModelId,
+  isConsentId,
   modelById,
   pathStepOf,
   type AgentModelId,
+  type ConsentId,
   type OnboardingCatalog,
   type OnboardingText,
 } from "./model.js";
@@ -156,6 +171,197 @@ export function shownTerms(model: AgentModelId, lang: UiLang, deps: OnboardingSe
  *  канонизация ядра (`showingHash`), а не экран и не своя копия правила. */
 export const termsView = (model: AgentModelId, lang: UiLang, deps: OnboardingServiceDeps): UiView =>
   viewOf(deps.viewId, shownTerms(model, lang, deps));
+
+// ── § 5.19 `POST /ui/v1/consent` — приём условий (кирпич К4) ─────────────────────────────────────────────────────────
+
+/**
+ * Почему негодное тело — **один** код экрану.
+ *
+ * `CONSENT_INVALID` отдаётся на все случаи негодного тела: неизвестный пункт, повтор пункта, отмечены не все
+ * обязательные, лишнее поле, негодный провенанс (§ 5.19). Причина остаётся **внутри** сервера уточнением — экрану
+ * она ничего не даёт, а в журнале и на разборе нужна; тот же приём, что у подписи принципов (П32 дополнение 1).
+ */
+export type ConsentProblem =
+  /** тело не объект, лишнее поле или поле не той формы */
+  | { readonly reason: "BODY_SHAPE"; readonly field: string }
+  /** пункт, которого нет в перечне согласий */
+  | { readonly reason: "UNKNOWN_CONSENT"; readonly id: string }
+  /** один и тот же пункт отмечен дважды */
+  | { readonly reason: "DUPLICATE_CONSENT"; readonly id: string }
+  /** отмечены не все обязательные пункты — в том числе пустой перечень */
+  | { readonly reason: "REQUIRED_MISSING" }
+  /** вид агента не выбирается или неизвестен */
+  | { readonly reason: "MODEL_NOT_SELECTABLE" }
+  /** хэш показанного не совпал или версия текстов провенанса разошлась с показанной */
+  | { readonly reason: "SHOWN_MISMATCH" }
+  /** провенанс есть, но негодный: `device` или `gesture` вне перечня § 3, пустое время или версия текстов */
+  | { readonly reason: "PRESS_INVALID"; readonly field: string };
+
+/** Поля тела § 5.19 — ровно те. Лишнее поле это негодное тело, а не «то же с примечанием»: иначе `{…, by: "human"}`
+ *  считалось бы годным, а признак «кто нажал» из тела не берётся ни в каком режиме.
+ *  Форма **провенанса** здесь не переписывается: её проверяет общий `checkUiPress` (§ 3), которого спрашивают и
+ *  подпись принципов, и отправка поручения. Своя третья копия уже начала расходиться с ним в раскладке причин
+ *  (находка ревью К4 № 1), а две копии однажды приняли бы `device: "robot"` по-разному. */
+const CONSENT_BODY_KEYS: readonly string[] = ["model", "accepted", "shown_hash", "press"];
+
+/** Форма тела — **до** смысловых проверок: то, что можно проверить, не зная ни карточки, ни перечня согласий. */
+function checkConsentShape(raw: unknown): ConsentProblem | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { reason: "BODY_SHAPE", field: "body" };
+  const body = raw as Record<string, unknown>;
+  for (const key of Object.keys(body))
+    if (!CONSENT_BODY_KEYS.includes(key)) return { reason: "BODY_SHAPE", field: key };
+  if (typeof body["model"] !== "string") return { reason: "BODY_SHAPE", field: "model" };
+  if (typeof body["shown_hash"] !== "string") return { reason: "BODY_SHAPE", field: "shown_hash" };
+  const accepted = body["accepted"];
+  if (!Array.isArray(accepted) || accepted.some((id) => typeof id !== "string"))
+    return { reason: "BODY_SHAPE", field: "accepted" };
+  // Провенанс — **общей** проверкой; свои коды приставляются к её причине, как в `signature.ts`.
+  const bad = checkUiPress(body["press"]);
+  if (bad !== null)
+    return bad.kind === "missing"
+      ? { reason: "PRESS_INVALID", field: "press" }
+      : { reason: "PRESS_INVALID", field: bad.field };
+  return null;
+}
+
+/** Перечень отмеченного: известные пункты, без повторов, и **все обязательные** на месте. Обязательность решает
+ *  сервер по закрытому перечню кода, а не по тому, что прислал экран (правило 3, инвариант 2). */
+function checkAccepted(accepted: readonly string[]): ConsentProblem | null {
+  const seen = new Set<string>();
+  for (const id of accepted) {
+    if (!isConsentId(id)) return { reason: "UNKNOWN_CONSENT", id };
+    if (seen.has(id)) return { reason: "DUPLICATE_CONSENT", id };
+    seen.add(id);
+  }
+  return allRequiredAccepted([...seen] as ConsentId[]) ? null : { reason: "REQUIRED_MISSING" };
+}
+
+/** Исход `POST /ui/v1/consent`: записанное согласие либо отказ § 3. `problem` наружу не идёт — он для журнала. */
+export type ConsentOutcome =
+  | { readonly ok: true; readonly body: ConsentResponse; readonly version: SignedConsent }
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly body: UiErrorBody;
+      readonly code: "CONSENT_INVALID" | "SHOWN_STALE" | "MODEL_NOT_AVAILABLE";
+      readonly problem?: ConsentProblem;
+    };
+
+/** Отказ § 3 с текстом из `config/` на языке запроса и классом повтора из **общей** таблицы контракта.
+ *  Экспортируется, потому что один отказ собирает **маршрут**: тело с полем `by` отклоняет общий слой (он один
+ *  видит всё тело), а код и текст у этого отказа — метода (находка ревью К4 № 3). Своей второй сборки отказа у
+ *  маршрута нет. */
+export function consentRefusal(
+  code: "CONSENT_INVALID" | "SHOWN_STALE" | "MODEL_NOT_AVAILABLE",
+  lang: UiLang,
+  deps: OnboardingServiceDeps,
+  extra: { readonly view?: UiView | null; readonly problem?: ConsentProblem } = {},
+): ConsentOutcome {
+  return {
+    ok: false,
+    status: UI_ERROR_STATUS[code],
+    code,
+    ...(extra.problem === undefined ? {} : { problem: extra.problem }),
+    // Тело — **общим** сборщиком контракта (§ 3): своего объекта здесь не собирается (находка ревью К4 № 4).
+    body: uiErrorBody(code, UI_RETRY[code], say(deps.catalog.errors[code], lang, deps.catalog), extra.view ?? null),
+  };
+}
+
+/**
+ * Приём условий (§ 5.19).
+ *
+ * Порядок проверок выбран так, чтобы каждый отказ был о своём: **форма тела → модель → перечень отмеченного → хэш
+ * показанного**. Он не произволен:
+ * - форма идёт первой, потому что на негодном теле остальные проверки читали бы несуществующие поля;
+ * - модель — до перечня: согласие на невыбираемого агента не становится годным от правильных галочек;
+ * - хэш — последним, потому что он самый дорогой (сборка своей копии карточки) и потому что `SHOWN_STALE` отдаёт
+ *   человеку **новую карточку**, а это осмысленно только когда остальное в теле верно.
+ *
+ * Чего здесь нет: **идемпотентности**. Правило 2 целиком исполняет общий слой сервера (`src/ui-server/index.ts` +
+ * `RepeatStore`): ключ требуется у каждого POST до маршрутизации, повтор того же тела отдаёт прежний ответ, другое
+ * тело — `IDEMPOTENCY_CONFLICT`. Второй механизм внутри модуля дал бы одному действию два правила повтора — ровно та
+ * беда, от которой К7 избавил классы повтора. Запоминание каждого исхода (включая отказы, кроме
+ * `IDEMPOTENCY_REQUIRED`) — забота маршрута, и она там названа.
+ *
+ * Версия текстов провенанса сверяется с версией **своей** копии карточки: расходится — человек подтверждал не те
+ * тексты, которые сервер считает показанными, и это тот же случай «карточка устарела» (приём К1.3 П-К1).
+ */
+export function postConsent(
+  raw: unknown,
+  owner: string,
+  lang: UiLang,
+  deps: OnboardingServiceDeps & RecordConsentDeps,
+): ConsentOutcome {
+  /** Отказ: строка журнала с причиной — и только потом ответ экрану. Причина наружу не идёт, но в журнале она есть
+   *  (находка ревью К4 № 7): иначе «не смог согласиться» нечем разобрать. */
+  const refused = (
+    code: "CONSENT_INVALID" | "SHOWN_STALE" | "MODEL_NOT_AVAILABLE",
+    problem: ConsentProblem,
+    model: string | null,
+    extra: { readonly view?: UiView | null } = {},
+  ): ConsentOutcome => {
+    deps.journal.refused({
+      event: "consent.refused",
+      owner,
+      code,
+      reason: problem.reason,
+      model,
+      by: deps.by(),
+      received_at: deps.now(),
+    });
+    return consentRefusal(code, lang, deps, { problem, ...extra });
+  };
+
+  const shape = checkConsentShape(raw);
+  if (shape !== null) return refused("CONSENT_INVALID", shape, null);
+  const body = raw as ConsentRequest;
+
+  // Модель: невыбираемая и неизвестная — один ответ, как в § 5.18. Решает сервер по данным, а не по телу.
+  const model = isAgentModelId(body.model) ? modelById(deps.catalog, body.model) : null;
+  if (model === null || !model.selectable)
+    return refused("MODEL_NOT_AVAILABLE", { reason: "MODEL_NOT_SELECTABLE" }, body.model);
+
+  const bad = checkAccepted(body.accepted);
+  if (bad !== null) return refused("CONSENT_INVALID", bad, model.id);
+
+  // Правило 1: хэш считается по **своей** копии показанного, и ни одно значение из тела в расчёт не берётся.
+  const shown = shownTerms(model.id, lang, deps);
+  // Хэш считается **один раз** и дальше используется как есть: второй расчёт той же карточки это второй шанс
+  // разойтись (находка ревью К4 № 6).
+  const hash = showingHash(shown);
+  if (body.press.text_version !== shown.text_version || !isShownHash(body.shown_hash) || body.shown_hash !== hash)
+    // Новая карточка — в `error.view`: человек смотрит, что изменилось, и решает заново (класс `after_human`).
+    return refused("SHOWN_STALE", { reason: "SHOWN_MISMATCH" }, model.id, { view: viewOf(deps.viewId, shown) });
+
+  const version = recordConsent(deps, {
+    owner,
+    model: model.id,
+    accepted: body.accepted as readonly ConsentId[],
+    // Запись показанного — **копией целиком** (`frozenShown`), а не пересборкой по полям: иначе новое поле формы
+    // `UiShown` ушло бы в `view` ответа, а в подписанную версию и журнал — нет (замечание ревью К8 № 5 окна А,
+    // находка ревью К4 № 6).
+    view: frozenShown({ hash, text_version: shown.text_version }),
+    press: body.press,
+  });
+
+  return {
+    ok: true,
+    version,
+    body: {
+      consent: {
+        version: version.no,
+        model: version.model,
+        accepted: version.accepted,
+        by: version.by,
+        received_at: version.received_at,
+        shown: version.view,
+      },
+      // Шаг — **тот же П3**, как в примере § 5.19: ответ говорит, где человек находится, а не куда пойдёт. Шаг
+      // следующего экрана придёт с самим экраном (П4 и П6 — ИН-П2).
+      path: pathStepOf(deps.catalog, "P3"),
+    },
+  };
+}
 
 /** Исход `GET /ui/v1/onboarding/terms`: карточка либо отказ § 3. */
 export type TermsOutcome =

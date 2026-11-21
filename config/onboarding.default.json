@@ -190,14 +190,6 @@
     "SHOWN_STALE": {
       "ru": "Условия успели измениться. Прочитайте их заново и отметьте пункты ещё раз",
       "en": "The terms have changed. Read them again and tick the items once more"
-    },
-    "IDEMPOTENCY_REQUIRED": {
-      "ru": "Повторите действие: запрос пришёл без ключа повтора",
-      "en": "Please repeat the action: the request arrived without a repeat key"
-    },
-    "IDEMPOTENCY_CONFLICT": {
-      "ru": "Это действие уже выполнялось с другими данными. Начните заново",
-      "en": "This action has already run with different data. Please start again"
     }
   }
 }

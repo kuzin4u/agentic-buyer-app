@@ -78,13 +78,12 @@ export type ScreenTextKey = (typeof SCREEN_TEXT_KEYS)[number];
  * /ui/v1/consent` — тем же приёмом, что `ERROR_TEXT_KEYS` профиля предпочтений (`src/principles/service.ts`): новый
  * код без текста не пройдёт сборку, а лишний текст, которого никто не покажет, не пройдёт разбор файла.
  */
-export const ONBOARDING_ERROR_KEYS = [
-  "CONSENT_INVALID",
-  "MODEL_NOT_AVAILABLE",
-  "SHOWN_STALE",
-  "IDEMPOTENCY_REQUIRED",
-  "IDEMPOTENCY_CONFLICT",
-] as const;
+export const ONBOARDING_ERROR_KEYS = ["CONSENT_INVALID", "MODEL_NOT_AVAILABLE", "SHOWN_STALE"] as const;
+
+// `IDEMPOTENCY_REQUIRED` и `IDEMPOTENCY_CONFLICT` здесь **намеренно нет** (находка ревью К4 № 5). Правило 2 исполняет
+// общий слой сервера, и текст человеку на эти два кода отдаёт его словарь (`UI_TEXT`, `src/ui-server/lang.ts`). Пока
+// они лежали ещё и здесь, копии не читал никто — и они уже разошлись пунктуацией: правка в `config/` ничего не
+// меняла на экране. Один код — один текст.
 
 export type OnboardingErrorKey = (typeof ONBOARDING_ERROR_KEYS)[number];
 

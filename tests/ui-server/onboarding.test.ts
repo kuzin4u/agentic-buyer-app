@@ -6,7 +6,7 @@
 // методов, параметр вида агента.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { parseOnboardingCatalog } from "../../src/onboarding/index.js";
+import { createConsentStore, parseOnboardingCatalog } from "../../src/onboarding/index.js";
 import { Sessions, startUiServer, type CorePurchase, type UiCorePort, type UiServer } from "../../src/ui-server/index.js";
 
 const catalog = parseOnboardingCatalog(
@@ -35,7 +35,17 @@ const start = async (withOnboarding: boolean): Promise<void> => {
     core,
     owner: (req) => sessions.ownerOf(req),
     shell: { brandPath: "config/brand.demo.json", sessions, ownerOnPage: () => "own_1" },
-    ...(withOnboarding ? { onboarding: { catalog, viewId: "vw_p3_1" } } : {}),
+    ...(withOnboarding
+      ? {
+          onboarding: {
+            catalog,
+            viewId: "vw_p3_1",
+            store: createConsentStore(),
+            journal: { write: () => undefined, refused: () => undefined },
+            now: () => "2026-11-21T12:00:00Z",
+          },
+        }
+      : {}),
   });
   const page = await fetch(`${server.url}/ui`);
   jar = page.headers.get("set-cookie")!.split(";")[0]!;

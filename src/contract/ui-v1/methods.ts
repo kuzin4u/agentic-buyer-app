@@ -16,6 +16,7 @@ import type {
 } from "agentic-buyer-ref/src/shared/domain.js";
 import type {
   ShownHash,
+  UiShown,
   UiAction,
   UiDoneLine,
   UiInstant,
@@ -541,6 +542,33 @@ export interface OnboardingTermsResponse {
   readonly consents: readonly UiConsentItem[];
   readonly actions: { readonly accept: UiAction };
   readonly view: UiView;
+}
+
+// ── § 5.19 `POST /ui/v1/consent` — приём условий (П3) ────────────────────────────────────────────────────────────────
+
+/** Тело запроса § 5.19. `accepted` — **перечень отмеченных пунктов**, а не признак «со всем согласен»: в споре нужно
+ *  показать, с чем именно человек согласился. Поля `by` здесь нет и быть не может — его ставит сервер (§ 3, П26). */
+export interface ConsentRequest {
+  readonly model: string;
+  readonly accepted: readonly string[];
+  readonly shown_hash: ShownHash;
+  readonly press: UiPress;
+}
+
+/** Записанное согласие (§ 5.19). `shown` — общая форма `UiShown`: хэш ровно показанного и версия текстов, под
+ *  которыми человек согласился (правило 1). `version` — номер неизменяемой версии; новая прежнюю не стирает. */
+export interface UiConsent {
+  readonly version: number;
+  readonly model: string;
+  readonly accepted: readonly string[];
+  readonly by: UiSignedBy;
+  readonly received_at: UiInstant;
+  readonly shown: UiShown;
+}
+
+export interface ConsentResponse {
+  readonly consent: UiConsent;
+  readonly path: UiPathStep;
 }
 
 // ── § 5.15 `GET /ui/v1/limits` — пределы и оплата (П6, он же ИН-ВМ) ─────────────────────────────────────────────────

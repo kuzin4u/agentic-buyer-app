@@ -25,7 +25,15 @@ const VIEW = { hash: `sha256:${"a".repeat(64)}`, text_version: "view-texts@1.2" 
 /** Журнал-записник: собирает строки, чтобы можно было проверить **порядок** и число записей. */
 function journal(): ConsentJournal & { readonly written: ConsentAcceptedEntry[] } {
   const written: ConsentAcceptedEntry[] = [];
-  return { written, write: (entry) => void written.push(entry) };
+  // Отказы этот кирпич не записывает — их пишет сервис § 5.19 (К4); здесь заглушка, которая падает, если кто-то
+  // позовёт её из записи согласия: удача и отказ не должны смешаться.
+  return {
+    written,
+    write: (entry) => void written.push(entry),
+    refused: () => {
+      throw new Error("запись согласия не пишет отказов");
+    },
+  };
 }
 
 const deps = (j: ConsentJournal, store = createConsentStore(), by: "human" | "test" = "human") => ({
@@ -182,7 +190,7 @@ describe("журнал пишется последним и ровно один 
         store.append(v);
       },
     };
-    const j: ConsentJournal = { write: () => void order.push("journal") };
+    const j: ConsentJournal = { write: () => void order.push("journal"), refused: () => void order.push("refused") };
     recordConsent({ store: watched, journal: j, now: () => "2026-11-20T18:40:01Z", by: () => "human" }, body());
     // Строка журнала о согласии, которого в хранилище нет, — это ложное доказательство: журнал читают как
     // доказательство, и порядок здесь часть правильности, а не вкус.
