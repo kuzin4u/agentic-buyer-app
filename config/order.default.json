@@ -1,0 +1,12 @@
+{
+  "sources": {
+    "PLATFORM_FULFILMENT": {
+      "ru": "Запись об исполнении Платформы",
+      "en": "Platform fulfilment record"
+    },
+    "PLATFORM_OPERATION": {
+      "ru": "Состояние операции у Платформы, записи об исполнении ещё нет",
+      "en": "Operation status at the Platform, no fulfilment record yet"
+    }
+  }
+}
