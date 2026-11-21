@@ -257,6 +257,16 @@ describe("правило 1 — хэш показанного", () => {
     ]);
   });
 
+  it("версия текстов входит в хэш: сменились тексты — прежнее подтверждение не подходит", () => {
+    // Иначе человек подтверждал бы одну формулировку, а сервер принимал её за другую: тексты правятся в `config/`
+    // вместе с `text_version`, и хэш обязан это замечать (правило 1; постановка ИН-П1, кирпич К6).
+    const base = shownTerms("M1", "ru", deps);
+    const renamed = { text_version: "onboarding@1.1", card: base.card };
+    expect(showingHash(renamed)).not.toBe(showingHash(base));
+    // И наоборот: та же версия с той же карточкой даёт тот же хэш — проверка не «всё разное».
+    expect(showingHash({ text_version: base.text_version, card: base.card })).toBe(showingHash(base));
+  });
+
   it("форма хэша — sha256 и 64 знака", () => {
     expect(termsView("M1", "en", deps).hash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });

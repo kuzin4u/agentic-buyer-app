@@ -268,6 +268,30 @@ test("согласие принадлежит человеку: нумераци
   expect(store.all("own_1").map((v) => v.no)).toEqual([1, 2]);
 });
 
+test("ключ повтора чужого человека не находит мой ответ", async () => {
+  // Память повторов ключуется парой «владелец + ключ» (находка ревью К2 № 4 ИН-0). Если бы ключ был общим, второй
+  // человек, случайно взявший тот же UUID, получил бы **мой** ответ — то есть увидел бы, что я согласился.
+  const key = randomUUID();
+  const mine = await post(good("M1"), key);
+  expect(mine.status).toBe(200);
+
+  const other = sessions.issue("own_2");
+  // Второй человек выбирает **другой** вид агента: тогда подменённый (мой) ответ виден прямо в теле, а не только по
+  // числу записей в хранилище (находка ревью К6 № 9) — иначе различающая сила держалась бы на одной строке.
+  const theirs = await post(good("M2"), key, other.setCookie.split(";")[0]!);
+  expect(theirs.status).toBe(200);
+  const body = (await theirs.json()) as { consent: { version: number; model: string } };
+  // Его первое действие, а не повтор моего: версия первая **и модель своя**.
+  expect(body.consent.version).toBe(1);
+  expect(body.consent.model).toBe("M2");
+  expect(store.all("own_1").length).toBe(1);
+  expect(store.all("own_2").length).toBe(1);
+  expect(store.last("own_2")?.owner).toBe("own_2");
+  expect(store.last("own_2")?.model).toBe("M2");
+  // И моя запись не поехала.
+  expect(store.last("own_1")?.model).toBe("M1");
+});
+
 test("в режиме прогона тестов признак ставит сервер, а не тело", async () => {
   await server.close();
   await start(() => "test");
