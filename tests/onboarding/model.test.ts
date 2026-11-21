@@ -53,6 +53,20 @@ describe("данные экранов знакомства: перечни по�
     });
   });
 
+  it("строка про смену банка расшифрована словами, без латинского кода уровня подписи", () => {
+    // Решение владельца 21.11.2026, 08:55 — **Р-1684** (кирпич К1а): в канве v2.0 стояло «сохраняются при K8, иначе
+    // заново». `K8` — это уровень подписи `gov_id` (Р-1662), и человеку на экране он ничего не говорит. Формулировка
+    // нарочно **не называет уровень**: его закрепит договор с банком пилота.
+    const row = catalog.compare.find((l) => l.row === "MANDATES_ON_BANK_CHANGE");
+    expect(row?.values["M1"]).toEqual({
+      ru: "Сохраняются, если поручение подписано с подтверждением личности; иначе подписываются заново",
+      en: "Kept if the mandate was signed with identity verification; otherwise signed again",
+    });
+    // Латиницы кода уровня не осталось ни в одном значении строки: ровно это и было дефектом.
+    for (const id of AGENT_MODELS)
+      for (const lang of ["ru", "en"] as const) expect(row?.values[id][lang], `${id}.${lang}`).not.toMatch(/\bK[678]\b/);
+  });
+
   it("оба обязательных согласия на месте", () => {
     expect(catalog.consents.map((c) => c.id)).toEqual(["TERMS", "DATA"]);
     expect(CONSENT_IDS).toEqual(["TERMS", "DATA"]);

@@ -61,7 +61,10 @@
       "row": "MANDATES_ON_BANK_CHANGE",
       "label": { "ru": "Поручения при смене банка", "en": "Mandates when you change banks" },
       "values": {
-        "M1": { "ru": "сохраняются при K8, иначе заново", "en": "kept at K8, otherwise set up again" },
+        "M1": {
+          "ru": "Сохраняются, если поручение подписано с подтверждением личности; иначе подписываются заново",
+          "en": "Kept if the mandate was signed with identity verification; otherwise signed again"
+        },
         "M2": { "ru": "сохраняются: банк не при чём", "en": "kept: the bank is not involved" },
         "M3": { "ru": "сохраняются", "en": "kept" }
       }
