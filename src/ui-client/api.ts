@@ -8,7 +8,20 @@
 //   (Р-1511 «закрытые перечни — из кода источника»);
 // - чтения статусов и сумм из события потока: событие — только сигнал (правило 4, П31), из него берётся один
 //   `purchase_id`, чтобы знать, **что перечитать**.
-import type { PurchaseResponse, UiErrorBody } from "../contract/ui-v1/index.js";
+import type {
+  ConsentRequest,
+  ConsentResponse,
+  OnboardingResponse,
+  OnboardingTermsResponse,
+  PurchaseResponse,
+  UiErrorBody,
+  UiPress,
+} from "../contract/ui-v1/index.js";
+// Имя заголовка ключа повтора — **значение**, и оно ввозится из **узкого** модуля контракта, а не из его индекса:
+// индекс реэкспортирует хэш показанного, а тот зависит от канонизации ядра, и в браузерный бандл поехала бы вся она
+// (на первой сборке он вырос на 7 КБ — это и поймал тест границы импортов). У `idempotency.js` зависимостей нет
+// вовсе, поэтому он единственное исключение рядом с `boot-text.js`, и тест это проверяет, а не принимает на слово.
+import { IDEMPOTENCY_HEADER } from "../contract/ui-v1/idempotency.js";
 import { bootDatasetKey, type BootKey } from "../ui-server/boot-text.js";
 import type { ShellData } from "../ui-server/shell.js";
 
@@ -83,15 +96,14 @@ export const pageHref = (): string => `${window.location.pathname}${window.locat
 
 const query = (lang: string): string => `?lang=${encodeURIComponent(lang)}`;
 
-/** Общее чтение JSON: тело ошибки § 3 разбирается тем же путём, что удачный ответ, — одна форма на все методы. */
-async function read<T>(url: string): Promise<Read<T>> {
-  let res: Response;
-  try {
-    res = await fetch(url, { credentials: "same-origin", headers: { accept: "application/json" } });
-  } catch {
-    // Сети нет — это «нет связи», а не ошибка контракта: кода у неё не существует, и выдумывать его нельзя.
-    return { ok: false, reason: "offline", error: null };
-  }
+/**
+ * Разбор ответа — **одной функцией на все обращения**, читающие и изменяющие (находка ревью К5 № 2).
+ *
+ * Прежде у `POST /ui/v1/consent` был свой разбор: те же восемь строк про 401/403, негодное тело и форму отказа.
+ * Копии разошлись бы на первом же уточнении — а уточнение здесь уже было: `{"error": null}` проходил проверку «нет
+ * поля» и уезжал в ветку отказа вопреки своему типу (находка ревью К3а № 3).
+ */
+async function parseAnswer<T>(res: Response): Promise<Read<T>> {
   // Сессии нет — отдельная причина и отдельное лечение: открыть страницу заново, а не повторять то же чтение.
   // **401** — код контракта `SESSION_REQUIRED` у маршрутов `/ui/v1` (кирпич К7, Р-1665); **403** — тот же случай у
   // раздачи каркаса, где кодов контракта нет и ответ служебный (`text/plain`). Статус проверяется до разбора тела:
@@ -105,9 +117,7 @@ async function read<T>(url: string): Promise<Read<T>> {
     return { ok: false, reason: "broken", error: null };
   }
   if (res.ok) return { ok: true, value: body as T };
-  // Проверяется **форма** тела, а не только наличие ключа: `{"error": null}` проходило проверку «нет поля» и уезжало
-  // в ветку отказа с `error: null` — вопреки собственному типу, а на отрисовке давало исключение и пустой экран без
-  // выхода (находка ревью К3а № 3). Негодное тело — это `broken`, как и неразобранное.
+  // Проверяется **форма** тела, а не только наличие ключа (находка ревью К3а № 3). Негодное тело — это `broken`.
   const failure = (body as UiErrorBody | null)?.error;
   const looksLikeFailure =
     typeof failure === "object" &&
@@ -118,12 +128,75 @@ async function read<T>(url: string): Promise<Read<T>> {
   return looksLikeFailure ? { ok: false, reason: "contract", error: failure } : { ok: false, reason: "broken", error: null };
 }
 
+/** Общее чтение JSON: тело ошибки § 3 разбирается тем же путём, что удачный ответ, — одна форма на все методы. */
+async function read<T>(url: string): Promise<Read<T>> {
+  let res: Response;
+  try {
+    res = await fetch(url, { credentials: "same-origin", headers: { accept: "application/json" } });
+  } catch {
+    // Сети нет — это «нет связи», а не ошибка контракта: кода у неё не существует, и выдумывать его нельзя.
+    return { ok: false, reason: "offline", error: null };
+  }
+  return parseAnswer<T>(res);
+}
+
 /** Данные каркаса: подписи, перечни, тексты (`GET /ui/shell`). */
 export const loadShell = (lang: string): Promise<Read<ShellData>> => read<ShellData>(`/ui/shell${query(lang)}`);
 
 /** Состояние покупки (§ 5.3). Шаг экрана приходит полем `step` — своей таблицы у экрана нет. */
 export const loadPurchase = (id: string, lang: string): Promise<Read<PurchaseResponse>> =>
   read<PurchaseResponse>(`/ui/v1/purchase/${encodeURIComponent(id)}${query(lang)}`);
+
+/** Знакомство, экран П1 (§ 5.17): три вида агента, таблица сравнения, шаг пути. Ни `view`, ни хэша здесь нет —
+ *  человек на П1 ничего не подтверждает. */
+export const loadOnboarding = (lang: string): Promise<Read<OnboardingResponse>> =>
+  read<OnboardingResponse>(`/ui/v1/onboarding${query(lang)}`);
+
+/** Условия выбранного вида агента, экран П3 (§ 5.18). Карточка приходит с `view`: её хэш экран вернёт при приёме. */
+export const loadTerms = (model: string, lang: string): Promise<Read<OnboardingTermsResponse>> =>
+  // Язык кладётся в адрес **общим** `query`, а не собирается здесь второй раз: язык входит в отпечаток правила 2 на
+  // сервере, и расхождение в том, как он попадает в адрес, было бы не косметическим (находка ревью К5 № 9).
+  read<OnboardingTermsResponse>(`/ui/v1/onboarding/terms${query(lang)}&model=${encodeURIComponent(model)}`);
+
+/**
+ * Где нажали (§ 3, правило 1). `web` — потому что это **страница в браузере**: MiniApp MAX и модуль в приложении
+ * банка придут своими сборками (ИН-ВМ), и подставлять их значение здесь было бы неправдой о том, где нажал человек.
+ *
+ * `text_version` берётся из `view` **показанной** карточки, а не из своей копии: это та же величина, и расхождение
+ * означает, что человек видел другие тексты (§ 3, пример). Признака «кто нажал» здесь нет — его ставит сервер
+ * (П26 дополнение 2), и тело с полем `by` сервер отклоняет.
+ *
+ * `gesture: "tap"` — не умолчание, а наблюдение (П26 «умолчания у провенанса нет»): на П3 человек нажимает
+ * **кнопку**, и нажатие мышью, пальцем и с клавиатуры — это всё `tap`. Второе значение перечня, `swipe`, означает
+ * подпись жестом (правка 5 канвы), и её на П3 нет: появится экран с жестом — он передаст своё значение сам.
+ */
+export const pressNow = (textVersion: string): UiPress => ({
+  at: new Date().toISOString(),
+  device: "web",
+  text_version: textVersion,
+  gesture: "tap",
+});
+
+/**
+ * Приём условий (§ 5.19). Правило 2: у POST обязателен ключ повтора, и ключ — **один на нажатие**, а не на попытку:
+ * повтор того же нажатия (например, после обрыва связи) обязан идти тем же ключом, иначе одно согласие записалось бы
+ * дважды. Поэтому ключ приходит аргументом, а не создаётся здесь.
+ */
+export async function sendConsent(body: ConsentRequest, key: string, lang: string): Promise<Read<ConsentResponse>> {
+  let res: Response;
+  try {
+    res = await fetch(`/ui/v1/consent${query(lang)}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { accept: "application/json", "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return { ok: false, reason: "offline", error: null };
+  }
+  // Разбор — **общий** (`parseAnswer`): своего второго у изменяющего обращения нет.
+  return parseAnswer<ConsentResponse>(res);
+}
 
 /**
  * Поток сигналов (§ 5.9). Обработчик получает `purchase_id` сигнала — и больше ничего: ни статуса, ни сумм в событии

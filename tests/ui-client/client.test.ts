@@ -14,12 +14,37 @@
 // собранного CSS и разметки страницы, а поведение — логикой ниже; сама разметка типами и рендером не покрыта.
 // Вопрос владельцу — в отчёте по К4 в PR #26; закроется либо акцептом на отступление, либо своим кирпичом.
 import { readFileSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { UI_STEPS } from "../../src/contract/ui-v1/index.js";
 import { UI_SIGNED_BY } from "../../src/contract/ui-v1/index.js";
 import { BOOT_KEYS, bootAttr, bootDatasetKey, SHELL_PLACES, type ShellData } from "../../src/ui-server/index.js";
-import { mountBootText, mountLang, openFeed, type ReadFailPlain, type UiFailure } from "../../src/ui-client/api.js";
-import { bootLine, canRetryInPlace, failLine, isPlace, labelOf, latest, needsPage, retryLine, signedByLine, triggers } from "../../src/ui-client/view.js";
+import { IDEMPOTENCY_HEADER } from "../../src/contract/ui-v1/idempotency.js";
+import {
+  mountBootText,
+  mountLang,
+  openFeed,
+  pressNow,
+  sendConsent,
+  type ReadFailPlain,
+  type UiFailure,
+} from "../../src/ui-client/api.js";
+import {
+  acceptKeys,
+  bootLine,
+  canAccept,
+  canRetryInPlace,
+  failLine,
+  isPlace,
+  labelOf,
+  latest,
+  needsPage,
+  pathLine,
+  retry,
+  retryLine,
+  signedByLine,
+  triggers,
+} from "../../src/ui-client/view.js";
 
 const read = (path: string): string => readFileSync(path, "utf8");
 
@@ -112,10 +137,123 @@ test("из экрана в сервер ведёт одна значимая с�
       if (!spec.startsWith("../ui-server/") && !spec.startsWith("../contract/")) continue;
       const typeOnly = kind !== undefined || /^\s*\{\s*type\s/.test(whole.slice(whole.indexOf("{")));
       const everyNameTyped = /\{([\s\S]*?)\}/.exec(whole)?.[1]?.split(",").every((n) => n.trim() === "" || n.trim().startsWith("type ")) ?? false;
-      if (spec === "../ui-server/boot-text.js") continue;
+      // Значением можно ввозить только модули из этого перечня, и **каждый обязан быть пустым по зависимостям**:
+      // проверка ниже читает их исходники. Иначе исключение превратилось бы в лазейку — именно так в браузерный
+      // бандл чуть не уехала канонизация ядра через индекс контракта (кирпич К5: `IDEMPOTENCY_HEADER` ввозился из
+      // `../contract/ui-v1/index.js`, и бандл вырос на 7 КБ).
+      if (VALUE_IMPORTS_ALLOWED.includes(spec)) continue;
       expect(typeOnly || everyNameTyped, `${file}: ${spec} ввозится значимо`).toBe(true);
     }
   }
+});
+
+/** Модули, которые экрану можно ввозить **значением**. Каждый — с доводом, и довод проверяется тестом ниже. */
+const VALUE_IMPORTS_ALLOWED: readonly string[] = [
+  // имена атрибутов страницы: один перечень на сервер и на экран (находка ревью К3а № 4)
+  "../ui-server/boot-text.js",
+  // имя заголовка ключа повтора (§ 3, правило 2): нужно экрану, чтобы послать POST
+  "../contract/ui-v1/idempotency.js",
+];
+
+/** Ввозы одного файла: обычные, **побочные** (`import "…";`) и **динамические** (`await import("…")`). Прежняя
+ *  регулярка требовала `from "…"` и двух последних не видела вовсе. */
+export const importsOf = (text: string): readonly string[] => [
+  ...[...text.matchAll(/import\s+(?:type\s+)?[\s\S]*?from\s+"([^"]+)"/g)].map((m) => m[1]!),
+  ...[...text.matchAll(/^\s*import\s+"([^"]+)"/gm)].map((m) => m[1]!),
+  ...[...text.matchAll(/\bimport\(\s*"([^"]+)"/g)].map((m) => m[1]!),
+];
+
+/**
+ * Первая тяжёлая зависимость **по всей цепочке** ввоза, с путём до неё — или `null`.
+ *
+ * Тяжёлая — это `node:*` и любой пакет: и то и другое уехало бы в браузерный бандл. Отдельной функцией с подменяемым
+ * чтением, потому что второй проход ревью поймал две вещи: тело обхода **ни разу не исполнялось** (у обоих
+ * разрешённых модулей ввозов нет вовсе), и пути разрешались неверно — `../` отрезался, а `./common.js` склеивался в
+ * чужой файл, то есть проверка могла читать не тот модуль и зеленеть зря. Теперь путь считается **от каталога
+ * ввозящего файла**, ненайденный файл — внятная ошибка, а сам обход закрыт фикстурой ниже.
+ */
+export function firstHeavyImport(
+  entry: string,
+  readSource: (file: string) => string,
+): { readonly dep: string; readonly chain: readonly string[] } | null {
+  const seen = new Set<string>();
+  const walk = (file: string, chain: readonly string[]): { dep: string; chain: string[] } | null => {
+    if (seen.has(file)) return null;
+    seen.add(file);
+    const here = [...chain, file];
+    for (const dep of importsOf(readSource(file))) {
+      if (dep.startsWith("node:") || !dep.startsWith(".")) return { dep, chain: here };
+      const next = resolve(dirname(file), dep).replace(/\.js$/, ".ts");
+      const found = walk(next, here);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return walk(entry, []);
+}
+
+test("модули, разрешённые экрану значением, сами ничего тяжёлого не ввозят — **и по всей цепочке**", () => {
+  for (const spec of VALUE_IMPORTS_ALLOWED) {
+    const entry = resolve(import.meta.dirname, "../..", "src", spec.replace(/^\.\.\//, "")).replace(/\.js$/, ".ts");
+    const heavy = firstHeavyImport(entry, (file) => {
+      const text = readFileSync(file, "utf8");
+      // Файл есть: иначе `readFileSync` бросит, и это внятнее тихого пропуска.
+      return text;
+    });
+    expect(heavy, `${spec}: цепочка ввоза тянет ${heavy?.dep ?? ""} (${heavy?.chain.join(" → ") ?? ""})`).toBeNull();
+  }
+});
+
+test("обход цепочки ввоза ловит тяжёлое на **втором** уровне — проверено фикстурой", () => {
+  // Сам обход закрыт фикстурой, потому что на настоящих файлах его тело не исполняется: у разрешённых модулей
+  // ввозов нет. Без этого теста правильность обхода держалась бы ни на чём (блокер второго прохода ревью К5).
+  const files: Record<string, string> = {
+    "/s/a.ts": 'import { b } from "./b.js";\n',
+    "/s/b.ts": 'import { readFileSync } from "node:fs";\n',
+    "/s/clean.ts": 'import { x } from "./deep/x.js";\n',
+    "/s/deep/x.ts": 'import type { T } from "../t.js";\n',
+    "/s/t.ts": "export type T = string;\n",
+    "/s/pkg.ts": 'import { z } from "some-package";\n',
+    "/s/side.ts": 'import "./b.js";\n',
+    "/s/dyn.ts": 'const m = await import("./b.js");\n',
+    "/s/loop.ts": 'import { a } from "./loop2.js";\n',
+    "/s/loop2.ts": 'import { b } from "./loop.js";\n',
+  };
+  const readSource = (file: string): string => {
+    const text = files[file];
+    if (text === undefined) throw new Error(`фикстура: нет файла ${file}`);
+    return text;
+  };
+
+  // Тяжёлое на втором уровне — находится, и путь к нему назван целиком.
+  expect(firstHeavyImport("/s/a.ts", readSource)).toEqual({ dep: "node:fs", chain: ["/s/a.ts", "/s/b.ts"] });
+  // Путь считается от каталога ввозящего файла: `../t.js` из `/s/deep/` это `/s/t.ts`, а не `/s/../t.ts`.
+  expect(firstHeavyImport("/s/clean.ts", readSource)).toBeNull();
+  // Пакет — тоже тяжёлое.
+  expect(firstHeavyImport("/s/pkg.ts", readSource)?.dep).toBe("some-package");
+  // Побочный и динамический ввоз видны.
+  expect(firstHeavyImport("/s/side.ts", readSource)?.dep).toBe("node:fs");
+  expect(firstHeavyImport("/s/dyn.ts", readSource)?.dep).toBe("node:fs");
+  // Кольцо не вешает обход.
+  expect(firstHeavyImport("/s/loop.ts", readSource)).toBeNull();
+});
+
+/** Потолок размера собранного каркаса. Назван числом, а не «примерно»: рост на 7 КБ от случайно уехавшей в бандл
+ *  канонизации ядра я в первый раз заметил **руками**, и потолок — то, что заметит это вместо меня. Поднимается
+ *  осознанно, вместе с кирпичом, который добавил экраны. */
+const UI_BUNDLE_LIMIT_BYTES = 56 * 1024;
+
+test("в собранном каркасе нет канонизации ядра: проверяется **результат**, а не только импорты", () => {
+  // Второй проход ревью поймал, что прежняя проверка была **тождественно зелёной**: бандл минифицирован (`var
+  // e=Array.isArray,…`), и ни `canonicalJson`, ни `sha256Hex`, ни имени пакета в нём не бывает **никогда** — ни в
+  // здоровой сборке, ни в той, куда канонизация уехала. Проверять надо то, что переживает минификацию: **строковые
+  // литералы**. У канонизации ядра это `createHash("sha256")` и ввоз `node:crypto` — оба уцелеют.
+  const js = read("dist/ui/ui.js");
+  for (const mark of ["sha256", "node:crypto", "createHash"]) expect(js, mark).not.toContain(mark);
+  // И потолок размера: он ловит этот класс дефектов независимо от того, какие именно строки уедут.
+  expect(statSync("dist/ui/ui.js").size, "бандл каркаса вырос — что в него уехало?").toBeLessThanOrEqual(
+    UI_BUNDLE_LIMIT_BYTES,
+  );
 });
 
 test("экран берёт имена атрибутов страницы из одного перечня, а не литералами", () => {
@@ -275,7 +413,10 @@ test("выход из «вход истёк» — «Открыть заново�
   // Обещанное действие кирпича К7 (находка ревью К7 № 8): в разметке оно должно брать именно `action.reopen`, иначе
   // человеку предлагалось бы повторить то, что повтором не лечится.
   const markup = code("src/ui-client/App.svelte");
-  const reopen = [...markup.matchAll(/needsPage\(fail\)\}([\s\S]{0,400}?)\{:else\}([\s\S]{0,200}?)\{\/if\}/g)];
+  // Вторая ветка стала `{:else if again.has}`: кнопка повтора показывается, только когда есть что повторять
+  // (кирпич К5 по находке № 1 — прежде она звала чтение покупки и на знакомстве не делала ничего). Поэтому
+  // разделитель ветвей здесь `{:else` с любым продолжением, а не ровно `{:else}`.
+  const reopen = [...markup.matchAll(/needsPage\(fail\)\}([\s\S]{0,400}?)\{:else(?: if [^}]*)?\}([\s\S]{0,300}?)\{\/if\}/g)];
   expect(reopen.length, "ветки needsPage в разметке не найдены").toBe(2);
   for (const [, page, other] of reopen) {
     expect(page).toContain("action.reopen");
@@ -283,6 +424,42 @@ test("выход из «вход истёк» — «Открыть заново�
     expect(other).toContain("action.retry");
     expect(other).not.toContain("action.reopen");
   }
+  // И повтор зовёт **последнее обращение**, а не чтение покупки: иначе на знакомстве кнопка снова стала бы пустой.
+  expect(markup).not.toMatch(/action\.retry[\s\S]{0,80}readPurchase\(\)/);
+  expect(markup).toContain("again.run()");
+});
+
+test("разводка экранов знакомства: каждый загрузчик регистрирует себя, пометки и выходы на месте", () => {
+  // Правки обоих блокеров живут в `.svelte`, где юнитом их не взять (рендер — в ИН-ВЕБ, Р-1669). Поэтому
+  // проверяется **разводка по исходнику**: иначе «каждый загрузчик регистрируется» и «пометка над новой карточкой»
+  // держались бы ничем — ровно тем обещанием, из-за которого блокеры и были зелёными (находка второго прохода К5
+  // № 5). Правила внутри (`retry`, `acceptKeys`, `canAccept`, `pathLine`) закрыты юнитами выше.
+  const markup = code("src/ui-client/App.svelte");
+
+  // Каждое обращение знакомства регистрирует себя как последнее — иначе кнопка «Повторить» повторит чужое.
+  for (const loader of ["readOnboarding", "() => choose(model)", "() => send(body, key)"])
+    expect(markup, `нет again.set для ${loader}`).toContain(`again.set(${loader})`);
+
+  // Оба чтения знакомства идут через порядок чтений: обогнанный ответ состояние не меняет (правило 4).
+  for (const call of ["loadOnboarding(lang)", "loadTerms(model, lang)"])
+    expect(markup, `${call} мимо reads.run`).toContain(`reads.run(() => ${call})`);
+
+  // Пометка о смене условий ставится **до** перечитывания и не сбрасывается в `choose`.
+  expect(markup).toMatch(/termsChanged = true;\s*\n\s*await choose\(/);
+  const chooseBody = markup.slice(markup.indexOf("async function choose"), markup.indexOf("function backToModels"));
+  expect(chooseBody, "choose гасит пометку о смене условий").not.toContain("termsChanged");
+
+  // Отказ по контракту на П3: есть возврат к той же карточке при `after_fix` и выход к выбору вида при любом отказе.
+  expect(markup).toContain('fail.error.retry === "after_fix"');
+  expect(markup).toContain('shell.text["action.back_to_terms"]');
+  expect(markup).toContain('shell.text["action.other_model"]');
+
+  // «Условия изменились» показывается внутри ветки карточки, а не где-нибудь.
+  const termsBranch = markup.slice(markup.indexOf("{:else if terms !== null}"), markup.indexOf("{:else if onboarding !== null}"));
+  expect(termsBranch).toContain('shell.text["state.terms_changed"]');
+
+  // Навигация покупки на пути знакомства скрыта: кнопка без ответа — ложное обещание.
+  expect(markup).toMatch(/\{#if purchaseId !== null\}\s*\n\s*<nav class="rail"/);
 });
 
 // ── Поводы перечитать покупку ───────────────────────────────────────────────────────────────────────────────────────
@@ -404,6 +581,165 @@ const withFetch = async <T>(answer: { status: number; body: unknown; json?: bool
     globalThis.fetch = was;
   }
 };
+
+test("повтор: повторяется последнее обращение, а не всегда покупка", async () => {
+  // Корень блокера К5 № 1: кнопка «Повторить» звала чтение покупки, а на знакомстве покупки нет — она не делала
+  // ничего, и человек оставался на экране без выхода.
+  const r = retry();
+  expect(r.has).toBe(false);
+  // Пока повторять нечего, кнопки быть не должно — и вызов ничего не ломает.
+  await r.run();
+
+  const calls: string[] = [];
+  r.set(async () => void calls.push("знакомство"));
+  expect(r.has).toBe(true);
+  await r.run();
+  await r.run();
+  expect(calls).toEqual(["знакомство", "знакомство"]);
+
+  // Следующее обращение становится последним: повторяется **оно**, а не первое.
+  r.set(async () => void calls.push("условия"));
+  await r.run();
+  expect(calls).toEqual(["знакомство", "знакомство", "условия"]);
+});
+
+test("попытка приёма: ключ **и провенанс** живут вместе, пока действие то же", () => {
+  // Корень блокера К5 № 3: ключ жил от показа карточки до успеха, и после правки отметок сервер отвечал
+  // `IDEMPOTENCY_CONFLICT` навсегда — класс `after_fix`, кнопки повтора нет, ключ не сбрасывался.
+  // Второй проход добавил вторую половину: провенанс обязан приходить **из той же попытки**, иначе повтор послал бы
+  // другое тело при том же ключе, а сервер считает отпечаток по всему телу, включая `press.at`.
+  let n = 0;
+  let t = 0;
+  const keys = acceptKeys(
+    () => `key-${++n}`,
+    () => ({ at: `t-${++t}`, device: "web", text_version: "p3@1.0", gesture: "tap" }),
+  );
+  const both = "M1|DATA,TERMS|sha256:aa";
+
+  // Повтор того же нажатия (обрыв связи) идёт тем же ключом **и тем же телом**: иначе либо второе согласие, либо
+  // конфликт по отпечатку.
+  expect(keys.for(both)).toEqual({ key: "key-1", press: { at: "t-1", device: "web", text_version: "p3@1.0", gesture: "tap" } });
+  expect(keys.for(both).key).toBe("key-1");
+  expect(keys.for(both).press.at).toBe("t-1");
+
+  // Действие изменилось (сняли пункт) — своя попытка: новый ключ и новое время нажатия.
+  const one = "M1|TERMS|sha256:aa";
+  expect(keys.for(one).key).toBe("key-2");
+  expect(keys.for(one).press.at).toBe("t-2");
+  // Другой хэш показанного — тоже другое действие, даже при том же наборе отметок.
+  expect(keys.for("M1|DATA,TERMS|sha256:bb").key).toBe("key-3");
+
+  // Сброс: следующее нажатие получает новую попытку (новая карточка по `SHOWN_STALE`, конфликт ключа).
+  keys.reset();
+  expect(keys.for(both).key).toBe("key-4");
+  expect(keys.for(both).press.at).toBe("t-4");
+});
+
+test("строка шага пути — из словаря сервера, с подстановкой чисел", () => {
+  // Своего формата «1 / 8» у экрана нет: без слова он не читается и не имеет парности ru/en (находка К5 № 8).
+  const shell = { text: { "path.step": "Шаг {n} из {of}" } } as unknown as ShellData;
+  expect(pathLine(shell, { n: 1, of: 8 })).toBe("Шаг 1 из 8");
+  expect(pathLine(shell, { n: 3, of: 8 })).toBe("Шаг 3 из 8");
+  const en = { text: { "path.step": "Step {n} of {of}" } } as unknown as ShellData;
+  expect(pathLine(en, { n: 3, of: 8 })).toBe("Step 3 of 8");
+});
+
+test("провенанс нажатия: версия текстов — из показанной карточки, поля `by` нет", () => {
+  // Непокрытое место, названное ревью: возьми `text_version` из `onboarding.text_version` (он там есть) — тесты
+  // остались бы зелёными, а сервер отвечал бы `SHOWN_STALE` на верные нажатия.
+  const press = pressNow("p3@1.0");
+  expect(press.text_version).toBe("p3@1.0");
+  expect(press.device).toBe("web");
+  // `tap` — наблюдение, а не умолчание: на П3 человек нажимает кнопку, жест `swipe` там не бывает.
+  expect(press.gesture).toBe("tap");
+  // Признак «кто нажал» ставит сервер: в теле его нет и быть не может (П26 доп. 2).
+  expect(Object.keys(press).sort()).toEqual(["at", "device", "gesture", "text_version"]);
+  // Время — по часам устройства, в форме § 3 (ISO 8601 UTC).
+  expect(press.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test("отправка согласия: ключ уходит заголовком, тело § 3 разбирается общим путём", async () => {
+  // Непокрытое место, названное ревью: именно из-за него второй разбор ответа в `sendConsent` был не виден.
+  const seen: { url?: string; init?: RequestInit } = {};
+  const answer = (status: number, body: unknown): Response =>
+    ({ status, ok: status < 400, json: async () => body }) as unknown as Response;
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    seen.url = url;
+    seen.init = init;
+    return answer(200, { consent: { version: 1 }, path: { n: 3, of: 8 } });
+  }) as unknown as typeof fetch;
+  try {
+    const body = {
+      model: "M1",
+      accepted: ["TERMS", "DATA"],
+      shown_hash: `sha256:${"a".repeat(64)}`,
+      press: pressNow("p3@1.0"),
+    };
+    const ok = await sendConsent(body, "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5", "ru");
+    expect(ok.ok).toBe(true);
+    expect(seen.url).toBe("/ui/v1/consent?lang=ru");
+    expect(seen.init?.method).toBe("POST");
+    expect((seen.init?.headers as Record<string, string>)[IDEMPOTENCY_HEADER]).toBe(
+      "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5",
+    );
+    // Тело уходит как есть: поля `by` в нём нет — его ставит сервер.
+    expect(JSON.parse(seen.init?.body as string)).toEqual(body);
+
+    // Отказ § 3 разбирается тем же путём, что у чтений: код, класс повтора и текст доходят до экрана.
+    globalThis.fetch = (async () =>
+      answer(400, { error: { code: "CONSENT_INVALID", retry: "after_fix", text: "нет", view: null } })) as unknown as typeof fetch;
+    const bad = await sendConsent(body, "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5", "ru");
+    expect(bad.ok).toBe(false);
+    if (!bad.ok && bad.reason === "contract") expect(bad.error.code).toBe("CONSENT_INVALID");
+    else expect.unreachable("ожидался отказ по контракту");
+
+    // Негодное тело отказа — «сбой», а не ветка отказа: та же проверка формы, что в чтениях (К3а № 3).
+    globalThis.fetch = (async () => answer(400, { error: null })) as unknown as typeof fetch;
+    const broken = await sendConsent(body, "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5", "ru");
+    expect(broken.ok).toBe(false);
+    if (!broken.ok) expect(broken.reason).toBe("broken");
+
+    // Сессии нет — своя причина и своё лечение (открыть страницу заново), а не «сбой».
+    globalThis.fetch = (async () => answer(401, null)) as unknown as typeof fetch;
+    const noSession = await sendConsent(body, "9f1c3b7e-5a24-4d8f-9b31-2c6f0ab4e7d5", "ru");
+    // Сначала утверждается сам исход: без этой строки проверка причины была бы пропущена, если 401 однажды
+    // разберётся как удачный ответ, и тест остался бы зелёным без единой проверки (находка второго прохода К5 № 11).
+    expect(noSession.ok).toBe(false);
+    if (!noSession.ok) expect(noSession.reason).toBe("no_session");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("П3: кнопка доступна, только когда отмечены **все** обязательные пункты", () => {
+  // Единственная мерка экрана П3, и она разрешена прямо: сервер отдаёт перечень обязательных и готовый текст
+  // причины, экран сверяет отмеченное (постановка ИН-П1, § 5.18). Окончательно решает § 5.19.
+  const consents = [
+    { id: "TERMS", required: true },
+    { id: "DATA", required: true },
+  ];
+  expect(canAccept(consents, new Set())).toBe(false);
+  expect(canAccept(consents, new Set(["TERMS"]))).toBe(false);
+  expect(canAccept(consents, new Set(["DATA"]))).toBe(false);
+  expect(canAccept(consents, new Set(["TERMS", "DATA"]))).toBe(true);
+  // Лишняя отметка не мешает: «из этого перечня» проверяет сервер, а не экран.
+  expect(canAccept(consents, new Set(["TERMS", "DATA", "MARKETING"]))).toBe(true);
+});
+
+test("П3: обязательность приходит полем, а своего перечня у экрана нет", () => {
+  // Пункт, помеченный необязательным, кнопку не держит — экран не выдумывает обязательность по опознавателю.
+  const withOptional = [
+    { id: "TERMS", required: true },
+    { id: "NEWS", required: false },
+  ];
+  expect(canAccept(withOptional, new Set(["TERMS"]))).toBe(true);
+  // Пустой перечень кнопку **не** открывает: «обязательных нет» — это не «со всем согласен», а неверно собранная
+  // сервером карточка, и подтверждать в ней нечего.
+  expect(canAccept([], new Set())).toBe(false);
+  expect(canAccept([{ id: "NEWS", required: false }], new Set(["NEWS"]))).toBe(false);
+});
 
 test("чтение: тело § 3 — отказ по контракту; служебный текст — «сбой»; 403 — «вход не выполнен»", async () => {
   const { loadShell } = await import("../../src/ui-client/api.js");

@@ -123,15 +123,29 @@ test("POST с полем by — 400, и в память повторов так�
       body: JSON.stringify({ press: { at: "t", device: "mobile", text_version: "v", gesture: "tap", by: "human" } }),
     });
     expect(res.status).toBe(400);
-    // Отклонённое тело не запоминается как ответ на ключ: иначе повтор экрана получил бы отказ вместо действия.
-    expect(repeats.size).toBe(0);
-    // Тот же ключ с законным телом — обычное первое обращение.
-    const ok = await fetch(`${s.url}/ui/v1/anything`, {
+    /**
+     * **Ожидание исправлено кирпичом К4 ИН-П1** (находка ревью К4 № 2). Прежде здесь стояло `repeats.size === 0` с
+     * доводом «отклонённое тело не запоминается как ответ на ключ, иначе повтор экрана получил бы отказ вместо
+     * действия». Довод неверен и противоречит правилу 2 (Р-1633, Р-1635): ключ занимает **любой** окончательный
+     * ответ, кроме `IDEMPOTENCY_REQUIRED`. Иначе тот же ключ с исправленным телом выполняет действие **со второй
+     * попытки** — это и есть то, что правило 2 запрещает; исправленное тело идёт новым ключом.
+     */
+    expect(repeats.size).toBe(1);
+    // Тот же ключ с **другим** телом — конфликт, а не новое действие: ключ уже занят отказом.
+    const again = await fetch(`${s.url}/ui/v1/anything`, {
       method: "POST",
       headers: { cookie, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
       body: JSON.stringify({ press: { at: "t", device: "mobile", text_version: "v", gesture: "tap" } }),
     });
-    expect(ok.status).toBe(404);
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: { code: string } }).error.code).toBe("IDEMPOTENCY_CONFLICT");
+    // Повтор **того же** негодного тела тем же ключом отдаёт тот же отказ, второго разбора нет.
+    const replay = await fetch(`${s.url}/ui/v1/anything`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
+      body: JSON.stringify({ press: { at: "t", device: "mobile", text_version: "v", gesture: "tap", by: "human" } }),
+    });
+    expect(replay.status).toBe(400);
     expect(repeats.size).toBe(1);
   } finally {
     await s.close();
