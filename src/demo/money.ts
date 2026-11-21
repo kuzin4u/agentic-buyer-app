@@ -4,6 +4,7 @@
 // Число знаков после запятой — по ISO 4217, а не по Intl: Intl берёт его из CLDR, а у части валют они расходятся
 // (IQD: ISO 3, CLDR 0; LAK, IRR: ISO 2, CLDR 0), и сумма вышла бы в 100–1000 раз больше (ревью К1.3 № 6). Валюта вне
 // таблицы — ошибка: монитор показывает событие без суммы, а не сумму с неверным масштабом.
+import { formatInstant } from "../format.js";
 import { ISO4217_MINOR_UNITS } from "../iso4217.js";
 import { LANGS, type Lang } from "./i18n.js";
 
@@ -48,14 +49,21 @@ export interface TimeView {
   readonly text: Readonly<Record<Lang, string>>;
 }
 
-const TIME_LOCALE: Readonly<Record<Lang, string>> = { ru: "ru-RU", en: "en-GB" };
+/** Пояс процесса стенда: монитор печатает время в нём, и это тот же пояс, что у экрана мандатов банка стенда (З9).
+ *  Называется явно, потому что `formatInstant` пояса по умолчанию не берёт. */
+const PROCESS_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /** Момент не по форме — исключение: шина выводит шаг без него, как сумму не по форме. */
 export function timeView(iso: string): TimeView {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) throw new RangeError(`время не по форме: ${iso}`);
-  const text = Object.fromEntries(
-    LANGS.map((l) => [l, d.toLocaleString(TIME_LOCALE[l], { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })]),
-  ) as Record<Lang, string>;
+  // Формат — **общий** (`formatInstant`, `src/format.ts`): у приложения один показ времени, а не два по одним
+  // правилам (К6 П-К4, решение владельца Р-1668; тот же довод, что у одной таблицы ISO 4217 и одного показа суммы
+  // `src/money.ts`). Пояс у монитора — пояс процесса стенда, он и передаётся названным: так величина не зависит от
+  // того, кто считает, а у `formatInstant` пояс обязателен (находка ревью К3 В4).
+  const text = Object.fromEntries(LANGS.map((l) => [l, formatInstant(d.toISOString(), l, PROCESS_TIME_ZONE)])) as Record<
+    Lang,
+    string
+  >;
   return { iso: d.toISOString(), text };
 }

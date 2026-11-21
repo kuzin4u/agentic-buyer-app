@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { parseWireItem } from "../../src/dashboards/wire.js";
 import { timeView } from "../../src/demo/money.js";
+import { formatInstant } from "../../src/format.js";
 
 const ISO = "2026-11-11T07:23:45.000Z";
 
@@ -22,6 +23,17 @@ describe("момент времени шага сюжета (П-11.1д-а)", () 
 
   it("время не по форме — исключение (шина выводит шаг без него)", () => {
     expect(() => timeView("завтра")).toThrow(RangeError);
+  });
+
+  /** К6 П-К4 (решение владельца Р-1668, находка ревью К3 В3): показ времени в приложении **один** — `formatInstant`
+   *  (`src/format.ts`). Монитор зовёт его, а не держит вторую копию той же формулы; пояс монитора — пояс процесса
+   *  стенда, и он передаётся названным. Сверяется с `formatInstant` **на тех же входах**: это не сравнение функции с
+   *  собой — слева величина монитора, справа общий показ, и расхождение формул станет красным. */
+  it("монитор и общий показ времени дают одну величину на обоих языках", () => {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const v = timeView(ISO);
+    expect(v.text.ru).toBe(formatInstant(ISO, "ru", zone));
+    expect(v.text.en).toBe(formatInstant(ISO, "en", zone));
   });
 
   it("линия дашбордов: valid_to — момент {iso, text}; строкой или без текста на языке — запись отбрасывается", () => {

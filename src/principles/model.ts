@@ -4,7 +4,9 @@
 // правило 3 К-Б). Банк профиль не подписывает; на Платформу и продавцу он не уходит.
 // Здесь только модель: подпись — `signature.ts` (К1.3), чтение для выбора — К1.4, сервис `/ui/v1/principles` — К1.5.
 // Маршрут и экран И-2 — ИН-0 окна Б.
-import type { ShownHash, UiInstant, UiLang, UiPress, UiSignedBy } from "../contract/ui-v1/common.js";
+import { obj, str } from "../config-parse.js";
+import type { UiInstant, UiLang, UiPress, UiShown, UiSignedBy } from "../contract/ui-v1/common.js";
+import { frozenShown } from "../contract/ui-v1/shown-hash.js";
 
 /** Опознаватель принципа, который уходит на экран (§ 5.14 К-Б, поле `items[].id`). */
 export type PrincipleId = string;
@@ -124,11 +126,11 @@ export function isKnownChangeSource(source: ChangeSource): source is KnownChange
 export type PrinciplesOrder = readonly PrincipleId[];
 
 /** Что в карточке видел человек, когда подтверждал: хэш показанного и версия текстов (правило 1 К-Б).
+ *  Форма — **общая** `UiShown` контракта (К8, решение владельца 21.11.2026 — **Р-1682**): своего объявления пары
+ *  здесь больше нет, иначе поле, добавленное правилом 1, пришлось бы помнить добавить в двух местах.
+ *  Имя оставлено псевдонимом: так правок меньше, а второго объявления пары не остаётся.
  *  Хэш считает `showingHash` (`src/contract/ui-v1/shown-hash.ts`, канонизация ядра — Р-1613), а не экран. */
-export interface PrinciplesView {
-  readonly hash: ShownHash;
-  readonly text_version: string;
-}
+export type PrinciplesView = UiShown;
 
 /** Подписанная версия профиля. **Неизменяема:** новая подпись прежнюю не стирает и не правит, `no` растёт на единицу.
  *  `received_at` — время **получения сервером**; время устройства живёт в `press.at` и им не заменяется (П26). */
@@ -172,7 +174,10 @@ export function nextVersion(
     no: prev === null ? FIRST_VERSION_NO : prev.no + 1,
     order: Object.freeze([...built.order]),
     by: built.by,
-    view: Object.freeze({ hash: built.view.hash, text_version: built.view.text_version }),
+    // Запись показанного копируется **целиком** (`frozenShown`), а не пересобирается по полям: при сборке по полям
+    // новое необязательное поле формы потерялось бы молча — и в подписанной версии, и в журнале (замечание ревью
+    // К8 № 5, кирпич К8а). Копия нужна, чтобы версия не держала чужой изменяемый объект.
+    view: frozenShown(built.view),
     press: Object.freeze({
       at: built.press.at,
       device: built.press.device,
@@ -236,16 +241,9 @@ const CODE = /^[A-Z][A-Z0-9_]*$/;
  *  было бы положить `"weight": 99` и ждать, что его кто-нибудь прочитает. Веса в перечне нет (П32, правка 6 канвы). */
 const ITEM_KEYS: readonly string[] = ["id", "code", "role", "text", "params", "scope"];
 
-function str(raw: Record<string, unknown>, key: string, where: string): string {
-  const v = raw[key];
-  if (typeof v !== "string" || v.trim() === "") throw new Error(`${where}.${key}: пустая строка`);
-  return v;
-}
-
-function obj(raw: unknown, where: string): Record<string, unknown> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${where}: ожидается объект`);
-  return raw as Record<string, unknown>;
-}
+// `obj` и `str` — общие примитивы разбора `config/` (`src/config-parse.ts`): их спрашивают и этот разбор, и разбор
+// текстов карточки поручения (К3 П-К4), а две копии расходятся по строгости молча (находка ревью К3 З6). Сообщения
+// об ошибке те же, что были здесь.
 
 /** Разбор перечня по умолчанию (`config/principles.default.json`). Перечень — **данные**, не код: тексты банка и
  *  состав установок меняются настройкой (инвариант 7 читается так же, как для бренда). Неверная форма — ошибка:

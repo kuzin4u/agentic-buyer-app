@@ -88,13 +88,31 @@ export interface IntentQuestion {
   readonly text: string;
 }
 
-export interface IntentDraftResponse {
-  readonly draft_id: string;
-  readonly card: IntentCard;
-  readonly questions: readonly IntentQuestion[];
-  readonly actions: { readonly submit: UiAction };
-  readonly view: UiView;
-}
+/** `card` и `view` — **`null`, пока есть вопросы** (решение владельца 20.11, 17:07, Р-1666; **К-Б v1.1**, внесёт чат).
+ *  Почему так: пока человек не ответил, значения спрошенных полей взять негде, а умолчание, пустая строка или ноль
+ *  вместо условия поручения — это карточка, в которой написано не то, о чём просили. Хэш показанного считается только
+ *  по полной карточке (правило 1), поэтому без карточки нет и `view`: нечего подписывать и нечего сверять.
+ *  Обратное тоже верно: есть `card` — `questions` пуст.
+ *  Ответы экран присылает **уточнённой фразой заново**, тем же `phrase`; отдельное поле ответов — с ВР-5. */
+/** Два тела, а не одно с необязательными полями: **типом** закрыто то, что иначе держалось бы комментарием —
+ *  карточка с непустыми вопросами, карточка без `view` и `view` без карточки (находка ревью К4 № 2). Тела собирает и
+ *  сервер ИН-0 окна Б, поэтому правило должно ломать сборку, а не ревью. */
+export type IntentDraftResponse =
+  | {
+      readonly draft_id: string;
+      readonly card: IntentCard;
+      readonly questions: readonly [];
+      readonly actions: { readonly submit: UiAction };
+      readonly view: UiView;
+    }
+  | {
+      readonly draft_id: string;
+      readonly card: null;
+      /** непустой перечень: ветка вопросов без единого вопроса — это ветка карточки */
+      readonly questions: readonly [IntentQuestion, ...IntentQuestion[]];
+      readonly actions: { readonly submit: UiAction };
+      readonly view: null;
+    };
 
 // ── § 5.2 `POST /ui/v1/intent` — отправить поручение на подпись (У2) ─────────────────────────────────────────────────
 
