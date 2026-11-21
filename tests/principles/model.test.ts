@@ -255,6 +255,16 @@ describe("К1.2: подписанная версия — номер по воз�
     expect(FIRST_VERSION_NO).toBe(1);
   });
 
+  /** К8 (Р-1682): в записи показанного подписанной версии — **ровно пара** «хэш + версия текстов». Проверяется на
+   *  **производителе** записи, а не на литерале теста: утечку лишнего поля в подписанную версию и в журнал (и, с ней,
+   *  инвариант 1) ловит только это ожидание — компиляция `Pick` его не заменяет (находка ревью К8 № 3). */
+  it("запись показанного в версии — ровно пара «хэш + версия текстов», без `view_id` и прочего", () => {
+    const version = nextVersion(null, built(ids, "2026-11-19T11:00:01Z"));
+    expect(Object.keys(version.view).sort()).toEqual(["hash", "text_version"]);
+    const second = nextVersion(version, built([ids[3] as string], "2026-11-19T12:00:02Z"));
+    expect(Object.keys(second.view).sort()).toEqual(["hash", "text_version"]);
+  });
+
   it("вторая подпись прежнюю не стирает и не правит: номер растёт, первая версия та же", () => {
     const first = nextVersion(null, built(ids, "2026-11-19T11:00:01Z"));
     const snapshot = JSON.parse(JSON.stringify(first)) as SignedPrinciples;

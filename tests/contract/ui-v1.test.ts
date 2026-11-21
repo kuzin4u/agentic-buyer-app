@@ -5,7 +5,9 @@
 //   3) правило идемпотентности: имя заголовка и формат ключа;
 //   4) инвариант 1 — в типах контракта нет полей реквизитов, номера карты, криптограммы и `kid`.
 import { readFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { filesUnder } from "../support/imports.js";
 import { ALLOWED_EXAMPLES, FORBIDDEN_EXAMPLES, hitsForbidden } from "../support/forbidden-fields.js";
 import {
   IDEMPOTENCY_HEADER,
@@ -21,7 +23,10 @@ import {
   type IntentDraftResponse,
   type UiMoney,
   type UiRetryClass,
+  type UiShown,
+  type UiView,
 } from "../../src/contract/ui-v1/index.js";
+import type { PrinciplesView } from "../../src/principles/model.js";
 
 const CONTRACT_DOC = new URL("../../docs/reference/2026-11-18-kontrakt-K-B-ui-v1-v1.0.md", import.meta.url);
 const doc = readFileSync(CONTRACT_DOC, "utf8");
@@ -241,6 +246,63 @@ describe("К2.4 п. 3: идемпотентность (§ 3, правило 2)",
     expect(isIdempotencyKey("9f1c3b7e-5a24-4d8f-7b31-2c6f0ab4e7d5")).toBe(false);
     expect(isIdempotencyKey("9f1c3b7e5a244d8f9b312c6f0ab4e7d5")).toBe(false);
     expect(isIdempotencyKey("")).toBe(false);
+  });
+});
+
+/** К8 (решение владельца 21.11.2026 — **Р-1682**): запись «что человек видел, когда подтверждал» — **одна форма** на
+ *  приложение. Проверяется **компиляцией**: `UiShown` выводится из `UiView` (`Pick`), поэтому разойтись по полям
+ *  пары они не могут, а второго объявления пары в `src/principles/` не осталось. */
+describe("Р-1682: одна форма записи показанного", () => {
+  it("`UiShown` — ровно пара «хэш + версия текстов», без `view_id`", () => {
+    const shown: UiShown = { hash: `sha256:${"a".repeat(64)}`, text_version: "u1-card@1.0" };
+    expect(Object.keys(shown).sort()).toEqual(["hash", "text_version"]);
+    // @ts-expect-error — `view_id` нужен, чтобы **найти** свою копию показанного; в сохранённой записи искать нечего
+    const withId: UiShown = { ...shown, view_id: "vw_1" };
+    expect(withId.hash).toBe(shown.hash);
+  });
+
+  it("пара `UiShown` и пара в `UiView` не расходятся — сверка на компиляции в обе стороны", () => {
+    const view: UiView = { view_id: "vw_1", hash: `sha256:${"b".repeat(64)}`, text_version: "u1-card@1.0" };
+    // `UiView` годится везде, где ждут запись показанного: пара у него та же.
+    const asShown: UiShown = view;
+    expect(asShown.text_version).toBe(view.text_version);
+    // А обратно — нет: у записи нет `view_id`, и это не «забыли поле», а разные роли.
+    // @ts-expect-error — из записи показанного `UiView` не собрать: `view_id` взять негде
+    const back: UiView = { hash: view.hash, text_version: view.text_version };
+    expect(back.hash).toBe(view.hash);
+  });
+
+  /** Сама норма Р-1682 — «одна форма **на приложение**» — держится обходом `src/`, а не присваиваемостью: `Pick` от
+   *  `UiView` присваиваем из `UiView` всегда, поэтому второе объявление той же пары компиляция не заметит (находка
+   *  ревью К8 № 2). Приём тот же, что у К7: сверка **с источником**, а не формы с собой. */
+  it("объявление пары «хэш + версия текстов» в `src/` одно — общая форма в контракте", () => {
+    const common = readFileSync(new URL("../../src/contract/ui-v1/common.ts", import.meta.url), "utf8");
+    expect(common).toMatch(/export type UiShown = Pick<UiView, "hash" \| "text_version">/);
+
+    /** Объявление пары: тип или интерфейс, у которого рядом стоят `hash` и `text_version`. */
+    const declaresPair = (text: string): boolean =>
+      [...text.matchAll(/(?:export\s+)?(?:interface|type)\s+\w+\s*=?\s*\{[^}]*\}/g)].some(
+        (m) => /\bhash\b/.test(m[0]) && /\btext_version\b/.test(m[0]),
+      );
+
+    const root = resolve(import.meta.dirname, "../..");
+    const offenders = filesUnder(join(root, "src"))
+      .filter((f) => declaresPair(readFileSync(f, "utf8")))
+      .map((f) => relative(root, f))
+      // `UiView` — **источник** формы: пара объявлена в нём, и `UiShown` берётся оттуда.
+      .filter((f) => f !== "src/contract/ui-v1/common.ts")
+      // Именованное исключение: `ConsentView` онбординга переводит окно Б кирпичом К7 ИН-П1 (Р-1682 п. 4). В `main`
+      // этого каталога ещё нет — когда появится, строка снимается вместе с его кирпичом.
+      .filter((f) => !f.startsWith("src/onboarding/"));
+    expect(offenders).toEqual([]);
+  });
+
+  it("профиль принципов берёт общую форму: имя — псевдоним, объявления пары нет", () => {
+    const model = readFileSync(new URL("../../src/principles/model.ts", import.meta.url), "utf8");
+    expect(model).toMatch(/export type PrinciplesView = UiShown/);
+    const shown: PrinciplesView = { hash: `sha256:${"c".repeat(64)}`, text_version: "principles@1.0" };
+    const asUi: UiShown = shown;
+    expect(asUi.text_version).toBe("principles@1.0");
   });
 });
 

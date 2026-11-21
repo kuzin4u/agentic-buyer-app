@@ -5,7 +5,7 @@
 // Здесь только модель: подпись — `signature.ts` (К1.3), чтение для выбора — К1.4, сервис `/ui/v1/principles` — К1.5.
 // Маршрут и экран И-2 — ИН-0 окна Б.
 import { obj, str } from "../config-parse.js";
-import type { ShownHash, UiInstant, UiLang, UiPress, UiSignedBy } from "../contract/ui-v1/common.js";
+import type { UiInstant, UiLang, UiPress, UiShown, UiSignedBy } from "../contract/ui-v1/common.js";
 
 /** Опознаватель принципа, который уходит на экран (§ 5.14 К-Б, поле `items[].id`). */
 export type PrincipleId = string;
@@ -125,11 +125,11 @@ export function isKnownChangeSource(source: ChangeSource): source is KnownChange
 export type PrinciplesOrder = readonly PrincipleId[];
 
 /** Что в карточке видел человек, когда подтверждал: хэш показанного и версия текстов (правило 1 К-Б).
+ *  Форма — **общая** `UiShown` контракта (К8, решение владельца 21.11.2026 — **Р-1682**): своего объявления пары
+ *  здесь больше нет, иначе поле, добавленное правилом 1, пришлось бы помнить добавить в двух местах.
+ *  Имя оставлено псевдонимом: так правок меньше, а второго объявления пары не остаётся.
  *  Хэш считает `showingHash` (`src/contract/ui-v1/shown-hash.ts`, канонизация ядра — Р-1613), а не экран. */
-export interface PrinciplesView {
-  readonly hash: ShownHash;
-  readonly text_version: string;
-}
+export type PrinciplesView = UiShown;
 
 /** Подписанная версия профиля. **Неизменяема:** новая подпись прежнюю не стирает и не правит, `no` растёт на единицу.
  *  `received_at` — время **получения сервером**; время устройства живёт в `press.at` и им не заменяется (П26). */
