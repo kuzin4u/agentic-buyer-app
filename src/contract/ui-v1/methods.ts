@@ -461,6 +461,71 @@ export interface PrinciplesRequest {
   readonly press: UiPress;
 }
 
+// ── § 5.17 `GET /ui/v1/onboarding` — знакомство, какой агент (П1) ────────────────────────────────────────────────────
+
+/** Вид агента на экране знакомства (§ 5.17; решение **Р-1675**).
+ *
+ *  `id`, `row` таблицы сравнения и `id` согласия объявлены здесь **строками, а не закрытыми перечнями**: перечни живут
+ *  в прикладном модуле (`src/onboarding/model.ts` — `AGENT_MODELS`, `COMPARE_ROWS`, `CONSENT_IDS`), и вторая копия в
+ *  контракте разошлась бы с ними на первой же правке (Р-1511 «закрытые перечни — из кода источника»). Тип описывает
+ *  **форму** тела, а состав значений держит тот, кто их выдаёт.
+ *
+ *  `selectable` и `why_not` — решение **сервера** (правило 3, инвариант 2): экран не выводит доступность сам и не
+ *  придумывает причину. У выбираемого вида `why_not` равен `null`, у невыбираемого — готовый текст; `action_label`
+ *  наоборот: у выбираемого подпись кнопки есть, у невыбираемого кнопки нет вовсе. */
+export interface UiAgentModel {
+  readonly id: string;
+  readonly name: string;
+  readonly text: string;
+  readonly selectable: boolean;
+  readonly why_not: string | null;
+  readonly action_label: string | null;
+  /** «что может агент» — готовые строки на языке запроса, свой набор у каждого выбираемого вида */
+  readonly can: readonly string[];
+}
+
+/** Строка таблицы «чем они отличаются для вас» (§ 5.17): подпись и значение у каждого вида агента. */
+export interface UiCompareLine {
+  readonly row: string;
+  readonly label: string;
+  readonly values: Readonly<Record<string, string>>;
+}
+
+/** Тело `GET /ui/v1/onboarding` (§ 5.17). **Без `view` и хэша**: на П1 человек ничего не подтверждает, подтверждать
+ *  нечего — правило 1 здесь не применяется. */
+export interface OnboardingResponse {
+  readonly path: UiPathStep;
+  readonly text_version: string;
+  readonly models: readonly UiAgentModel[];
+  readonly compare: readonly UiCompareLine[];
+}
+
+// ── § 5.18 `GET /ui/v1/onboarding/terms?model=M1|M2` — условия и согласия (П3) ───────────────────────────────────────
+
+/** Пункт согласия (§ 5.18). `required` отдаёт **сервер**: какие пункты обязательны, решает он, а экран лишь сверяет,
+ *  что отмеченные пункты из этого перечня (правило 3). Поля «отмечено» здесь нет и быть не может — отметку ставит
+ *  человек, и приходит она в теле § 5.19; поле с умолчанием было бы предотмеченным согласием (П26, Р-1676 п. 2). */
+export interface UiConsentItem {
+  readonly id: string;
+  readonly text: string;
+  readonly required: boolean;
+}
+
+/** Тело `GET /ui/v1/onboarding/terms` (§ 5.18) — это **карточка, которую человек подтверждает**, поэтому с `view` по
+ *  правилу 1: хэш считается по модели, версии текстов, перечню «что может агент», пометке «демо, не оферта» и текстам
+ *  согласий, на языке запроса.
+ *  `model=M3` сюда не доходит: невыбираемый вид — 409 `MODEL_NOT_AVAILABLE`, класс повтора `never` (Р-1675). */
+export interface OnboardingTermsResponse {
+  readonly model: string;
+  readonly path: UiPathStep;
+  readonly can: readonly string[];
+  /** «Условия демо-стенда, не оферта» — пометка обязательна, пока настоящей оферты нет (Р-1657, Р-1676 п. 4) */
+  readonly demo_note: string;
+  readonly consents: readonly UiConsentItem[];
+  readonly actions: { readonly accept: UiAction };
+  readonly view: UiView;
+}
+
 // ── § 5.15 `GET /ui/v1/limits` — пределы и оплата (П6, он же ИН-ВМ) ─────────────────────────────────────────────────
 
 /** `confirm_above` — порог `confirm_above_kop` из параметров стенда: значение даёт **сервер**, литералом в коде его нет.
