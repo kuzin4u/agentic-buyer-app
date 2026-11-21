@@ -2,6 +2,7 @@
 // запись журнала `principles.signed`, обязательный провенанс нажатия.
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
+import { contractDoc } from "../support/contract-doc.js";
 import { UI_DEVICES, UI_GESTURES } from "../../src/contract/ui-v1/common.js";
 import { UI_ERROR_STATUS } from "../../src/contract/ui-v1/errors.js";
 import { showingHash, type ShownPayload } from "../../src/contract/ui-v1/shown-hash.js";
@@ -436,12 +437,18 @@ describe("К1.3: негодное тело — один код `PRINCIPLES_ORDER
       );
     });
 
-    it("перечни взяты из контракта, а не переписаны: значения — как в § 3", () => {
+    it("перечни взяты из контракта, а не переписаны: значения — как в § 3 действующего документа", () => {
       expect([...UI_DEVICES]).toEqual(["mobile", "web", "max", "bank_module"]);
       expect([...UI_GESTURES]).toEqual(["swipe", "tap"]);
-      const doc = readFileSync(new URL("../../docs/reference/2026-11-18-kontrakt-K-B-ui-v1-v1.0.md", import.meta.url), "utf8");
-      expect(doc).toContain("`device` принимает значения `mobile` | `web` | `max` | `bank_module`");
-      for (const g of UI_GESTURES) expect(doc, g).toContain(`\`${g}\``);
+      // Документ — **действующий**, одним путём на все тесты (`tests/support/contract-doc.ts`). Прежде здесь стоял
+      // свой путь к v1.0, и сверка осталась на отменённой версии: поменяй перечень устройств в v1.3 — тест был бы
+      // зелёным (находка ревью К7 № 8). Сверка по значениям, а не по фразе: формулировка § 3 между версиями менялась,
+      // и ожидание по целой строке ломалось бы на правке прозы, ничего не проверяя по существу.
+      const doc = contractDoc();
+      const press = doc.slice(doc.indexOf("`at` — время по часам устройства"));
+      const section = press.slice(0, press.indexOf("\n\n"));
+      for (const d of UI_DEVICES) expect(section, d).toContain(`\`${d}\``);
+      for (const g of UI_GESTURES) expect(section, g).toContain(`\`${g}\``);
     });
   });
 

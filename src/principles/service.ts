@@ -3,7 +3,7 @@
 // строки-пояснения приходят готовыми, на языке запроса.
 // Весов в ответах нет ни одним полем (правка 6 канвы, П32) — это держит тест К1.2 по именам полей `/ui/v1`.
 import type { UiErrorBody, UiRetryClass } from "../contract/ui-v1/errors.js";
-import { UI_ERROR_STATUS } from "../contract/ui-v1/errors.js";
+import { retryFor, UI_ERROR_STATUS } from "../contract/ui-v1/errors.js";
 import type { UiLang } from "../contract/ui-v1/common.js";
 import type { PrinciplesRequest, PrinciplesResponse } from "../contract/ui-v1/methods.js";
 import { viewOf, type ShownPayload } from "../contract/ui-v1/shown-hash.js";
@@ -12,21 +12,27 @@ import { lockedId, notesFor, ranksFor } from "./selection.js";
 import type { PrinciplesStore, SignDeps, SignErrorCode, SignOutcome, SignRequest } from "./signature.js";
 import { signPrinciples } from "./signature.js";
 
-/** Класс повтора у каждого кода `/ui`, которым отвечает этот метод (§ 3 «Ошибки»: `retry` — класс повтора ядра).
- *  Откуда взят каждый:
- *  - `PRINCIPLES_ORDER_INVALID` — **решение владельца 19.11** (`after_fix`);
- *  - `IDEMPOTENCY_REQUIRED` (`same_key`) и `IDEMPOTENCY_CONFLICT` (`after_fix`) — **таблица кодов ПАО 1.4.0**, по
- *    правилу 2 К-Б «сервер отвечает так же, как ПАО»;
- *  - `SHOWN_STALE` — **решение владельца 19.11, 18:20**: `after_human`. После устаревшей карточки человек должен
- *    посмотреть на новую и нажать заново — это решение человека, а не исправление тела. В § 6 К-Б класс войдёт
- *    с v1.1.
- *  `satisfies` держит перечень полным: новый код `SignErrorCode` без класса не пройдёт сборку. */
-export const RETRY_BY_CODE = {
-  SHOWN_STALE: "after_human",
-  PRINCIPLES_ORDER_INVALID: "after_fix",
-  IDEMPOTENCY_REQUIRED: "same_key",
-  IDEMPOTENCY_CONFLICT: "after_fix",
-} as const satisfies Record<SignErrorCode, UiRetryClass>;
+/**
+ * Класс повтора у кодов этого метода — **срез общей таблицы контракта** (`UI_RETRY`, § 6; решения владельца
+ * **Р-1681** и **Р-1685**, кирпич К7 ИН-П1).
+ *
+ * Своих значений здесь больше нет: перечисляются только **коды**, которыми отвечает подпись профиля, — это норма
+ * метода, а класс повтора одна норма на приложение и назван в § 6 документа с К-Б v1.3. Прежде значения стояли
+ * здесь второй копией, и расхождение по `IDEMPOTENCY_REQUIRED` между этой таблицей и таблицей сервера пришлось
+ * чинить отдельным кирпичом.
+ *
+ * Что держит тип, а что тест: **пропущенный** код `SignErrorCode` краснит сборку, а **лишний** сборка уже не ловит
+ * (результат `retryFor` не литерал, проверки избыточных свойств к нему нет — прежний `as const satisfies` её давал).
+ * Лишний код ловит тест `tests/principles/service.test.ts`, который сверяет набор ключей с `ERROR_TEXT_KEYS`
+ * (находка ревью К7 № 9).
+ * Реэкспорт из `src/principles/index.ts` оставлен как был: путь доступа прежний, норма одна.
+ */
+export const RETRY_BY_CODE: Readonly<Record<SignErrorCode, UiRetryClass>> = retryFor([
+  "SHOWN_STALE",
+  "PRINCIPLES_ORDER_INVALID",
+  "IDEMPOTENCY_REQUIRED",
+  "IDEMPOTENCY_CONFLICT",
+]);
 
 /** Тексты ошибок в `config/` описывают **ровно** те же коды, которыми отвечает подпись — проверка на компиляции, а
  *  не на словах: разойдутся перечни, и сборка станет красной. */

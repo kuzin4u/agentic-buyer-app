@@ -15,7 +15,7 @@
 // **Идемпотентность — правило 2 К-Б:** ключ занимает любой окончательный ответ, включая отказ, кроме
 // `IDEMPOTENCY_REQUIRED` (Р-1633, Р-1635, Р-1659); тот же ключ с другим телом — `IDEMPOTENCY_CONFLICT`.
 import type { UiErrorBody, UiRetryClass } from "../contract/ui-v1/errors.js";
-import { UI_ERROR_STATUS } from "../contract/ui-v1/errors.js";
+import { retryFor, UI_ERROR_STATUS } from "../contract/ui-v1/errors.js";
 import type { UiLang, UiSignedBy } from "../contract/ui-v1/common.js";
 import { bodyFingerprint } from "../contract/ui-v1/fingerprint.js";
 import { isIdempotencyKey, type IdempotencyKey } from "../contract/ui-v1/idempotency.js";
@@ -40,26 +40,29 @@ export type IntentErrorCode =
   | "IDEMPOTENCY_REQUIRED"
   | "IDEMPOTENCY_CONFLICT";
 
-/** Класс повтора у каждого кода. **Ни один не выведен «по смыслу»** — каждый взят у источника (строка STATUS о
- *  классах повтора, К1.5):
- *  - `INTENT_DRAFT_INVALID` — `after_fix`, решения владельца 20.11, 15:28 и 18:45 (Р-1650, Р-1670);
- *  - `SHOWN_STALE` — `after_human`, решение владельца 19.11, 18:20;
- *  - `IDEMPOTENCY_REQUIRED` — `same_key`, `IDEMPOTENCY_CONFLICT` — `after_fix`: таблица кодов ПАО 1.4.0 (правило 2);
- *  - `PURCHASE_NOT_FOUND` — `after_human`: у ядра «не найдено» так и судится (`MANDATE_NOT_FOUND` в таблице отказов
- *    `agentic-buyer-ref`, класс совпадает с `retry` ПАО 1.4.0), и повтор тем же телом ничего не меняет;
- *  - `STEP_NOT_ALLOWED` — `after_human`, **решение владельца 20.11.2026, 20:08 (Р-1677)**: экран перечитывает
- *    покупку, показывает нужный шаг, и человек нажимает уже на нём — как у `SHOWN_STALE`. `never` сказал бы экрану,
- *    что действие невозможно совсем, а это неправда. В § 6 класс войдёт с К-Б v1.1 (пометка `PENDING_V1_1`).
- *  Класс каждого кода стоит в одном месте — здесь. */
-export const RETRY_BY_CODE = {
-  INTENT_DRAFT_INVALID: "after_fix",
-  SHOWN_STALE: "after_human",
-  PURCHASE_NOT_FOUND: "after_human",
-  /** Р-1677, пометка `PENDING_V1_1`: в § 6 документа v1.0 классов повтора нет вовсе. */
-  STEP_NOT_ALLOWED: "after_human",
-  IDEMPOTENCY_REQUIRED: "same_key",
-  IDEMPOTENCY_CONFLICT: "after_fix",
-} as const satisfies Record<IntentErrorCode, UiRetryClass>;
+/**
+ * Класс повтора у кодов этого метода — **срез общей таблицы контракта** (`UI_RETRY`, § 6; решения владельца
+ * **Р-1681** и **Р-1685**, кирпич К7 ИН-П1).
+ *
+ * Своих значений здесь больше нет. Перечисляются только **коды**, на которые отвечает поручение: это его
+ * собственная норма («какие отказы у меня бывают»), и она остаётся здесь. Класс же — одна норма на приложение, и с
+ * К-Б v1.3 он назван в § 6 документа вместе с источником; прежде таблица стояла здесь второй копией и однажды
+ * разошлась с таблицей сервера на `IDEMPOTENCY_REQUIRED`.
+ *
+ * Что держит тип, а что тест (честно, без «гарантия та же»): **пропущенный** код краснит сборку — `Record` без
+ * свойства не присвоится `Record<IntentErrorCode, …>`. А **лишний** код сборка уже не ловит: результат `retryFor`
+ * не свежий литерал, и проверка избыточных свойств к нему не применяется — прежний `as const satisfies` на литерале
+ * её давал. Лишний код ловит тест `tests/intent/service.test.ts` («классы повтора — у каждого кода свой»), который
+ * сверяет таблицу целиком (находка ревью К7 № 9).
+ */
+export const RETRY_BY_CODE: Readonly<Record<IntentErrorCode, UiRetryClass>> = retryFor([
+  "INTENT_DRAFT_INVALID",
+  "SHOWN_STALE",
+  "PURCHASE_NOT_FOUND",
+  "STEP_NOT_ALLOWED",
+  "IDEMPOTENCY_REQUIRED",
+  "IDEMPOTENCY_CONFLICT",
+]);
 
 /** Причина отказа. Остаётся **внутри** сервера: экрану уходит код и готовый текст, а причина нужна журналу и
  *  разбору (Р-1650; тот же приём, что у подписи принципов — П32 дополнение 1). */
