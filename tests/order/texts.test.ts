@@ -10,7 +10,8 @@ import { describe, expect, it } from "vitest";
 import {
   OUTCOME_CODES,
   parseOrderTexts,
-  SCOPE_CODES,
+  SCOPE_CORE_CODES,
+  scopeTextOf,
   sourceCodeOf,
   sourceOf,
   SOURCE_CODES,
@@ -18,6 +19,8 @@ import {
   type OrderTexts,
   type SourceCode,
 } from "../../src/order/texts.js";
+import { ORDER_ABSENCE_REASONS } from "../../src/contract/ui-v1/methods.js";
+import { AGENT_DIAG } from "agentic-buyer-ref/src/agent/declines/registry.js";
 import type { ShellText } from "../../src/order/port.js";
 import { hitsForbidden } from "../support/forbidden-fields.js";
 import { CHECKED_AT, FULFILLED_AT, operation, read, unsettled, VERIFIED_AT } from "./fixture.js";
@@ -38,17 +41,23 @@ describe("К1: тексты источников — данными в `config/`
     expect(fileCodes.slice().sort()).toEqual([...SOURCE_CODES].slice().sort());
   });
 
-  it("ключи **файла** в разделах класса и исхода — тоже ровно перечни кода", () => {
-    const file = raw as { scope: Record<string, unknown>; outcomes: Record<string, unknown> };
-    expect(Object.keys(file.scope).slice().sort()).toEqual([...SCOPE_CODES].slice().sort());
+  it("ключи **файла** в разделах исхода, причины и английских пар — ровно перечни кода", () => {
+    const file = raw as {
+      scope_en: Record<string, unknown>;
+      outcomes: Record<string, unknown>;
+      reasons: Record<string, unknown>;
+    };
+    expect(Object.keys(file.scope_en).slice().sort()).toEqual([...SCOPE_CORE_CODES].slice().sort());
     expect(Object.keys(file.outcomes).slice().sort()).toEqual([...OUTCOME_CODES].slice().sort());
+    expect(Object.keys(file.reasons).slice().sort()).toEqual([...ORDER_ABSENCE_REASONS].slice().sort());
   });
 
-  it("каждый текст **всех** разделов есть на двух языках, и ru по-русски, en по-английски", () => {
+  it("каждый двуязычный текст есть на двух языках, и ru по-русски, en по-английски", () => {
     const all: Bilingual[] = [
       ...SOURCE_CODES.map((c) => texts.sources[c]),
-      ...SCOPE_CODES.map((c) => texts.scope[c]),
+      texts.scope_within,
       ...OUTCOME_CODES.map((c) => texts.outcomes[c]),
+      ...ORDER_ABSENCE_REASONS.map((c) => texts.reasons[c]),
     ];
     for (const pair of all) {
       expect(pair.ru).not.toBe(pair.en);
@@ -57,12 +66,51 @@ describe("К1: тексты источников — данными в `config/`
       expect(pair.en, pair.en).not.toMatch(/[А-Яа-яЁё]/);
     }
     // Перечни не пустые — иначе цикл ничего не проверяет.
-    expect(all.length).toBe(SOURCE_CODES.length + SCOPE_CODES.length + OUTCOME_CODES.length);
+    expect(all.length).toBe(SOURCE_CODES.length + 1 + OUTCOME_CODES.length + ORDER_ABSENCE_REASONS.length);
   });
 
-  it("класс «значение не опознано» говорит именно это, а не ближайшее известное", () => {
-    expect(texts.scope.SCOPE_CHECK_UNRECOGNIZED.ru).toMatch(/не опознано/);
-    expect(texts.scope.SCOPE_CHECK_UNRECOGNIZED.ru).not.toBe(texts.scope.WITHIN_LIMITS.ru);
+  it("у классов с кодом ядра в `config/` только английская пара: русского текста там нет (Р-1696)", () => {
+    const file = raw as { scope_en: Record<string, Record<string, unknown> | undefined> };
+    for (const code of SCOPE_CORE_CODES) expect(Object.keys(file.scope_en[code] ?? {})).toEqual(["en"]);
+    // А русский берётся у ядра — у того же источника, откуда взят класс (Р-1694).
+    for (const code of SCOPE_CORE_CODES) expect(scopeTextOf(code, texts, "ru")).toBe(AGENT_DIAG[code].human.ru);
+    // Английский — свой, и он не равен русскому ядра.
+    for (const code of SCOPE_CORE_CODES) expect(scopeTextOf(code, texts, "en")).toBe(texts.scope_en[code]);
+  });
+
+  it("русский текст ядра зафиксирован **значением**: правка у ядра краснеет здесь, и en правят тем же кирпичом", () => {
+    // Без этого ожидания расхождение ru (от ядра) и en (своего) не ловилось ничем: ядро правит строку — на экране
+    // меняется только русский, и два языка говорят разное (находка ревью К2а № 6).
+    expect(scopeTextOf("SCOPE_EXCEEDS_AUTHORIZATION", texts, "ru")).toBe(
+      "Списано больше одобренной суммы. Покупка завершена; итог проверьте в приложении банка — по этой оплате можно открыть спор.",
+    );
+    expect(scopeTextOf("SCOPE_CHECK_UNRECOGNIZED", texts, "ru")).toBe(
+      "Банк сообщил о проверке списания, которую помощник не распознал. Покупка завершена; итог проверьте в приложении банка.",
+    );
+  });
+
+  it("английские строки — по-английски и без подстановок, как у ядра (К17 п. 6)", () => {
+    for (const code of SCOPE_CORE_CODES) {
+      expect(texts.scope_en[code], code).toMatch(/[A-Za-z]/);
+      expect(texts.scope_en[code], code).not.toMatch(/[А-Яа-яЁё]/);
+      expect(texts.scope_en[code], code).not.toMatch(/\{[a-z_]+\}/);
+    }
+  });
+
+  it("разбор отвергает подстановку в английской строке класса", () => {
+    const copy = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
+    const en = copy["scope_en"] as Record<string, Record<string, unknown> | undefined>;
+    en["SCOPE_EXCEEDS_AUTHORIZATION"] = { en: "More was charged than approved: {money}" };
+    expect(() => parseOrderTexts(copy)).toThrow(/order\.scope_en\.SCOPE_EXCEEDS_AUTHORIZATION\.en: подстановка \{money\}/);
+  });
+
+  it("разбор отвергает русский текст у класса с кодом ядра — вторую копию строки", () => {
+    const copy = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
+    const en = copy["scope_en"] as Record<string, Record<string, unknown> | undefined>;
+    const one = en["SCOPE_NOT_RESERVED"] ?? {};
+    one["ru"] = "своя копия текста ядра";
+    en["SCOPE_NOT_RESERVED"] = one;
+    expect(() => parseOrderTexts(copy)).toThrow(/order\.scope_en\.SCOPE_NOT_RESERVED\.ru: русский текст берётся у ядра/);
   });
 
   it("у разных источников разные тексты — один текст на оба случая был бы красным", () => {

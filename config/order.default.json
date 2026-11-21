@@ -9,22 +9,19 @@
       "en": "Operation status at the Platform, no fulfilment record yet"
     }
   },
-  "scope": {
-    "WITHIN_LIMITS": {
-      "ru": "В пределах поручения",
-      "en": "Within the mandate limits"
-    },
+  "scope_within": {
+    "ru": "В пределах поручения",
+    "en": "Within the mandate limits"
+  },
+  "scope_en": {
     "SCOPE_EXCEEDS_AUTHORIZATION": {
-      "ru": "Платформа отметила выход за пределы разрешённого поручением",
-      "en": "The Platform flagged this as exceeding the mandate authorization"
+      "en": "More was charged than the amount approved. The purchase is complete; check the outcome in your bank app — this payment can be disputed."
     },
     "SCOPE_NOT_RESERVED": {
-      "ru": "Платформа отметила, что сумма не была зарезервирована по поручению",
-      "en": "The Platform flagged that the amount was not reserved under the mandate"
+      "en": "The money was charged outside your mandate reservation: the mandate budget did not account for this charge. The charged amount is in the notice. The purchase is complete; check the outcome in your bank app."
     },
     "SCOPE_CHECK_UNRECOGNIZED": {
-      "ru": "Значение Платформы не опознано",
-      "en": "The Platform value is not recognised"
+      "en": "The bank reported a charge check that the assistant did not recognise. The purchase is complete; check the outcome in your bank app."
     }
   },
   "outcomes": {
@@ -39,6 +36,16 @@
     "REFUNDED": {
       "ru": "Деньги вернулись. Предел поручения не восстановлен",
       "en": "The money was refunded. The mandate limit is not restored"
+    }
+  },
+  "reasons": {
+    "FULFILMENT_ABSENT": {
+      "ru": "Итога расчёта ещё нет: Платформа не записала исполнение",
+      "en": "The settlement outcome is not in yet: the Platform has not recorded the fulfilment"
+    },
+    "OPERATION_AMOUNT_ABSENT": {
+      "ru": "Суммы операции Платформа не сообщила",
+      "en": "The Platform did not report the operation amount"
     }
   }
 }

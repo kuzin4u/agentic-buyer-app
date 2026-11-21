@@ -7,11 +7,12 @@
 //
 // Чего здесь **нет**: строк `line.not_spent` и `DONE_TEXT`. Они живут в словаре каркаса окна Б и приходят портом
 // `ShellText` (Р-1693) — своя копия дала бы два источника одной строки.
+import { AGENT_DIAG } from "agentic-buyer-ref/src/agent/declines/registry.js";
 import type { OperationStatus } from "agentic-buyer-ref/src/shared/domain.js";
 import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
-import { bilingual, obj, type Bilingual } from "../config-parse.js";
+import { bilingual, obj, slotRe, str, type Bilingual } from "../config-parse.js";
 import type { UiLang } from "../contract/ui-v1/common.js";
-import type { OrderResponse } from "../contract/ui-v1/methods.js";
+import { ORDER_ABSENCE_REASONS, type OrderAbsenceReason, type OrderResponse } from "../contract/ui-v1/methods.js";
 import type { OrderRead } from "./port.js";
 
 export type { Bilingual };
@@ -40,7 +41,7 @@ export type SourceCode = (typeof SOURCE_CODES)[number];
  * (`PurchaseNotice`), поэтому новый класс у ядра делает этот модуль красным на компиляции, а не остаётся строкой,
  * которой никто не показал.
  */
-type ScopeNoticeCode = Extract<PurchaseNotice, `SCOPE_${string}`>;
+export type ScopeNoticeCode = Extract<PurchaseNotice, `SCOPE_${string}`>;
 
 export const SCOPE_CODES = [
   "WITHIN_LIMITS",
@@ -73,13 +74,47 @@ export const OUTCOME_CODES = ["DECLINED", "REVERSED", "REFUNDED"] as const satis
 
 export type OutcomeCode = (typeof OUTCOME_CODES)[number];
 
+/** Классы, у которых **есть код у ядра**: их русский текст живёт в реестре `AGENT_DIAG`, и второй копии ему здесь не
+ *  бывает (Р-1696). `WITHIN_LIMITS` в этот перечень не входит: кода у него нет — `scopeNotice` при нём молчит. */
+export const SCOPE_CORE_CODES = SCOPE_CODES.filter((c): c is ScopeNoticeCode => c !== "WITHIN_LIMITS");
+
 export interface OrderTexts {
   readonly sources: Readonly<Record<SourceCode, Bilingual>>;
-  readonly scope: Readonly<Record<ScopeCode, Bilingual>>;
+  /** «в пределах поручения» — **свой** текст парами ru/en: кода у ядра для этого случая нет */
+  readonly scope_within: Bilingual;
+  /** английская пара к текстам ядра (Р-1696): `ru` берётся у ядра, в `config/` его нет и быть не может */
+  readonly scope_en: Readonly<Record<ScopeNoticeCode, string>>;
   readonly outcomes: Readonly<Record<OutcomeCode, Bilingual>>;
+  /** почему записи об исполнении или суммы нет — тексты закрытого перечня § 5.8 (Р-1695) */
+  readonly reasons: Readonly<Record<OrderAbsenceReason, Bilingual>>;
 }
 
-const SECTIONS = ["sources", "scope", "outcomes"] as const;
+/**
+ * Текст класса проверки клиринга человеку (**Р-1696**, решение владельца 22.11.2026).
+ *
+ * Русский текст берётся **у ядра** — из реестра `AGENT_DIAG`, того же источника, откуда взят класс (Р-1694): класс и
+ * текст одного класса не живут в двух местах. Так уже сделано у сервера `/ui/v1` для класса повтора
+ * (`ruleForFailure`). Английская пара — своя, в `config/`: у реестра ядра обязателен только `ru` (правило
+ * совместимости № 3 ядра), а интерфейс приложения двуязычный с первого коммита.
+ *
+ * Отменяет слова «текст человеку свой» в П36 п. 5 — см. дополнение 1 карточки. Прежние русские строки приложения
+ * («выход за пределы разрешённого поручением», «сумма не была зарезервирована») были **толкованием** кода ядра и
+ * расходились с ним по смыслу: у ядра сказано «списано больше одобренной суммы» — про одобренную сумму, а не про
+ * предел поручения (находка ревью К2 № 5).
+ */
+export function scopeTextOf(code: ScopeCode, texts: OrderTexts, lang: UiLang): string {
+  if (code === "WITHIN_LIMITS") return texts.scope_within[lang];
+  // Язык запроса у реестра ядра может появиться позже (`DiagTexts` допускает любые языки) — тогда он берётся **раньше**
+  // своей пары: источник текста один, и своя пара нужна лишь пока у ядра языка нет (находка ревью К2а № 6 — прежде
+  // ветка `en` до реестра не доходила никогда, и обещание в комментарии не исполнялось).
+  const human = AGENT_DIAG[code].human;
+  const fromCore = human[lang];
+  if (fromCore !== undefined) return fromCore;
+  if (lang === "en") return texts.scope_en[code];
+  return human.ru;
+}
+
+const SECTIONS = ["sources", "scope_within", "scope_en", "outcomes", "reasons"] as const;
 
 /** Раздел файла: ключи — ровно перечень кодов, ни пропуска, ни лишнего (Р-1511, приём К1.5 П-К1). Подстановок у этих
  *  текстов нет: это названия источника, класса и исхода, а не строки с величинами — величины показывает каркас. */
@@ -98,10 +133,31 @@ export function parseOrderTexts(raw: unknown): OrderTexts {
   for (const key of Object.keys(r))
     if (!(SECTIONS as readonly string[]).includes(key)) throw new Error(`order.${key}: лишнее поле`);
 
+  // Английская пара к текстам ядра: ключи — ровно коды ядра, и **`ru` здесь запрещён** (Р-1696). Русская строка в
+  // файле означала бы вторую копию текста класса рядом с реестром ядра — разбор её не пропускает.
+  const rawEn = obj(r["scope_en"], "order.scope_en");
+  for (const key of Object.keys(rawEn))
+    if (!(SCOPE_CORE_CODES as readonly string[]).includes(key))
+      throw new Error(`order.scope_en.${key}: кода нет в перечне`);
+  const scope_en = {} as Record<ScopeNoticeCode, string>;
+  for (const code of SCOPE_CORE_CODES) {
+    const where = `order.scope_en.${code}`;
+    const one = obj(rawEn[code], where);
+    for (const key of Object.keys(one))
+      if (key !== "en") throw new Error(`${where}.${key}: русский текст берётся у ядра (Р-1696)`);
+    const s = str(one, "en", where);
+    // Подстановок у этих текстов не бывает — ни у ядра (К17 п. 6), ни здесь: проверка та же, что у пар ru/en
+    // (находка ревью К2а № 7), иначе `{money}` доехал бы до человека фигурными скобками.
+    for (const m of s.matchAll(slotRe())) throw new Error(`${where}.en: подстановка {${m[1] ?? ""}} здесь не бывает`);
+    scope_en[code] = s;
+  }
+
   return {
     sources: section(r["sources"], "sources", SOURCE_CODES),
-    scope: section(r["scope"], "scope", SCOPE_CODES),
+    scope_within: bilingual(r["scope_within"], "order.scope_within", []),
+    scope_en,
     outcomes: section(r["outcomes"], "outcomes", OUTCOME_CODES),
+    reasons: section(r["reasons"], "reasons", ORDER_ABSENCE_REASONS),
   };
 }
 
