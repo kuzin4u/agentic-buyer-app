@@ -4,10 +4,14 @@
 // Фикстура — общая (`./fixture.js`), одна на случаи К1 и К2 (находка ревью К2 № 7).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { absenceReasonOf, absenceText, orderBody, scopeCodeOfNotice, type OrderBodyDeps } from "../../src/order/response.js";
+import { absenceReasonOf, absenceTextOf, orderBody, scopeCodeOfNotice, type OrderBodyDeps } from "../../src/order/response.js";
 import { parseOrderTexts, scopeTextOf, type OrderTexts } from "../../src/order/texts.js";
-import type { ShellText } from "../../src/order/port.js";
-import type { UiFeedEvent } from "../../src/contract/ui-v1/methods.js";
+import type { OrderRead, ShellText } from "../../src/order/port.js";
+import {
+  ORDER_ABSENCE_REASONS,
+  type OrderAbsenceReason,
+  type UiFeedEvent,
+} from "../../src/contract/ui-v1/methods.js";
 import { CHECKED_AT, fulfilment, operation, read, STOPPED_AT, unsettled } from "./fixture.js";
 import { AGENT_DIAG } from "agentic-buyer-ref/src/agent/declines/registry.js";
 import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
@@ -43,6 +47,7 @@ describe("К2: тело § 5.8 — из прочитанного", () => {
         at: "2026-11-21T18:05:00.000Z",
       },
       reason: null,
+      reason_text: null,
       source: { text: texts.sources.PLATFORM_FULFILMENT.ru, checked_at: "2026-11-21T20:15:00.000Z" },
       done_line: { done: "«сделано DONE на ru»", not_spent: "«не списано 63200 RUB на ru»" },
       refund: null,
@@ -216,8 +221,8 @@ describe("К2а: итога ещё нет — это состояние, а не
     expect(res.source.text).toBe(texts.sources.PLATFORM_OPERATION.ru);
     expect(res.source.checked_at).toBe(CHECKED_AT);
     // Человеку говорят не «ничего нет», а что именно: текст причины — из `config/` парами ru/en.
-    expect(absenceText(res, deps())).toBe(texts.reasons.FULFILMENT_ABSENT.ru);
-    expect(absenceText(res, deps({ lang: "en" }))).toBe(texts.reasons.FULFILMENT_ABSENT.en);
+    expect(absenceTextOf(res.reason, deps())).toBe(texts.reasons.FULFILMENT_ABSENT.ru);
+    expect(absenceTextOf(res.reason, deps({ lang: "en" }))).toBe(texts.reasons.FULFILMENT_ABSENT.en);
     // Строка «что уже сделано» есть и здесь — по состоянию прочитанного.
     expect(res.done_line.done).toBe("«сделано SETTLING на ru»");
   });
@@ -234,7 +239,7 @@ describe("К2а: итога ещё нет — это состояние, а не
     const res = body(read({ operation: operation({ amount: null }) }));
     expect(res.operation.amount).toBeNull();
     expect(res.reason).toBe("OPERATION_AMOUNT_ABSENT");
-    expect(absenceText(res, deps())).toBe(texts.reasons.OPERATION_AMOUNT_ABSENT.ru);
+    expect(absenceTextOf(res.reason, deps())).toBe(texts.reasons.OPERATION_AMOUNT_ABSENT.ru);
     // Запись об исполнении при этом прочитана и показывается как есть.
     expect(res.fulfilment?.final).toEqual({ amount: 36_150, currency: "RUB" });
   });
@@ -247,8 +252,53 @@ describe("К2а: итога ещё нет — это состояние, а не
     expect(absenceReasonOf(unsettled({ amount: null }))).toBe("FULFILMENT_ABSENT");
   });
 
-  it("при полном теле причины нет", () => {
+  it("при полном теле причины нет — ни кода, ни текста", () => {
     expect(body().reason).toBeNull();
-    expect(absenceText(body(), deps())).toBeNull();
+    expect(body().reason_text).toBeNull();
+    expect(absenceTextOf(body().reason, deps())).toBeNull();
+  });
+});
+
+describe("К3а: текст причины лежит в том же теле, рядом с кодом (Р-1697)", () => {
+  it("записи об исполнении нет — в теле и код, и непустой готовый текст", () => {
+    const res = body(read({ operation: unsettled(), state: "SETTLING" }));
+    expect(res.reason).toBe("FULFILMENT_ABSENT");
+    expect(res.reason_text).toBeTruthy();
+    // Текст сверяется **с источником** (`config/order.default.json` через разбор), а не с литералом в тесте (Р-1511).
+    expect(res.reason_text).toBe(texts.reasons.FULFILMENT_ABSENT.ru);
+    // И это именно готовый текст, а не код: экрану склеивать нечего (правило 3).
+    expect(res.reason_text).not.toBe(res.reason);
+  });
+
+  it("суммы операции нет — свой текст, не текст про запись об исполнении", () => {
+    const res = body(read({ operation: operation({ amount: null }) }));
+    expect(res.reason).toBe("OPERATION_AMOUNT_ABSENT");
+    expect(res.reason_text).toBe(texts.reasons.OPERATION_AMOUNT_ABSENT.ru);
+    expect(res.reason_text).not.toBe(texts.reasons.FULFILMENT_ABSENT.ru);
+  });
+
+  it("текст причины — на языке запроса", () => {
+    const res = body(read({ operation: unsettled(), state: "SETTLING" }), deps({ lang: "en" }));
+    expect(res.reason_text).toBe(texts.reasons.FULFILMENT_ABSENT.en);
+  });
+
+  it("код и текст согласованы на **всём** закрытом перечне причин: текст есть ровно тогда, когда есть код", () => {
+    // Перебор идёт по перечню из источника (`ORDER_ABSENCE_REASONS`), а не по рукописному списку чтений (находка
+    // ревью К3а № 4): добавится причина — таблица чтений станет неполной, и это покраснеет здесь, а не останется
+    // зелёным под прежним названием.
+    const readingFor: Readonly<Record<OrderAbsenceReason, OrderRead>> = {
+      FULFILMENT_ABSENT: read({ operation: unsettled(), state: "SETTLING" }),
+      OPERATION_AMOUNT_ABSENT: read({ operation: operation({ amount: null }) }),
+    };
+    expect(Object.keys(readingFor).slice().sort()).toEqual([...ORDER_ABSENCE_REASONS].slice().sort());
+    for (const reason of ORDER_ABSENCE_REASONS) {
+      const res = body(readingFor[reason]);
+      expect(res.reason, reason).toBe(reason);
+      expect(res.reason_text, reason).toBe(texts.reasons[reason].ru);
+    }
+    // И обратная сторона согласия: нет кода — нет и текста.
+    const full = body();
+    expect(full.reason).toBeNull();
+    expect(full.reason_text).toBeNull();
   });
 });

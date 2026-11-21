@@ -52,6 +52,16 @@ const docFields = (): readonly string[] => {
  */
 const DROPPED_BY_OWNER: readonly string[] = ["path"];
 
+/**
+ * Поле, которое есть в теле **раньше документа** — по решению владельца, а не самовольно: `reason_text` добавлен
+ * совместимым расширением § 5.8 (**Р-1697**, кирпич К3а) и входит в документ выпуском **v1.5**. Форма — та же, что у
+ * пары `status` + `decline_text` в этом же теле: код машине, текст человеку, без вложенности.
+ *
+ * Список назван здесь, чтобы «поля нет в документе» не стало тихим исключением: пока поле в этом списке, тест
+ * требует, чтобы оно в теле **было** — иначе решение владельца осталось бы только на словах.
+ */
+const ADDED_BY_OWNER: readonly string[] = ["reason_text"];
+
 describe("К2а: тело § 5.8 сходится с документом v1.4", () => {
   it("каждое поле примера документа есть в собранном теле, кроме снятого решением владельца", () => {
     const body = orderBody(read(), deps) as unknown as Record<string, unknown>;
@@ -63,10 +73,30 @@ describe("К2а: тело § 5.8 сходится с документом v1.4",
     for (const name of DROPPED_BY_OWNER) expect(Object.keys(body), name).not.toContain(name);
   });
 
-  it("лишних полей у тела нет: каждое поле ответа названо документом", () => {
+  it("лишних полей у тела нет: каждое поле ответа названо документом или решением владельца", () => {
     const body = orderBody(read(), deps) as unknown as Record<string, unknown>;
     // `reason` стоит во втором примере § 5.8 (случай «итога ещё нет»), а не в первом — его ищем во всём разделе.
-    for (const name of Object.keys(body)) expect(section, name).toContain(`"${name}"`);
+    for (const name of Object.keys(body)) {
+      if (ADDED_BY_OWNER.includes(name)) continue;
+      expect(section, name).toContain(`"${name}"`);
+    }
+  });
+
+  it("поля, добавленные решением владельца раньше документа, в теле есть — решение не осталось на словах", () => {
+    const body = orderBody(read(), deps) as unknown as Record<string, unknown>;
+    for (const name of ADDED_BY_OWNER) expect(Object.keys(body), name).toContain(name);
+    // И они действительно ещё не в документе: попадут туда с v1.5, и тогда строка списка снимается. Ищем **и в
+    // примере, и в прозе** (имя в бэктиках): v1.5 может назвать поле словами, не поставив его в пример, и тогда
+    // исключение задержалось бы в коде после того, как перестало быть исключением (находка ревью К3а № 5).
+    for (const name of ADDED_BY_OWNER) {
+      expect(section, name).not.toContain(`"${name}"`);
+      expect(section, name).not.toContain(`\`${name}\``);
+    }
+  });
+
+  it("списки исключений не пересекаются: имя не может быть и снятым, и добавленным", () => {
+    // Иначе правка одного списка молча задвоила бы имя, и смысл исключения стал бы непонятен (находка ревью К3а № 6).
+    expect(DROPPED_BY_OWNER.filter((n) => ADDED_BY_OWNER.includes(n))).toEqual([]);
   });
 
   it("перечень причин — ровно тот, что назван документом", () => {
@@ -80,8 +110,14 @@ describe("К2а: тело § 5.8 сходится с документом v1.4",
     expect(section).toMatch(/`source` и `checked_at` есть всегда/);
     const body = orderBody(read({ operation: unsettled(), state: "SETTLING" }), deps);
     expect(body.fulfilment).toBeNull();
-    expect(body.source.checked_at).toBeTruthy();
-    expect(body.source.text).toBeTruthy();
+    expect(body.source.checked_at).toBe("2026-11-21T20:15:00.000Z");
+    // **Расхождение с примером документа, названное в STATUS** (находка ревью К3а № 3): во втором примере § 5.8 стоит
+    // текст «Запись об исполнении Платформы» при `fulfilment: null`, а код даёт второй код источника — «записи об
+    // исполнении ещё нет». Прав код: сам же абзац v1.4 запрещает подставлять ближайшее известное. Ожидание —
+    // **значением из источника**, чтобы приведение к примеру задним числом покраснело здесь; документ правит владелец
+    // выпуском v1.5.
+    expect(body.source.text).toBe(texts.sources.PLATFORM_OPERATION.ru);
+    expect(body.source.text).not.toBe(texts.sources.PLATFORM_FULFILMENT.ru);
   });
 
   it("документ говорит, что кода отказа у случая нет — и приложение его не заводит", () => {

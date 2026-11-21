@@ -359,6 +359,13 @@ export interface OrderResponse extends UiWhere {
   readonly fulfilment: UiFulfilment | null;
   /** причина отсутствия — рядом с нулевым полем; при полном теле `null` */
   readonly reason: OrderAbsenceReason | null;
+  /** Готовый текст причины человеку — **рядом с кодом, а не вместо него** (решение владельца 22.11.2026, **Р-1697**;
+   *  совместимое расширение § 5.8, в документ входит с v1.5). Форма — та же, что у пары `status` + `decline_text` в
+   *  этом же теле: код машине, текст человеку, без вложенности. Вложенная форма `reason: { code, text }` отклонена
+   *  владельцем: она ломает уже закоммиченное поле и расходится со стилем тела.
+   *  Экран текст **не собирает и не склеивает** (правило 3): он приходит готовым, на языке запроса. При `reason`
+   *  равном `null` — тоже `null`. */
+  readonly reason_text: string | null;
   /** откуда итог: запись об исполнении Платформы и когда прочитана — **не ответ продавца** (инвариант 6 приложения) */
   readonly source: { readonly text: string; readonly checked_at: UiInstant };
   readonly done_line: UiDoneLine;

@@ -107,6 +107,8 @@ export function orderBody(read: OrderRead, deps: OrderBodyDeps): OrderResponse {
             at: fulfilment.at,
           },
     reason,
+    // Готовый текст причины — рядом с кодом (Р-1697): экран его не собирает и своего словаря причин не держит.
+    reason_text: absenceTextOf(reason, deps),
     // Источник и время сверки есть **всегда**, в том числе когда итога ещё нет (Р-1695, П36).
     source: sourceOf(read, deps.texts, deps.lang),
     done_line: {
@@ -123,6 +125,11 @@ export function orderBody(read: OrderRead, deps: OrderBodyDeps): OrderResponse {
   };
 }
 
-/** Текст причины отсутствия человеку — из `config/` по коду закрытого перечня; при полном теле причины нет. */
-export const absenceText = (response: OrderResponse, deps: OrderBodyDeps): string | null =>
-  response.reason === null ? null : deps.texts.reasons[response.reason][deps.lang];
+/**
+ * Текст причины отсутствия человеку — из `config/` по коду закрытого перечня; причины нет — текста тоже нет.
+ *
+ * Берёт **код**, а не собранное тело (кирпич К3а): текст нужен самой сборке, чтобы положить его в тело рядом с кодом
+ * (Р-1697), и считать его по уже собранному ответу значило бы собирать тело дважды.
+ */
+export const absenceTextOf = (reason: OrderAbsenceReason | null, deps: OrderBodyDeps): string | null =>
+  reason === null ? null : deps.texts.reasons[reason][deps.lang];
