@@ -1,0 +1,203 @@
+{
+  "text_version": "onboarding@1.0",
+  "path": { "of": 8 },
+  "agent_fee": { "amount": 1, "currency": "RUB" },
+  "screens": {
+    "P1": {
+      "n": 1,
+      "title": { "ru": "Помощник для покупок", "en": "A shopping helper" },
+      "subtitle": {
+        "ru": "Скажете, что купить и сколько можно потратить, — он найдёт, сравнит и купит в этих пределах.",
+        "en": "Tell it what to buy and how much may be spent — it will search, compare and buy within those limits."
+      },
+      "footer": {
+        "ru": "Ничего не подключено и не оплачено",
+        "en": "Nothing is connected and nothing is paid"
+      }
+    },
+    "P3": {
+      "n": 3,
+      "title": { "ru": "Что может агент", "en": "What the agent can do" },
+      "subtitle": {
+        "ru": "Прочитайте и отметьте оба пункта — без них агент не начнёт работу.",
+        "en": "Read this and tick both items — without them the agent will not start."
+      },
+      "footer": { "ru": "Деньги не списываются", "en": "No money is taken" }
+    }
+  },
+  "compare_title": {
+    "ru": "Чем они отличаются для вас",
+    "en": "How they differ for you"
+  },
+  "compare": [
+    {
+      "row": "LIABILITY",
+      "label": { "ru": "Кто отвечает за ошибку", "en": "Who answers for a mistake" },
+      "values": {
+        "M1": { "ru": "банк", "en": "the bank" },
+        "M2": { "ru": "автор агента, то есть вы", "en": "the agent's author, that is you" },
+        "M3": { "ru": "площадка", "en": "the marketplace" }
+      }
+    },
+    {
+      "row": "DISPUTE",
+      "label": { "ru": "Где разбирают спор", "en": "Where a dispute is handled" },
+      "values": {
+        "M1": { "ru": "в вашем банке", "en": "at your bank" },
+        "M2": { "ru": "ваш банк, затем продавец", "en": "your bank, then the seller" },
+        "M3": { "ru": "площадка, затем банк", "en": "the marketplace, then the bank" }
+      }
+    },
+    {
+      "row": "ALL_MERCHANTS",
+      "label": { "ru": "Ищет у всех продавцов", "en": "Searches across all sellers" },
+      "values": {
+        "M1": { "ru": "да", "en": "yes" },
+        "M2": { "ru": "да", "en": "yes" },
+        "M3": { "ru": "своих — первыми", "en": "its own sellers first" }
+      }
+    },
+    {
+      "row": "MANDATES_ON_BANK_CHANGE",
+      "label": { "ru": "Поручения при смене банка", "en": "Mandates when you change banks" },
+      "values": {
+        "M1": {
+          "ru": "Сохраняются, если поручение подписано с подтверждением личности; иначе подписываются заново",
+          "en": "Kept if the mandate was signed with identity verification; otherwise signed again"
+        },
+        "M2": { "ru": "сохраняются: банк не при чём", "en": "kept: the bank is not involved" },
+        "M3": { "ru": "сохраняются", "en": "kept" }
+      }
+    }
+  ],
+  "models": [
+    {
+      "id": "M1",
+      "selectable": true,
+      "name": { "ru": "Агент вашего банка", "en": "Your bank's agent" },
+      "text": {
+        "ru": "Покупает в пределах, которые вы задали. Платёж, лимиты и споры — в вашем банке.",
+        "en": "Buys within the limits you set. Payment, limits and disputes stay at your bank."
+      },
+      "action_label": { "ru": "Подключить агента банка", "en": "Connect the bank's agent" },
+      "why_not": null,
+      "can": [
+        {
+          "ru": "Покупает только то и только на ту сумму, что вы поручили",
+          "en": "Buys only what you asked for, and only up to the amount you allowed"
+        },
+        {
+          "ru": "Дороже вашего порога — спросит. Вне поручения — не купит",
+          "en": "Above your threshold it will ask. Outside the mandate it will not buy"
+        },
+        {
+          "ru": "Деньги списывает ваш банк, а не агент. Номера карты агент не видит",
+          "en": "Your bank takes the money, not the agent. The agent never sees your card number"
+        },
+        {
+          "ru": "Купил не по поручению — банк вернёт деньги без разбирательства по существу",
+          "en": "If it buys outside the mandate, the bank refunds you without arguing the merits"
+        },
+        {
+          "ru": "Все поручения пишутся в журнал. Изменить записи в нём нельзя",
+          "en": "Every mandate is written to the journal. Its records cannot be changed"
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "selectable": true,
+      "name": { "ru": "Свой агент", "en": "Your own agent" },
+      "text": {
+        "ru": "Ваш собственный инструмент за {money}. Сделка напрямую с продавцом, без посредника.",
+        "en": "A tool of your own for {money}. The deal goes straight to the seller, with no intermediary."
+      },
+      "action_label": { "ru": "Завести своего агента", "en": "Set up your own agent" },
+      "why_not": null,
+      "can": [
+        {
+          "ru": "Покупает только то и только на ту сумму, что вы поручили",
+          "en": "Buys only what you asked for, and only up to the amount you allowed"
+        },
+        {
+          "ru": "Сделка — напрямую с продавцом. Каждую оплату вы подтверждаете сами в своём банке",
+          "en": "The deal goes straight to the seller. You confirm every payment yourself at your bank"
+        },
+        {
+          "ru": "Номера карты агент не видит",
+          "en": "The agent never sees your card number"
+        },
+        {
+          "ru": "За настройку агента отвечаете вы — так и сказано на прошлом экране",
+          "en": "You answer for how the agent is set up — as the previous screen said"
+        },
+        {
+          "ru": "Все поручения пишутся в журнал. Изменить записи в нём нельзя",
+          "en": "Every mandate is written to the journal. Its records cannot be changed"
+        },
+        {
+          "ru": "Цена агента — {money}, на стенде она не списывается",
+          "en": "The agent costs {money}; on the test bench it is not charged"
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "selectable": false,
+      "name": { "ru": "Агент площадки", "en": "A marketplace agent" },
+      "text": {
+        "ru": "Ищет в первую очередь на своей площадке. Продавец и помощник — одно лицо.",
+        "en": "Searches its own marketplace first. The seller and the helper are the same party."
+      },
+      "action_label": null,
+      "why_not": { "ru": "Будет после запуска", "en": "Coming after launch" },
+      "can": []
+    }
+  ],
+  "demo_note": {
+    "ru": "Условия демо-стенда, не оферта",
+    "en": "Test-bench terms, not a public offer"
+  },
+  "consents": [
+    {
+      "id": "TERMS",
+      "text": { "ru": "Принимаю условия агента", "en": "I accept the agent's terms" }
+    },
+    {
+      "id": "DATA",
+      "text": {
+        "ru": "Согласен на обработку данных о покупках и передачу их в журнал поручений",
+        "en": "I agree that my purchase data is processed and written to the mandate journal"
+      }
+    }
+  ],
+  "texts": {
+    "accept": { "ru": "Принять условия", "en": "Accept the terms" },
+    "why_disabled_until_all_required": {
+      "ru": "Отметьте оба пункта — без них агент не может работать с вашими покупками",
+      "en": "Tick both items — without them the agent cannot work with your purchases"
+    }
+  },
+  "errors": {
+    "CONSENT_INVALID": {
+      "ru": "Согласие не принято. Посмотрите условия и отметьте оба пункта заново",
+      "en": "The consent was not accepted. Review the terms and tick both items again"
+    },
+    "MODEL_NOT_AVAILABLE": {
+      "ru": "Этот вид агента ещё недоступен. Выберите агента банка или своего агента",
+      "en": "This kind of agent is not available yet. Choose the bank's agent or your own agent"
+    },
+    "SHOWN_STALE": {
+      "ru": "Условия успели измениться. Прочитайте их заново и отметьте пункты ещё раз",
+      "en": "The terms have changed. Read them again and tick the items once more"
+    },
+    "IDEMPOTENCY_REQUIRED": {
+      "ru": "Повторите действие: запрос пришёл без ключа повтора",
+      "en": "Please repeat the action: the request arrived without a repeat key"
+    },
+    "IDEMPOTENCY_CONFLICT": {
+      "ru": "Это действие уже выполнялось с другими данными. Начните заново",
+      "en": "This action has already run with different data. Please start again"
+    }
+  }
+}

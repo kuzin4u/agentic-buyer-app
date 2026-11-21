@@ -16,6 +16,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { IDEMPOTENCY_HEADER, UI_CONTRACT_VERSION, UI_V1_BASE, type UiLang } from "../contract/ui-v1/index.js";
+import { getOnboarding, getOnboardingTerms, type OnboardingServiceDeps } from "../onboarding/service.js";
 import { uiError } from "./errors.js";
 import { feedChunk } from "./feed.js";
 import { langOf, t } from "./lang.js";
@@ -86,6 +87,14 @@ export interface UiServerOptions {
    * стенд, а не маршрут.
    */
   readonly provenance?: ProvenanceOptions;
+  /**
+   * Знакомство: данные экранов П1 и П3 и опознаватель своей копии карточки (ИН-П1, кирпич К3).
+   *
+   * Не передано — методов § 5.17 и § 5.18 нет, как нет и всех прочих незарегистрированных: по ответу не видно, что
+   * метод «есть, но молчит». Настройкой, а не вшитым перечнем данных: сервер контракта не должен зависеть от того,
+   * лежит ли в репозитории файл знакомства.
+   */
+  readonly onboarding?: OnboardingServiceDeps;
 }
 
 /** Готовый ответ маршрутизатора. */
@@ -248,6 +257,26 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         const got = await o.core.purchase(id, owner);
         if (got === null) return send(res, notFound(lang));
         return send(res, json(200, purchaseResponse(got, lang)));
+      }
+
+      // ── § 5.17 `GET /ui/v1/onboarding` и § 5.18 `GET /ui/v1/onboarding/terms` (ИН-П1, кирпич К3) ──
+      //
+      // Методы знакомства **не привязаны к покупке**: человек заводит агента до того, как покупка появилась, поэтому
+      // ни `purchase_id` в адресе, ни поиска покупки здесь нет. Сессия приложения всё равно нужна и проверена выше —
+      // согласие принадлежит человеку (П34 п. 4), и выдавать карточку условий кому угодно незачем.
+      //
+      // Включаются **настройкой**: не передан `onboarding` — адресов нет, и ответ тот же 404, что у любого другого
+      // незарегистрированного метода. Так же соединяются раздача каркаса и сервер контракта: тестам контракта
+      // знакомство не нужно, и нечитаемой зависимости от его данных у них нет.
+      if (path === "/onboarding" || path === "/onboarding/terms") {
+        if (o.onboarding === undefined) return send(res, { status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
+        if (method !== "GET")
+          return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET" });
+        if (path === "/onboarding") return send(res, json(200, getOnboarding(lang, o.onboarding)));
+        // Вид агента приходит параметром запроса. Отсутствующий параметр — тот же случай, что неизвестный код:
+        // выбрать нечего, и ответ один — `MODEL_NOT_AVAILABLE` (§ 5.18). Пустая строка сюда и попадёт как «нет вида».
+        const got = getOnboardingTerms(u.searchParams.get("model") ?? "", lang, o.onboarding);
+        return send(res, got.ok ? json(200, got.body) : json(got.status, got.body));
       }
 
       // ── § 5.9 `GET /ui/v1/feed` (SSE) ──
