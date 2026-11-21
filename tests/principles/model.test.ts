@@ -265,6 +265,20 @@ describe("К1.2: подписанная версия — номер по воз�
     expect(Object.keys(second.view).sort()).toEqual(["hash", "text_version"]);
   });
 
+  /** К8а (замечание ревью К8 № 5): запись показанного **копируется целиком**, а не пересобирается по полям — иначе
+   *  новое поле формы терялось бы молча. Проверяется двумя свойствами копии: в версию попали **все** поля записи
+   *  (включая то, которого сборка по полям не знала бы), и это **своя** замороженная копия, а не чужой объект. */
+  it("запись копируется целиком и замораживается: лишнее поле не теряется, чужой объект не держится", () => {
+    const base = built(ids, "2026-11-19T11:00:01Z");
+    const note = "поле, которого сборка по полям не знает";
+    const extra = { ...base.view, note } as typeof base.view;
+    const version = nextVersion(null, { ...base, view: extra });
+
+    expect((version.view as unknown as Record<string, unknown>)["note"]).toBe(note);
+    expect(version.view).not.toBe(extra);
+    expect(Object.isFrozen(version.view)).toBe(true);
+  });
+
   it("вторая подпись прежнюю не стирает и не правит: номер растёт, первая версия та же", () => {
     const first = nextVersion(null, built(ids, "2026-11-19T11:00:01Z"));
     const snapshot = JSON.parse(JSON.stringify(first)) as SignedPrinciples;

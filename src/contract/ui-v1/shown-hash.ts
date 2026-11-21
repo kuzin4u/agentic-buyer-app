@@ -6,7 +6,7 @@
 // Пакет объявлен **прямой зависимостью** приложения по тегу `#v0.13.1` — тем же, что у ядра агента (П30 доп. 1): опора
 // на транзитивную копию держалась бы на подъёме зависимостей, а не на объявлении.
 import { canonicalJson, sha256Hex } from "@kuzin4u/agentic-core";
-import type { ShownHash, UiView } from "./common.js";
+import type { ShownHash, UiShown, UiView } from "./common.js";
 
 /** Приставка хэша в контракте: `sha256:<hex>` (§ 3, правило 1). */
 export const SHOWN_HASH_PREFIX = "sha256:";
@@ -39,6 +39,13 @@ export function isShownHash(s: string): s is ShownHash {
  *  значения из тела запроса в расчёт не берёт — иначе проверка проверяла бы присланное присланным. */
 export function shownMatches(shown: ShownPayload, got: string): boolean {
   return isShownHash(got) && got === showingHash(shown);
+}
+
+/** Неизменяемая копия **записи показанного** (`UiShown`) — для подписанных версий и журналов: что подписано, то не
+ *  правится. Копируется целиком, а не пересобирается по полям: иначе новое поле формы терялось бы молча (замечание
+ *  ревью К8 № 5, кирпич К8а). Рядом с `viewOf`, потому что это та же запись, только без `view_id`. */
+export function frozenShown(shown: UiShown): UiShown {
+  return Object.freeze({ ...shown });
 }
 
 /** Форма идентификатора показанного: `vw_…`. Проверяется там, где `view` собирается, — по нему сервер находит свою

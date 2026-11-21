@@ -6,6 +6,7 @@
 // Маршрут и экран И-2 — ИН-0 окна Б.
 import { obj, str } from "../config-parse.js";
 import type { UiInstant, UiLang, UiPress, UiShown, UiSignedBy } from "../contract/ui-v1/common.js";
+import { frozenShown } from "../contract/ui-v1/shown-hash.js";
 
 /** Опознаватель принципа, который уходит на экран (§ 5.14 К-Б, поле `items[].id`). */
 export type PrincipleId = string;
@@ -173,7 +174,10 @@ export function nextVersion(
     no: prev === null ? FIRST_VERSION_NO : prev.no + 1,
     order: Object.freeze([...built.order]),
     by: built.by,
-    view: Object.freeze({ hash: built.view.hash, text_version: built.view.text_version }),
+    // Запись показанного копируется **целиком** (`frozenShown`), а не пересобирается по полям: при сборке по полям
+    // новое необязательное поле формы потерялось бы молча — и в подписанной версии, и в журнале (замечание ревью
+    // К8 № 5, кирпич К8а). Копия нужна, чтобы версия не держала чужой изменяемый объект.
+    view: frozenShown(built.view),
     press: Object.freeze({
       at: built.press.at,
       device: built.press.device,
