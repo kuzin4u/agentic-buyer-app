@@ -7,6 +7,8 @@
 //
 // Чего здесь **нет**: строк `line.not_spent` и `DONE_TEXT`. Они живут в словаре каркаса окна Б и приходят портом
 // `ShellText` (Р-1693) — своя копия дала бы два источника одной строки.
+import type { OperationStatus } from "agentic-buyer-ref/src/shared/domain.js";
+import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
 import { bilingual, obj, type Bilingual } from "../config-parse.js";
 import type { UiLang } from "../contract/ui-v1/common.js";
 import type { OrderResponse } from "../contract/ui-v1/methods.js";
@@ -30,23 +32,77 @@ export const SOURCE_CODES = ["PLATFORM_FULFILMENT", "PLATFORM_OPERATION"] as con
 
 export type SourceCode = (typeof SOURCE_CODES)[number];
 
+/**
+ * Класс проверки клиринга — **код ядра**, а не своё перечисление (Р-1694, К2).
+ *
+ * Классы берутся у ядра двумя путями, и оба названы здесь: `WITHIN_LIMITS` — это «уведомления нет» (`scopeNotice`
+ * возвращает `null`), остальные три — коды уведомлений ядра. Перечень кодов уведомлений **выводится из типа ядра**
+ * (`PurchaseNotice`), поэтому новый класс у ядра делает этот модуль красным на компиляции, а не остаётся строкой,
+ * которой никто не показал.
+ */
+type ScopeNoticeCode = Extract<PurchaseNotice, `SCOPE_${string}`>;
+
+export const SCOPE_CODES = [
+  "WITHIN_LIMITS",
+  "SCOPE_EXCEEDS_AUTHORIZATION",
+  "SCOPE_NOT_RESERVED",
+  "SCOPE_CHECK_UNRECOGNIZED",
+] as const;
+
+export type ScopeCode = (typeof SCOPE_CODES)[number];
+
+/** Страж **чтения**: тип уведомлений ядра шире классов проверки клиринга, и сборка текста должна уметь спросить, её
+ *  ли это код (`src/order/response.ts`). Перечень в рантайме существует только константой — тип бы не помог. */
+export const isScopeCode = (s: unknown): s is ScopeCode =>
+  typeof s === "string" && (SCOPE_CODES as readonly string[]).includes(s);
+
+/** Перечень покрывает **все** классы уведомлений ядра: добавится класс у ядра — здесь станет красным. */
+type ScopeCodesCoverCore = ScopeNoticeCode extends ScopeCode ? true : never;
+const _scopeCodesCoverCore: ScopeCodesCoverCore = true;
+void _scopeCodesCoverCore;
+
+/**
+ * Исходы операции, у которых человеку есть что сказать текстом: отказ, отмена оплаты и возврат. Перечень — **значения
+ * `OperationStatus` ядра** (`satisfies`), а не свои строки.
+ *
+ * Причина отказа, как её прислала Платформа (`declineReason`), в ответ **не идёт**: это данные витрины внешней
+ * стороны, а не готовый текст человеку (инвариант 4; § 3 «Ошибки» — код машине, текст человеку). Сопоставление «код
+ * отказа ПАО → текст человеку» живёт у ядра (реестр `DIAG`), и подключает его место сборки — адрес **ИН-К6**.
+ */
+export const OUTCOME_CODES = ["DECLINED", "REVERSED", "REFUNDED"] as const satisfies readonly OperationStatus[];
+
+export type OutcomeCode = (typeof OUTCOME_CODES)[number];
+
 export interface OrderTexts {
   readonly sources: Readonly<Record<SourceCode, Bilingual>>;
+  readonly scope: Readonly<Record<ScopeCode, Bilingual>>;
+  readonly outcomes: Readonly<Record<OutcomeCode, Bilingual>>;
 }
 
-/** Разбор `config/order.default.json`. Ключи — ровно перечень кодов: ни пропуска, ни лишнего (Р-1511, приём К1.5). */
+const SECTIONS = ["sources", "scope", "outcomes"] as const;
+
+/** Раздел файла: ключи — ровно перечень кодов, ни пропуска, ни лишнего (Р-1511, приём К1.5 П-К1). Подстановок у этих
+ *  текстов нет: это названия источника, класса и исхода, а не строки с величинами — величины показывает каркас. */
+function section<C extends string>(raw: unknown, name: string, codes: readonly C[]): Readonly<Record<C, Bilingual>> {
+  const r = obj(raw, `order.${name}`);
+  for (const key of Object.keys(r))
+    if (!(codes as readonly string[]).includes(key)) throw new Error(`order.${name}.${key}: кода нет в перечне`);
+  const out = {} as Record<C, Bilingual>;
+  for (const code of codes) out[code] = bilingual(r[code], `order.${name}.${code}`, []);
+  return out;
+}
+
+/** Разбор `config/order.default.json`. Ключи — ровно перечни кодов: ни пропуска, ни лишнего (Р-1511, приём К1.5). */
 export function parseOrderTexts(raw: unknown): OrderTexts {
   const r = obj(raw, "order");
-  for (const key of Object.keys(r)) if (key !== "sources") throw new Error(`order.${key}: лишнее поле`);
+  for (const key of Object.keys(r))
+    if (!(SECTIONS as readonly string[]).includes(key)) throw new Error(`order.${key}: лишнее поле`);
 
-  const rawSources = obj(r["sources"], "order.sources");
-  for (const key of Object.keys(rawSources))
-    if (!(SOURCE_CODES as readonly string[]).includes(key)) throw new Error(`order.sources.${key}: кода нет в перечне`);
-  const sources = {} as Record<SourceCode, Bilingual>;
-  // Подстановок у текста источника нет: это название источника, а не строка с величинами.
-  for (const code of SOURCE_CODES) sources[code] = bilingual(rawSources[code], `order.sources.${code}`, []);
-
-  return { sources };
+  return {
+    sources: section(r["sources"], "sources", SOURCE_CODES),
+    scope: section(r["scope"], "scope", SCOPE_CODES),
+    outcomes: section(r["outcomes"], "outcomes", OUTCOME_CODES),
+  };
 }
 
 /** Код источника по **прочитанному**, а не по состоянию покупки: есть запись об исполнении — значит числа итога из

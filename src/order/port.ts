@@ -22,7 +22,7 @@
 // (`fulfilmentIn` ядра), потому что у операции ПАО 1.4.0 валюты нет. Приложение валюту не подставляет.
 import type { Operation } from "agentic-buyer-ref/src/shared/domain.js";
 import type { UiInstant, UiLang } from "../contract/ui-v1/common.js";
-import type { OrderResponse, UiIntentView, UiState } from "../contract/ui-v1/methods.js";
+import type { OrderResponse, UiIntentView, UiState, UiStop } from "../contract/ui-v1/methods.js";
 
 /**
  * Что прочитано у Платформы и **когда** (Р-1690).
@@ -41,6 +41,8 @@ export interface OrderRead {
   readonly state: UiState;
   /** исход `verify` поручения: остаток, срок, момент проверки — источник числа «не списано» (Р-1692) */
   readonly intent: UiIntentView;
+  /** вердикты по остановке (П28, § 5.8) — их выносит ядро и пульт, экран их только показывает (как в § 5.3) */
+  readonly stops: readonly UiStop[];
   /** цена агента — значение места сборки, не вывод приложения (Р-1691, М2) */
   readonly agent_fee: OrderResponse["agent_fee"];
   /** ссылка на карточку акта — значение места сборки (Р-1691, § 5.13) */

@@ -8,67 +8,27 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  OUTCOME_CODES,
   parseOrderTexts,
+  SCOPE_CODES,
   sourceCodeOf,
   sourceOf,
   SOURCE_CODES,
+  type Bilingual,
   type OrderTexts,
   type SourceCode,
 } from "../../src/order/texts.js";
-import type { OrderRead, ShellText } from "../../src/order/port.js";
+import type { ShellText } from "../../src/order/port.js";
 import { hitsForbidden } from "../support/forbidden-fields.js";
-import type { Fulfilment, Operation } from "agentic-buyer-ref/src/shared/domain.js";
+import { CHECKED_AT, FULFILLED_AT, operation, read, unsettled, VERIFIED_AT } from "./fixture.js";
 
 const CONFIG = new URL("../../config/order.default.json", import.meta.url);
 const raw: unknown = JSON.parse(readFileSync(CONFIG, "utf8"));
 const texts: OrderTexts = parseOrderTexts(raw);
 
-/** Время **чтения** у Платформы — не равно ни одному другому времени фикстуры: по нему видно, что `checked_at` взят
- *  из прочитанного, а не из записи Платформы (`fulfilment.at`) и не из `verify` (`as_of`). */
-const CHECKED_AT = "2026-11-21T20:15:00.000Z";
-const FULFILLED_AT = "2026-11-21T18:05:00.000Z";
-const VERIFIED_AT = "2026-11-21T20:14:30.000Z";
-
-const fulfilment = (over: Partial<Fulfilment> = {}): Fulfilment => ({
-  ref: "ful_7731",
-  // Списано при клиринге **меньше**, чем одобрено: сумма записи об исполнении и сумма операции — разные числа, и
-  // подмена одного поля другим не может остаться зелёной (находка ревью К1 № 1).
-  finalAmount: { amount: 36_150, currency: "RUB" },
-  scopeCheck: "WITHIN_LIMITS",
-  spentPosition: { amount: 41_200, currency: "RUB" },
-  at: FULFILLED_AT,
-  ...over,
-});
-
-const operation = (over: Partial<Operation> = {}): Operation => ({
-  opRef: "op_5512",
-  orderRef: "ord_8840",
-  channel: "CARD",
-  amount: { amount: 36_800, currency: "RUB" },
-  merchantId: "MER-3307",
-  indicator: { agentCode: "AG-0042", mandateId: "mnd_cart_9103" },
-  status: "SETTLED",
-  declineReason: null,
-  fulfilment: fulfilment(),
-  ...over,
-});
-
-const read = (over: Partial<OrderRead> = {}): OrderRead => ({
-  operation: operation(),
-  checked_at: CHECKED_AT,
-  state: "DONE",
-  intent: {
-    id: "mnd_intent_6620",
-    status: "ACTIVE",
-    amount_left: { amount: 63_200, currency: "RUB" },
-    valid_to: "2026-11-28T09:00:00.000Z",
-    as_of: VERIFIED_AT,
-    revocation_order: null,
-  },
-  agent_fee: { amount: { amount: 1, currency: "RUB" }, text: "Цена агента — 1 копейка" },
-  act: { id: "act_4471", card_url: "/ui/v1/act/act_4471?view=card" },
-  ...over,
-});
+// Фикстура — **общая** (`./fixture.js`), а не своя копия: две копии одной фикстуры расходятся молча (находка ревью
+// К2 № 7). Моменты и суммы там все разные, и `unsettled()` даёт операцию без записи об исполнении — такую, какую ядро
+// отдаёт до расчёта.
 
 describe("К1: тексты источников — данными в `config/`", () => {
   it("ключи **файла** — ровно перечень кодов из кода", () => {
@@ -78,13 +38,31 @@ describe("К1: тексты источников — данными в `config/`
     expect(fileCodes.slice().sort()).toEqual([...SOURCE_CODES].slice().sort());
   });
 
-  it("каждый текст есть на двух языках, и ru по-русски, en по-английски — перестановка языков красная", () => {
-    for (const code of SOURCE_CODES) {
-      expect(texts.sources[code].ru, code).not.toBe(texts.sources[code].en);
-      expect(texts.sources[code].ru, code).toMatch(/[А-Яа-яЁё]/);
-      expect(texts.sources[code].en, code).toMatch(/[A-Za-z]/);
-      expect(texts.sources[code].en, code).not.toMatch(/[А-Яа-яЁё]/);
+  it("ключи **файла** в разделах класса и исхода — тоже ровно перечни кода", () => {
+    const file = raw as { scope: Record<string, unknown>; outcomes: Record<string, unknown> };
+    expect(Object.keys(file.scope).slice().sort()).toEqual([...SCOPE_CODES].slice().sort());
+    expect(Object.keys(file.outcomes).slice().sort()).toEqual([...OUTCOME_CODES].slice().sort());
+  });
+
+  it("каждый текст **всех** разделов есть на двух языках, и ru по-русски, en по-английски", () => {
+    const all: Bilingual[] = [
+      ...SOURCE_CODES.map((c) => texts.sources[c]),
+      ...SCOPE_CODES.map((c) => texts.scope[c]),
+      ...OUTCOME_CODES.map((c) => texts.outcomes[c]),
+    ];
+    for (const pair of all) {
+      expect(pair.ru).not.toBe(pair.en);
+      expect(pair.ru).toMatch(/[А-Яа-яЁё]/);
+      expect(pair.en).toMatch(/[A-Za-z]/);
+      expect(pair.en, pair.en).not.toMatch(/[А-Яа-яЁё]/);
     }
+    // Перечни не пустые — иначе цикл ничего не проверяет.
+    expect(all.length).toBe(SOURCE_CODES.length + SCOPE_CODES.length + OUTCOME_CODES.length);
+  });
+
+  it("класс «значение не опознано» говорит именно это, а не ближайшее известное", () => {
+    expect(texts.scope.SCOPE_CHECK_UNRECOGNIZED.ru).toMatch(/не опознано/);
+    expect(texts.scope.SCOPE_CHECK_UNRECOGNIZED.ru).not.toBe(texts.scope.WITHIN_LIMITS.ru);
   });
 
   it("у разных источников разные тексты — один текст на оба случая был бы красным", () => {
@@ -146,7 +124,12 @@ describe("К1: тексты источников — данными в `config/`
     });
 
     it("лишнее поле файла", () => {
-      expect(() => parseOrderTexts(broken((r) => (r["scope"] = {})))).toThrow(/order\.scope: лишнее поле/);
+      // Раздел `scope` появился в К2 и лишним быть перестал — берём поле, которого в перечне разделов нет.
+      expect(() => parseOrderTexts(broken((r) => (r["brand"] = {})))).toThrow(/order\.brand: лишнее поле/);
+    });
+
+    it("пропавший раздел файла", () => {
+      expect(() => parseOrderTexts(broken((r) => delete r["outcomes"]))).toThrow(/order\.outcomes: ожидается объект/);
     });
   });
 });
@@ -158,7 +141,7 @@ describe("К1: источник и время сверки у записи ит�
   });
 
   it("записи об исполнении ещё нет — источник «состояние операции», а не та же строка", () => {
-    const r = read({ operation: operation({ status: "AUTHORIZED", fulfilment: null }) });
+    const r = read({ operation: unsettled(), state: "SETTLING" });
     expect(sourceCodeOf(r)).toBe<SourceCode>("PLATFORM_OPERATION");
     expect(sourceOf(r, texts, "ru").text).toBe(texts.sources["PLATFORM_OPERATION"].ru);
     expect(sourceOf(r, texts, "ru").text).not.toBe(texts.sources["PLATFORM_FULFILMENT"].ru);

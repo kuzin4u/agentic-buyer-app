@@ -8,5 +8,37 @@
       "ru": "Состояние операции у Платформы, записи об исполнении ещё нет",
       "en": "Operation status at the Platform, no fulfilment record yet"
     }
+  },
+  "scope": {
+    "WITHIN_LIMITS": {
+      "ru": "В пределах поручения",
+      "en": "Within the mandate limits"
+    },
+    "SCOPE_EXCEEDS_AUTHORIZATION": {
+      "ru": "Платформа отметила выход за пределы разрешённого поручением",
+      "en": "The Platform flagged this as exceeding the mandate authorization"
+    },
+    "SCOPE_NOT_RESERVED": {
+      "ru": "Платформа отметила, что сумма не была зарезервирована по поручению",
+      "en": "The Platform flagged that the amount was not reserved under the mandate"
+    },
+    "SCOPE_CHECK_UNRECOGNIZED": {
+      "ru": "Значение Платформы не опознано",
+      "en": "The Platform value is not recognised"
+    }
+  },
+  "outcomes": {
+    "DECLINED": {
+      "ru": "Платформа отказала в оплате",
+      "en": "The Platform declined the payment"
+    },
+    "REVERSED": {
+      "ru": "Оплата отменена",
+      "en": "The payment was reversed"
+    },
+    "REFUNDED": {
+      "ru": "Деньги вернулись. Предел поручения не восстановлен",
+      "en": "The money was refunded. The mandate limit is not restored"
+    }
   }
 }
