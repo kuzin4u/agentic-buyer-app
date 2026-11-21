@@ -1,0 +1,127 @@
+{
+  "text_version": "u1-card@1.0",
+  "lines": {
+    "SUBJECT": {
+      "ru": "Покупаем: {subject}",
+      "en": "Buying: {subject}"
+    },
+    "LIMIT": {
+      "ru": "Не больше {limit} за всё поручение",
+      "en": "No more than {limit} for the whole mandate"
+    },
+    "VALID_TO": {
+      "ru": "Действует до {valid_to}",
+      "en": "Valid until {valid_to}"
+    },
+    "MERCHANTS": {
+      "ru": "Продавцов: {count}",
+      "en": "Merchants: {count}"
+    },
+    "CONFIRMATION_IMMEDIATE": {
+      "ru": "Каждую покупку подтверждаете вы",
+      "en": "You confirm every purchase"
+    },
+    "CONFIRMATION_AUTONOMOUS": {
+      "ru": "Покупки идут без отдельного подтверждения, в пределах поручения",
+      "en": "Purchases go without separate confirmation, within the mandate limits"
+    }
+  },
+  "errors": {
+    "phrase_empty": {
+      "ru": "Напишите, что нужно купить",
+      "en": "Tell us what to buy"
+    },
+    "subject_empty": {
+      "ru": "Не названо, что покупаем. Поправьте и сохраните поручение заново",
+      "en": "The subject is missing. Fix it and save the mandate again"
+    },
+    "limit_form": {
+      "ru": "Предел поручения указан не суммой с валютой. Поправьте и сохраните поручение заново",
+      "en": "The spending limit is not an amount with a currency. Fix it and save the mandate again"
+    },
+    "limit_not_positive": {
+      "ru": "Предел поручения должен быть больше нуля",
+      "en": "The spending limit must be greater than zero"
+    },
+    "valid_to_form": {
+      "ru": "Срок поручения указан не датой. Поправьте и сохраните поручение заново",
+      "en": "The validity date is not a date. Fix it and save the mandate again"
+    },
+    "valid_to_past": {
+      "ru": "Срок поручения уже прошёл. Укажите срок в будущем",
+      "en": "The validity date has passed. Choose a date in the future"
+    },
+    "merchants": {
+      "ru": "Продавцы поручения указаны неверно: нужен список без повторов",
+      "en": "The merchant list is invalid: it must be a list without duplicates"
+    },
+    "confirmation_mode": {
+      "ru": "Не выбрано, подтверждать ли каждую покупку",
+      "en": "The confirmation mode is not chosen"
+    },
+    "body_form": {
+      "ru": "Поручение не принято: тело запроса не по форме. Посмотрите карточку и сохраните поручение заново",
+      "en": "The mandate was not accepted: the request body is malformed. Review the card and save the mandate again"
+    },
+    "press": {
+      "ru": "Поручение не принято: не видно, что подтверждение сделал человек. Нажмите «Сохранить поручение» на карточке",
+      "en": "The mandate was not accepted: there is no evidence a human confirmed it. Press “Save the mandate” on the card"
+    },
+    "shown_stale": {
+      "ru": "Карточка успела измениться. Посмотрите её заново и сохраните поручение ещё раз",
+      "en": "The card has changed. Review it again and save the mandate once more"
+    },
+    "not_found": {
+      "ru": "Поручение не найдено. Соберите карточку заново",
+      "en": "The mandate draft was not found. Build the card again"
+    },
+    "step_not_allowed": {
+      "ru": "Это поручение уже отправлено на подпись. Откройте его состояние",
+      "en": "This mandate has already been sent for signing. Open its status"
+    },
+    "idempotency_required": {
+      "ru": "Повторите действие с карточки: у запроса нет ключа повтора",
+      "en": "Repeat the action from the card: the request has no idempotency key"
+    },
+    "idempotency_conflict": {
+      "ru": "Этот ключ повтора уже занят другим поручением. Соберите карточку заново",
+      "en": "This idempotency key is already used by another mandate. Build the card again"
+    }
+  },
+  "actions": {
+    "submit_label": {
+      "ru": "Сохранить поручение",
+      "en": "Save the mandate"
+    },
+    "submit_blocked_by_questions": {
+      "ru": "Ответьте на вопросы",
+      "en": "Answer the questions"
+    },
+    "sign_in_bank": {
+      "ru": "Подпишите поручение в приложении банка",
+      "en": "Sign the mandate in your bank app"
+    }
+  },
+  "questions": {
+    "subject": {
+      "ru": "Что покупаем?",
+      "en": "What are we buying?"
+    },
+    "limit": {
+      "ru": "Сколько денег не больше — за всё поручение?",
+      "en": "What is the spending limit for the whole mandate?"
+    },
+    "valid_to": {
+      "ru": "До какого срока действует поручение?",
+      "en": "Until when is the mandate valid?"
+    },
+    "merchants": {
+      "ru": "У кого покупаем?",
+      "en": "Which merchants should the agent buy from?"
+    },
+    "confirmation_mode": {
+      "ru": "Подтверждать каждую покупку?",
+      "en": "Confirm every purchase?"
+    }
+  }
+}

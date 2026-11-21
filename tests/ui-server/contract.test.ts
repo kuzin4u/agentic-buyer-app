@@ -69,7 +69,9 @@ test("правило 2: POST без ключа повтора — 400 IDEMPOTENC
   expect(res.status).toBe(UI_ERROR_STATUS.IDEMPOTENCY_REQUIRED);
   const body = (await res.json()) as { error: { code: string; retry: string; text: string; view: unknown } };
   expect(body.error.code).toBe("IDEMPOTENCY_REQUIRED");
-  expect(body.error.retry).toBe("after_fix");
+  // `same_key` — таблица кодов ПАО 1.4.0 и решение владельца 19.11 («добавить ключ и повторять **с ним же**»).
+  // Ожидание закрепляло прежнее `after_fix`; приведено к решению кирпичом К7 П-К4 (Р-1681), как и сама таблица.
+  expect(body.error.retry).toBe("same_key");
   expect(body.error.text.length).toBeGreaterThan(0);
   expect(body.error.view).toBeNull();
   // Ровно одно поле `error` и ровно четыре поля внутри: лишнего в теле ошибки нет (§ 3).
