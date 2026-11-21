@@ -23,7 +23,7 @@
 // Журнал и часы приходят **зависимостями**, как у поручения (`IntentServiceJournal`, К5 П-К4): модуль итога не знает,
 // куда пишут, и своего хранилища не держит.
 import type { ScopeCheckDetail } from "agentic-buyer-ref/src/agent/operations/index.js";
-import type { OperationStatus } from "agentic-buyer-ref/src/shared/domain.js";
+import type { OperationStatus, ScopeCheck } from "agentic-buyer-ref/src/shared/domain.js";
 import type { ShownHash, UiInstant } from "../contract/ui-v1/common.js";
 import type { OrderAbsenceReason, OrderResponse, UiState } from "../contract/ui-v1/methods.js";
 import { showingHash } from "../contract/ui-v1/shown-hash.js";
@@ -86,9 +86,27 @@ export interface OrderJournalDeps {
 export const scopeDetailOf = (read: OrderRead): ScopeCheckDetail | null => {
   const fulfilment = read.operation.fulfilment ?? null;
   if (fulfilment === null) return null;
-  const s: unknown = fulfilment.scopeCheck;
+  const s: ScopeCheck | undefined = fulfilment.scopeCheck;
+  // Значения, которых у кода нет: ключа не было вовсе (`undefined`), пришёл `null`, пришло значение вне перечня
+  // (`{ other }`) — всё это класс `OTHER`, как у ядра.
   if (s === undefined || s === null || typeof s === "object") return "OTHER";
-  return s as ScopeCheckDetail;
+  // **Исчерпывающий разбор по типу ядра** (кирпич К3в, условие владельца 22.11.2026): каждое известное значение
+  // названо, а ветвь `default` присваивает остаток типу `never`. Своего перечня у приложения нет — перечень остаётся
+  // у ядра (`ScopeCheck`), и его расширение **роняет компиляцию здесь**, то есть ловится сборкой, раньше тестов.
+  // До К3в разбор был `typeof s === "object" ? "OTHER" : s`: новое значение ядра проходило насквозь, и журнал
+  // расходился с ядром молча (проверено подменой перечня — компиляция и тесты оставались зелёными).
+  switch (s) {
+    case "WITHIN_LIMITS":
+    case "EXCEEDS_AUTHORIZATION":
+    case "NOT_RESERVED":
+      return s;
+    default: {
+      const unexpected: never = s;
+      // Недостижимо, пока компиляция зелёная: строка существует, чтобы расширение перечня нельзя было «дожать»
+      // приведением типа вместо правки разбора.
+      throw new Error(`класс значения scope_check не разобран: ${String(unexpected)}`);
+    }
+  }
 };
 
 /**

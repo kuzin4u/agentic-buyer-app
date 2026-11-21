@@ -132,6 +132,18 @@ describe("К3: исход отданного итога уходит в журн
     expect(JSON.stringify(e)).not.toContain("WEIRD_CODE");
   });
 
+  it("к компиляции не сводится: объектное значение даёт `OTHER`, известная строка — свой класс", () => {
+    // Случай закрывает то, чего не держит ветвь `never` (кирпич К3в, **Р-1702**): разбор формы значения в рантайме.
+    // Постоянной фикстуры-поломки с подменой перечня в ядре здесь **нет намеренно** — она не воспроизводится у
+    // другого и сносится при `npm ci`; гарантию на расширение перечня даёт компиляция, шаг воспроизведения назван в
+    // строке кирпича.
+    const other = read({ operation: operation({ fulfilment: fulfilment({ scopeCheck: { other: "WEIRD_CODE" } }) }) });
+    expect(scopeDetailOf(other)).toBe("OTHER");
+    const known = read({ operation: operation({ fulfilment: fulfilment({ scopeCheck: "EXCEEDS_AUTHORIZATION" }) }) });
+    expect(scopeDetailOf(known)).toBe("EXCEEDS_AUTHORIZATION");
+    expect(scopeDetailOf(known)).not.toBe("OTHER");
+  });
+
   it("значение не по форме кода и пропавшее значение — тот же класс `OTHER`, а не пустое поле", () => {
     expect(scopeDetailOf(read({ operation: operation({ fulfilment: fulfilment({ scopeCheck: { other: null } }) }) }))).toBe("OTHER");
     // Ключа `scopeCheck` может не быть вовсе: порт собирает операцию из разобранного ответа ПАО (находка ревью
