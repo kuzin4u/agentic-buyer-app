@@ -13,6 +13,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+// Строку, похожую на номер карты, собирает генератор **во время прогона**: в файлы проекта такой номер не пишется
+// даже тестовым (CLAUDE.md, «Секреты»).
+import { cardLikeNumber } from "../support/card-like.js";
 
 const GUARD = process.env.GUARD_PATH ?? join(process.cwd(), ".claude/hooks/guard.py");
 
@@ -96,6 +99,47 @@ const FILE_RUNS: [string, string][] = [
   ["упоминание в сообщении коммита", 'git commit -m "К1.1: npm test зелёный"'],
   ["в теле heredoc", "cat > /tmp/pr.md <<'EOF'\nnpm test\nEOF"],
 ];
+
+describe("guard.py: похожее на номер карты — блок, в том числе из одинаковых цифр (К6а, Р-1699)", () => {
+  /** Запись файла с этим содержимым: хук смотрит `content` у `Write` и `new_string` у `Edit`. */
+  const write = (content: string): { status: number | null; stderr: string } => {
+    const r = spawnSync("python3", [GUARD], {
+      input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(process.cwd(), "tests/tmp-card.ts"), content } }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: process.cwd() },
+    });
+    return { status: r.status, stderr: r.stderr };
+  };
+
+  it("номер из **одинаковых** цифр останавливает запись", () => {
+    // Оговорка `len(set(n)) > 1` стояла, чтобы пропускать заглушки вида «0000…», а пропустила настоящее нарушение:
+    // шестнадцать девяток уехали в фикстуру теста К6, и запрет CLAUDE.md удержался только потому, что его никто не
+    // проверял. Снята владельцем (Р-1699) — и вот проверка, которая это держит.
+    //
+    // Сам номер в файл **не пишется**: строка собирается во время прогона (`cardLikeNumber`), как и всюду в проекте.
+    const blocked = write(`const fixture = { card_number: "${cardLikeNumber("9")}" };\n`);
+    expect(blocked.status).toBe(2);
+    expect(blocked.stderr).toContain("похоже на номер карты");
+  });
+
+  it("номер из разных цифр останавливает запись — прежнее поведение не потерялось", () => {
+    const blocked = write(`const fixture = { pan: "${cardLikeNumber("4")}" };\n`);
+    expect(blocked.status).toBe(2);
+  });
+
+  it("на чистой строке хук молчит", () => {
+    // Вторая половина пары: проверка, которая падает всегда, не проверяет ничего. Здесь — законные идентификаторы
+    // инварианта 1 и число, не проходящее Луна.
+    const clean = write('const ok = { instrument_token: "tok_71", order_id: "ord_14", sum: 1234567890123456 };\n');
+    expect(clean.status, clean.stderr).toBe(0);
+  });
+
+  it("длинное число, не проходящее проверку Луна, записи не мешает", () => {
+    // Шестнадцать единиц Луна не проходят: иначе хук блокировал бы любое длинное число.
+    const clean = write("const n = 1111111111111111;\n");
+    expect(clean.status, clean.stderr).toBe(0);
+  });
+});
 
 describe("guard.py С1: полный прогон — нагрузка < 10 и без чужого vitest", () => {
   it.each(FULL_RUNS)("пропускает при нагрузке < 10: %s", (_name, command) => {

@@ -57,7 +57,7 @@ def luhn(num: str) -> bool:
 def has_card(text: str) -> bool:
     for m in DIGITS.finditer(text or ""):
         n = re.sub(r"[ -]", "", m.group(0))
-        if 15 <= len(n) <= 19 and len(set(n)) > 1 and luhn(n):
+        if 15 <= len(n) <= 19 and luhn(n):
             return True
     return False
 

@@ -16,6 +16,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { IDEMPOTENCY_HEADER, UI_CONTRACT_VERSION, UI_V1_BASE, type UiLang } from "../contract/ui-v1/index.js";
+import type { ConsentJournal, ConsentStore } from "../onboarding/consent.js";
+import {
+  consentRefusal,
+  getOnboarding,
+  getOnboardingTerms,
+  postConsent,
+  type OnboardingServiceDeps,
+} from "../onboarding/service.js";
 import { uiError } from "./errors.js";
 import { feedChunk } from "./feed.js";
 import { langOf, t } from "./lang.js";
@@ -86,6 +94,29 @@ export interface UiServerOptions {
    * стенд, а не маршрут.
    */
   readonly provenance?: ProvenanceOptions;
+  /**
+   * Знакомство: данные экранов П1 и П3 и опознаватель своей копии карточки (ИН-П1, кирпич К3).
+   *
+   * Не передано — методов § 5.17 и § 5.18 нет, как нет и всех прочих незарегистрированных: по ответу не видно, что
+   * метод «есть, но молчит». Настройкой, а не вшитым перечнем данных: сервер контракта не должен зависеть от того,
+   * лежит ли в репозитории файл знакомства.
+   */
+  readonly onboarding?: OnboardingOptions;
+}
+
+/**
+ * Настройка знакомства: данные экранов, опознаватель своей копии карточки и хранение согласий (кирпичи К3 и К4).
+ *
+ * Хранение и журнал — **зависимостями**, как у всего прочего состояния стенда: их знает тот, кто поднял сервер.
+ * Признака «кто нажал» здесь нет и быть не может — его ставит сервер своим провенансом (П26 дополнение 2), и
+ * настройка не должна давать способ его подменить.
+ */
+export interface OnboardingOptions extends OnboardingServiceDeps {
+  /** неизменяемые версии согласия по владельцу сессии (П34 п. 4) */
+  readonly store: ConsentStore;
+  readonly journal: ConsentJournal;
+  /** время получения сервером; не передано — часы процесса. Время устройства живёт в `press.at` и им не заменяется */
+  readonly now?: () => string;
 }
 
 /** Готовый ответ маршрутизатора. */
@@ -198,14 +229,18 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         const raw = await readBody(req);
         if (raw === null) return send(res, { status: 400, type: TEXT_TYPE, body: t(lang, "http.bad_request") });
         let check;
+        // Разобранное тело нужно и памяти повторов, и маршруту: второй разбор той же строки дал бы второй объект и
+        // второй шанс разойтись с отпечатком.
+        let parsed: unknown;
         try {
           const body: unknown = raw.length === 0 ? null : JSON.parse(raw);
-          // Экран не говорит, кто нажал (К5, П26): тело с полем `by` — негодное тело, а не тело с лишним полем.
-          // Проверка стоит **до** памяти повторов: отклонённое тело не должно запоминаться как ответ на ключ.
-          if (claimsSignedBy(body)) return send(res, { status: 400, type: TEXT_TYPE, body: t(lang, "http.bad_request") });
+          parsed = body;
           check = repeats.check(req.headers[IDEMPOTENCY_HEADER.toLowerCase()] as string | undefined, owner, {
             method,
-            path,
+            // Язык входит в адрес отпечатка (находка ревью К4 № 13): у `/consent` язык решает, по какой карточке
+            // сверяется хэш показанного, то есть одно и то же тело на `?lang=ru` и `?lang=en` — **разные**
+            // действия. Без языка один ключ означал бы два действия, и второе получило бы ответ первого.
+            path: `${path}?lang=${lang}`,
             body,
           });
         } catch {
@@ -225,11 +260,72 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
           // Тот же ключ, тот же адрес и то же тело: прежний ответ **со своим типом содержимого**, второго действия нет.
           return send(res, { status: check.answer.status, type: check.answer.type, body: check.answer.body });
         }
-        // Изменяющих методов в ИН-0 нет: любой POST под `/ui/v1` — неизвестный адрес. Ответ запоминается тем же ключом,
-        // поэтому повтор экрана получит ровно его, а не новый разбор.
-        const answer: Answer = { status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") };
-        repeats.remember(check.key, owner, check.fingerprint, answer);
-        return send(res, answer);
+        /**
+         * Ответ POST запоминается ключом — **на каждом исходе**, а не только на последнем (§ 3, правило 2).
+         *
+         * Исключения **три**, и каждое со своим доводом (находка ревью К4 № 2 — прежде здесь было сказано «одно», и
+         * это было неверно):
+         * 1. `IDEMPOTENCY_REQUIRED` — ключа нет, занимать нечего; у ПАО класс `same_key`, «добавить ключ и повторять
+         *    с ним же» (Р-1633, Р-1635).
+         * 2. `IDEMPOTENCY_CONFLICT` — ключ уже занят **другим** телом, и занимать его этим нельзя: иначе первый
+         *    ответ пропал бы.
+         * 3. `SESSION_REQUIRED` — отдаётся **до** проверки ключа (авторизация раньше всего) и ключа не занимает:
+         *    класс `after_human`, человек открывает страницу заново и повторяет то же действие тем же ключом; заняв
+         *    ключ отказом, мы отдавали бы ему 401 и после входа.
+         *
+         * Всё остальное — негодное тело (включая тело с полем `by`), невыбираемая модель, устаревшая карточка,
+         * неизвестный адрес — ключ **занимает**: повтор того же тела обязан отдать тот же отказ, а не выполнить
+         * действие со второй попытки. Исправленное тело идёт **новым** ключом.
+         */
+        const settle = (answer: Answer): void => {
+          repeats.remember(check.key, owner, check.fingerprint, answer);
+          send(res, answer);
+        };
+
+        /**
+         * Тело с полем `by` — негодное тело (П26 дополнение 2): признак «кто нажал» ставит сервер, и присланное
+         * экраном «я человек» ничего не доказывает. Проверяется **всё** тело на любой глубине.
+         *
+         * Две правки против ИН-0, обе по находкам ревью К4:
+         * - отказ **занимает ключ** (№ 2, Р-1633): прежде он ключ не занимал, и тот же ключ с исправленным телом
+         *   выполнял действие со второй попытки — ровно то, что правило 2 запрещает;
+         * - у зарегистрированного метода отдаётся тело § 3 **с его кодом** (№ 3), а не служебный `text/plain`:
+         *   экрану нужен код, класс повтора и текст человеку. Кода «негодное тело» в § 6 нет вообще, поэтому берётся
+         *   код метода — у § 5.19 это `CONSENT_INVALID`. На незарегистрированном адресе кода взять негде, и остаётся
+         *   прежний служебный ответ: выдумывать для него код нельзя.
+         */
+        if (claimsSignedBy(parsed)) {
+          if (path === "/consent" && o.onboarding !== undefined) {
+            const refusal = consentRefusal("CONSENT_INVALID", lang, o.onboarding, {
+              problem: { reason: "BODY_SHAPE", field: "by" },
+            });
+            // `ok: false` по построению — но читается из типа, а не предполагается.
+            if (!refusal.ok) return settle(json(refusal.status, refusal.body));
+          }
+          return settle({ status: 400, type: TEXT_TYPE, body: t(lang, "http.bad_request") });
+        }
+
+        // ── § 5.19 `POST /ui/v1/consent` — приём условий (ИН-П1, кирпич К4) ──
+        if (path === "/consent") {
+          if (o.onboarding === undefined) return settle({ status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
+          const on = o.onboarding;
+          const got = postConsent(parsed, owner, lang, {
+            catalog: on.catalog,
+            viewId: on.viewId,
+            store: on.store,
+            journal: on.journal,
+            now: on.now ?? (() => new Date().toISOString()),
+            // Признак «кто нажал» ставит **сервер** своим провенансом (П26 доп. 2): из тела он не берётся ни в
+            // каком режиме, и тело с полем `by` отклонено выше как негодное.
+            by: signedBy,
+          });
+          return settle(got.ok ? json(200, got.body) : json(got.status, got.body));
+        }
+
+        // Остальные адреса под `/ui/v1` изменяющих методов пока не имеют: любой другой POST — неизвестный адрес, и
+        // поле `by` в его теле ничего не меняет — отвечать кодом метода, которого нет, было бы выдумыванием.
+        // Ответ запоминается тем же ключом, поэтому повтор экрана получит ровно его, а не новый разбор.
+        return settle({ status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
       }
 
       // ── § 5.3 `GET /ui/v1/purchase/{purchase_id}` ──
@@ -248,6 +344,32 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         const got = await o.core.purchase(id, owner);
         if (got === null) return send(res, notFound(lang));
         return send(res, json(200, purchaseResponse(got, lang)));
+      }
+
+      // Адрес согласия зарегистрирован и принимает **только** POST: чужой глагол — 405 с перечнем методов, как у
+      // `/purchase/{id}` и `/onboarding*`, а не 404 (находка ревью К4 № 11). POST сюда не доходит — он разобран выше.
+      if (path === "/consent" && o.onboarding !== undefined) {
+        return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "POST" });
+      }
+
+      // ── § 5.17 `GET /ui/v1/onboarding` и § 5.18 `GET /ui/v1/onboarding/terms` (ИН-П1, кирпич К3) ──
+      //
+      // Методы знакомства **не привязаны к покупке**: человек заводит агента до того, как покупка появилась, поэтому
+      // ни `purchase_id` в адресе, ни поиска покупки здесь нет. Сессия приложения всё равно нужна и проверена выше —
+      // согласие принадлежит человеку (П34 п. 4), и выдавать карточку условий кому угодно незачем.
+      //
+      // Включаются **настройкой**: не передан `onboarding` — адресов нет, и ответ тот же 404, что у любого другого
+      // незарегистрированного метода. Так же соединяются раздача каркаса и сервер контракта: тестам контракта
+      // знакомство не нужно, и нечитаемой зависимости от его данных у них нет.
+      if (path === "/onboarding" || path === "/onboarding/terms") {
+        if (o.onboarding === undefined) return send(res, { status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
+        if (method !== "GET")
+          return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET" });
+        if (path === "/onboarding") return send(res, json(200, getOnboarding(lang, o.onboarding)));
+        // Вид агента приходит параметром запроса. Отсутствующий параметр — тот же случай, что неизвестный код:
+        // выбрать нечего, и ответ один — `MODEL_NOT_AVAILABLE` (§ 5.18). Пустая строка сюда и попадёт как «нет вида».
+        const got = getOnboardingTerms(u.searchParams.get("model") ?? "", lang, o.onboarding);
+        return send(res, got.ok ? json(200, got.body) : json(got.status, got.body));
       }
 
       // ── § 5.9 `GET /ui/v1/feed` (SSE) ──
@@ -270,7 +392,7 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
   return (req, res) => {
     void route(req, res).catch((e: unknown) => {
       // Сбой разбора — ответ человеку и строка в журнал процесса; тело § 3 здесь не отдаётся: кода внутренней ошибки
-      // ни у ядра, ни в § 6 контракта нет, и выдумывать его в коде нельзя (вопрос к К-Б v1.1, строка в STATUS).
+      // ни у ядра, ни в § 6 контракта нет (в v1.3 по-прежнему), и выдумывать его в коде нельзя — строка в STATUS.
       console.error("/ui/v1: сбой разбора запроса", e);
       send(res, { status: 500, type: TEXT_TYPE, body: t(fallback, "http.internal") });
     });

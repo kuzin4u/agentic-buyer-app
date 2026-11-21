@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { contractDoc, CONTRACT_VERSION } from "../support/contract-doc.js";
 import { filesUnder } from "../support/imports.js";
 import { ALLOWED_EXAMPLES, FORBIDDEN_EXAMPLES, hitsForbidden } from "../support/forbidden-fields.js";
 import {
@@ -15,8 +16,10 @@ import {
   isUiErrorCode,
   isUiSignedBy,
   UI_CONTRACT_VERSION,
+  retryFor,
   UI_ERROR_CODES,
   UI_ERROR_STATUS,
+  UI_RETRY,
   UI_SIGNED_BY,
   UI_V1_BASE,
   type IntentCard,
@@ -27,9 +30,17 @@ import {
   type UiView,
 } from "../../src/contract/ui-v1/index.js";
 import type { PrinciplesView } from "../../src/principles/model.js";
+// Прикладные таблицы классов повтора — проверяется, что они **срезы** общей, а не вторые копии (Р-1685).
+import { RETRY_BY_CODE as INTENT_RETRY } from "../../src/intent/service.js";
+import { RETRY_BY_CODE as PRINCIPLES_RETRY } from "../../src/principles/index.js";
 
-const CONTRACT_DOC = new URL("../../docs/reference/2026-11-18-kontrakt-K-B-ui-v1-v1.0.md", import.meta.url);
-const doc = readFileSync(CONTRACT_DOC, "utf8");
+// Действующая версия документа — **v1.3** (кирпич К7 ИН-П1): v1.1 и v1.2 остаются в репозитории для истории, и
+// сверка идёт с версией наибольшего номера. Прежние сторожки «в документе этого ещё нет» сняты: § 5.1 с двумя
+// телами, поля § 5.14, коды § 6 и класс повтора у каждого кода в v1.3 есть, и сверять их теперь можно напрямую —
+// это и закрыло расхождения № 24 и № 25.
+// Путь к документу — **из одного места** (`tests/support/contract-doc.ts`): свой путь у каждого теста однажды уже
+// отстал от действующей версии (находка ревью К7 № 8).
+const doc = contractDoc();
 
 /** Файлы модуля контракта: по их тексту проверяется инвариант 1 (п. 4) — типы в рантайме не существуют. */
 const MODULE_FILES = ["common.ts", "errors.ts", "idempotency.ts", "methods.ts", "steps.ts", "index.ts"] as const;
@@ -128,9 +139,10 @@ describe("Р-1666: тело § 5.1 — либо карточка, либо во�
     expect(body.draft_id).toBe("drf_6");
   });
 
-  /** Сторожок «документ ещё не знает этого правила» — **в этом же разделе**, о полях § 5.1, а не среди кодов § 6:
-   *  там его при снятии после К-Б v1.1 искали бы не там (замечание повторного ревью К4 № 8). */
-  it("в модуле два тела, а в документе v1.0 `card` и `view` ещё обязательны", () => {
+  /** **Расхождение № 24 закрыто** (кирпич К7 ИН-П1): в документе v1.3 у § 5.1 **два тела**, как в модуле, поэтому
+   *  сторожок «документ ещё не знает этого правила» снят, а на его место встала прямая сверка — обе ветки описаны и
+   *  там, и там. Теперь расхождение не «названо», а нет его. */
+  it("два тела § 5.1 — и в модуле, и в документе v1.3", () => {
     const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
     const section = methods.slice(methods.indexOf("export type IntentDraftResponse"));
     const typeBody = section.slice(0, section.indexOf("\n\n"));
@@ -139,82 +151,108 @@ describe("Р-1666: тело § 5.1 — либо карточка, либо во�
     expect(typeBody).toContain("card: null");
     expect(typeBody).toContain("view: null");
     expect(typeBody).toContain("questions: readonly [IntentQuestion, ...IntentQuestion[]]");
-    // Якорь — **версия документа**, а не буквальный `"card": null`: v1.1 может описать правило прозой или через
-    // `card?`, и ожидание по тексту примера осталось бы зелёным, не дав сигнала «пора снять строку» (ревью К4 № 5).
-    expect(UI_CONTRACT_VERSION).toBe("1.0");
-    expect(doc).toContain("версия 1.0 от 18.11.2026");
-    // И, пока это v1.0: в § 5.1 полная карточка и `"questions": []`, а `null` у `card` и `view` не упомянут (слово
-    // `null` в разделе есть — у `why_disabled`, это другое поле).
+    // Документ той же версии, по которой собран модуль: разойдись они — сверка шла бы с чужим документом.
+    expect(UI_CONTRACT_VERSION).toBe("1.3");
+    expect(doc).toContain("версия 1.3 от 21.11.2026");
+    // Обе ветки § 5.1 названы в документе: карточка с пустым перечнем вопросов и вопросы при `card: null`.
     const docSection = doc.slice(doc.indexOf("## 5.1 "), doc.indexOf("## 5.2 "));
-    expect(docSection).not.toMatch(/"card"\s*:\s*null/);
-    expect(docSection).not.toMatch(/"view"\s*:\s*null/);
     expect(docSection).toContain('"questions": []');
+    expect(docSection).toMatch(/"card"\s*:\s*null/);
+    expect(docSection).toMatch(/"view"\s*:\s*null/);
   });
 });
 
-describe("К2.4 п. 2: коды `/ui` совпадают с § 6 документа", () => {
-  /** Строки таблицы § 6: `| `КОД` | 409 | когда |`. Перечень берётся из документа — источника, а не из копии. */
+describe("К2.4 п. 2: коды `/ui`, их статусы и классы повтора совпадают с § 6 документа", () => {
+  /** Строки таблицы § 6 v1.3: `| `КОД` | 409 | `класс` | источник | когда |`. Перечень берётся из документа —
+   *  источника, а не из копии; с v1.3 в нём есть и **класс повтора** у каждого кода. */
   const fromDoc = (() => {
     const section = doc.slice(doc.indexOf("# 6. Коды `/ui`"), doc.indexOf("# 7. Что работает"));
-    const rows = [...section.matchAll(/^\|\s*`([A-Z0-9_]+)`\s*\|\s*(\d{3})\s*\|/gm)];
-    return rows.map((m) => [m[1] as string, Number(m[2])] as const);
+    const rows = [...section.matchAll(/^\|\s*`([A-Z0-9_]+)`\s*\|\s*(\d{3})\s*\|\s*`([a-z_]+)`\s*\|([^|]*)\|/gm)];
+    return rows.map((m) => [m[1] as string, Number(m[2]), m[3] as string, (m[4] as string).trim()] as const);
   })();
 
-  /** Коды, добавленные решением владельца **до выхода К-Б v1.1**: в таблице § 6 документа v1.0 их нет, и сверять их
-   *  с ним нечем. Таблицу v1.1 выпускает чат; после замены файла ожидание «в документе кода нет» станет красным —
-   *  это и есть сигнал свести перечень к общей сверке и убрать отсюда строку (П32 дополнение 1). */
-  const PENDING_V1_1 = [
-    ["PRINCIPLES_ORDER_INVALID", 400],
-    /** негодный ввод карточки поручения — решения владельца 20.11: Р-1650 (§ 5.2) и Р-1670 (тот же код для § 5.1) */
-    ["INTENT_DRAFT_INVALID", 400],
-    // `SESSION_REQUIRED` — решение владельца 20.11.2026 (Р-1665), кирпич К7 ИН-0: «вход истёк» своим кодом, иначе
-    // человек видит «покупка не найдена» и пути войти заново у него нет.
-    ["SESSION_REQUIRED", 401],
-  ] as const;
-
-  it("таблица § 6 прочитана — девять строк", () => {
-    expect(fromDoc).toHaveLength(9);
+  it("таблица § 6 прочитана — четырнадцать строк с классом повтора", () => {
+    expect(fromDoc).toHaveLength(14);
+    // Класс из документа принадлежит перечню классов, а не «не пуст»: пустую строку регулярка вернуть и не могла,
+    // так что прежняя проверка была тождественно зелёной (находка ревью К7 № 11). Теперь опечатка класса в
+    // документе падает здесь — на чтении, — а не только на сверке с таблицей.
+    for (const [code, , retry] of fromDoc)
+      expect(["never", "after_fix", "same_key", "after_human"], code).toContain(retry);
   });
 
-  it("перечень кодов и порядок — § 6 плюс решённое владельцем до К-Б v1.1", () => {
-    expect(UI_ERROR_CODES).toEqual([...fromDoc.map(([code]) => code), ...PENDING_V1_1.map(([code]) => code)]);
+  it("перечень кодов совпадает с § 6 **в обе стороны**", () => {
+    // Строго, без списка исключений: в модуле нет кода, которого нет в документе, и наоборот. Прежние три строки
+    // «решено владельцем, но документ ещё не знает» сняты — с v1.3 знает.
+    expect([...UI_ERROR_CODES].sort()).toEqual([...fromDoc.map(([code]) => code)].sort());
   });
 
   it("HTTP-статус каждого кода — как в § 6", () => {
     for (const [code, status] of fromDoc) expect(UI_ERROR_STATUS[code as keyof typeof UI_ERROR_STATUS], code).toBe(status);
   });
 
-  it("коды, решённые владельцем до К-Б v1.1, объявлены со своим статусом, и в документе v1.0 их ещё нет", () => {
-    for (const [code, status] of PENDING_V1_1) {
-      expect(isUiErrorCode(code), code).toBe(true);
-      expect(UI_ERROR_STATUS[code], code).toBe(status);
-      expect(doc, code).not.toContain(code);
+  it("класс повтора каждого кода — как в § 6, и таблица в приложении одна", () => {
+    // Главное ожидание кирпича К7: источник класса повтора — **документ**, а не комментарий у значения. Разойдись
+    // таблица с § 6 хоть в одной строке — здесь покраснеет. Ровно это расхождение (`SHOWN_STALE`,
+    // `IDEMPOTENCY_CONFLICT`) и нашлось на разборе: документ правился до v1.3, код остался.
+    for (const [code, , retry] of fromDoc) expect(UI_RETRY[code as keyof typeof UI_RETRY], code).toBe(retry);
+    expect(Object.keys(UI_RETRY).sort()).toEqual([...UI_ERROR_CODES].sort());
+  });
+
+  it("у каждого класса в § 6 назван источник, и он же стоит у значения в коде", () => {
+    // Источник — обоснование значения, и без него строка таблицы это «так решили когда-то». Прежде столбец не
+    // сверялся ни с чем (находка ревью К7 № 14): сверяется **ключевое слово** источника, а не фраза целиком —
+    // проза в документе правится, а ссылка на решение или на ПАО нет.
+    const errors = readFileSync(new URL("../../src/contract/ui-v1/errors.ts", import.meta.url), "utf8");
+    const table = errors.slice(errors.indexOf("export const UI_RETRY"), errors.indexOf("Object.freeze(UI_RETRY)"));
+    for (const [code, , , source] of fromDoc) {
+      expect(source, `${code}: источник в § 6 не назван`).not.toBe("");
+      // Ключи ссылки: номер решения (`Р-1677`, `П32`), `ПАО`, `ядр` или датированное «решение владельца 18.11».
+      // Требуется, чтобы **хотя бы один** ключ из документа стоял и рядом со значением в коде: так сверяется
+      // ссылка, а не проза, которую в документе правят.
+      const keys = [...source.matchAll(/(Р-\d{4}|П\d{2}|ПАО|ядр|решение владельца \d{2}\.\d{2})/g)].map((m) => m[1]!);
+      expect(keys, `${code}: в источнике «${source}» нет ссылки на решение, ПАО или ядро`).not.toEqual([]);
+      const row = table.slice(0, table.indexOf(`${code}:`));
+      const comment = row.slice(row.lastIndexOf("/**"));
+      expect(
+        keys.some((k) => comment.includes(k)),
+        `${code}: у значения в коде нет ни одной ссылки из источника § 6 (${keys.join(", ")})`,
+      ).toBe(true);
     }
   });
 
-  /** Поля § 5.14, добавленные тем же решением владельца (П32 доп. 1): строки-пояснения, признак включённости и
-   *  запертый пункт. В документе v1.0 их нет; появятся с К-Б v1.1 — тогда ожидание «в документе поля нет» станет
-   *  красным, и сверка сведётся к общей. */
-  it("поля `notes`, `items[].on` и `locked_id` объявлены в модуле, а в документе v1.0 их ещё нет", () => {
+  it("срез таблицы отдаёт те же значения, что общая, и только запрошенные коды", () => {
+    const slice = retryFor(["SHOWN_STALE", "IDEMPOTENCY_CONFLICT"]);
+    expect(slice).toEqual({ SHOWN_STALE: UI_RETRY.SHOWN_STALE, IDEMPOTENCY_CONFLICT: UI_RETRY.IDEMPOTENCY_CONFLICT });
+    // Срез заморожен: прикладной модуль не может поправить класс у себя и разойтись с документом.
+    expect(Object.isFrozen(slice)).toBe(true);
+  });
+
+  it("прикладные таблицы — срезы общей, своих значений у них нет", () => {
+    // Норма одна на приложение (Р-1685). Перечень кодов у метода свой — это его норма; значения сверяются с общей.
+    for (const [code, retry] of Object.entries(INTENT_RETRY)) expect(retry, `поручение ${code}`).toBe(UI_RETRY[code as keyof typeof UI_RETRY]);
+    for (const [code, retry] of Object.entries(PRINCIPLES_RETRY)) expect(retry, `принципы ${code}`).toBe(UI_RETRY[code as keyof typeof UI_RETRY]);
+  });
+
+  it("поля `notes`, `items[].on` и `locked_id` есть и в модуле, и в § 5.14 документа v1.3", () => {
     const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
     const section = methods.slice(methods.indexOf("export interface PrinciplesResponse"));
     const body = section.slice(0, section.indexOf("\n}"));
     for (const field of ["notes", "readonly on", "locked_id"]) expect(body, field).toContain(field);
     const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
-    for (const field of ["notes", '"on"', "locked_id"]) expect(docSection, field).not.toContain(field);
+    for (const field of ["notes", "locked_id"]) expect(docSection, field).toContain(field);
   });
 
   /** Признак «кто нажал» (П26): перечень закрыт константой, потому что уходит в подписанную версию, журнал и акт.
    *  Третье значение `test` — решение владельца 19.11, 22:10: прогон должен быть отличим от нажатия в эмуляторе
-   *  интерфейса, иначе в акте для НСПК «не человек» и «прогон» читаются одинаково. В § 5.14 документа v1.0 его нет —
-   *  как и самого поля `by`; оба войдут с К-Б v1.1, и тогда ожидание «в документе значения нет» станет красным. */
-  it("`by` — закрытый перечень из трёх значений, и `test` в документе v1.0 его ещё нет (К-Б v1.1)", () => {
+   *  интерфейса, иначе в акте для НСПК «не человек» и «прогон» читаются одинаково. С v1.3 поле `by` и все три
+   *  значения в § 5.14 документа есть, и сверка идёт напрямую. */
+  it("`by` — закрытый перечень из трёх значений, и все три названы в § 5.14 документа v1.3", () => {
     expect(UI_SIGNED_BY).toEqual(["human", "emulator", "test"]);
     expect(isUiSignedBy("test")).toBe(true);
     expect(isUiSignedBy("robot")).toBe(false);
     expect(isUiSignedBy("toString")).toBe(false);
     const docSection = doc.slice(doc.indexOf("## 5.14"), doc.indexOf("## 5.15"));
-    for (const value of UI_SIGNED_BY) expect(docSection, value).not.toContain(`"${value}"`);
+    for (const value of UI_SIGNED_BY) expect(docSection, value).toContain(value);
   });
 
   it("код вне перечня не опознаётся как код `/ui` (это код ядра)", () => {
@@ -223,10 +261,14 @@ describe("К2.4 п. 2: коды `/ui` совпадают с § 6 докумен�
     expect(isUiErrorCode("toString")).toBe(false);
   });
 
-  it("путь и версия контракта — как в документе", () => {
+  it("путь и версия контракта — как в документе, и версия согласована с путём к файлу", () => {
     expect(UI_V1_BASE).toBe("/ui/v1");
-    expect(UI_CONTRACT_VERSION).toBe("1.0");
     expect(doc).toContain("`/ui/v1`");
+    // Три величины сверяются **между собой**: номер в модуле, номер у пути к действующему файлу и номер, названный
+    // внутри самого документа. Поправь одно, забудь другое — покраснеет здесь; это и делает выпуск новой версии
+    // контракта согласованным, а не «правкой в одном месте из трёх».
+    expect(UI_CONTRACT_VERSION).toBe(CONTRACT_VERSION);
+    expect(doc).toContain(`версия ${CONTRACT_VERSION} от`);
   });
 });
 
@@ -290,10 +332,10 @@ describe("Р-1682: одна форма записи показанного", () 
       .filter((f) => declaresPair(readFileSync(f, "utf8")))
       .map((f) => relative(root, f))
       // `UiView` — **источник** формы: пара объявлена в нём, и `UiShown` берётся оттуда.
-      .filter((f) => f !== "src/contract/ui-v1/common.ts")
-      // Именованное исключение: `ConsentView` онбординга переводит окно Б кирпичом К7 ИН-П1 (Р-1682 п. 4). В `main`
-      // этого каталога ещё нет — когда появится, строка снимается вместе с его кирпичом.
-      .filter((f) => !f.startsWith("src/onboarding/"));
+      .filter((f) => f !== "src/contract/ui-v1/common.ts");
+    // Исключение для `src/onboarding/` **снято**: кирпич К7 перевёл `ConsentView` на `UiShown` (Р-1682 п. 4), и
+    // каталог больше не выведен из-под сторожки. Пока фильтр стоял, он молчал бы и о **новой** копии пары — её
+    // завёл бы кирпич К4 в том же каталоге, и никто бы не узнал (находка ревью К7 № 6).
     expect(offenders).toEqual([]);
   });
 
