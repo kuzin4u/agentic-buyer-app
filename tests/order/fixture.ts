@@ -6,8 +6,11 @@
 //
 // Правило 16.11 «в фикстуре разные сущности — разные значения» держится здесь: **у каждой суммы и у каждого момента
 // своё значение**, поэтому сборка, взявшая не то поле, не может остаться зелёной.
+import { readFileSync } from "node:fs";
 import type { Fulfilment, Operation } from "agentic-buyer-ref/src/shared/domain.js";
-import type { OrderRead } from "../../src/order/port.js";
+import type { OrderRead, ShellText } from "../../src/order/port.js";
+import type { OrderBodyDeps } from "../../src/order/response.js";
+import { parseOrderTexts, type OrderTexts } from "../../src/order/texts.js";
 
 /** Моменты: чтение у Платформы, запись об исполнении, `verify` и вердикт остановки — четыре разных значения. */
 export const CHECKED_AT = "2026-11-21T20:15:00.000Z";
@@ -70,3 +73,24 @@ export const read = (over: Partial<OrderRead> = {}): OrderRead => ({
   act: { id: "act_4471", card_url: "/ui/v1/act/act_4471?view=card" },
   ...over,
 });
+
+/** Тексты — из **того же файла**, что в работе (Р-1511), один разбор на все случаи модуля. */
+export const texts: OrderTexts = parseOrderTexts(
+  JSON.parse(readFileSync(new URL("../../config/order.default.json", import.meta.url), "utf8")),
+);
+
+/**
+ * Каркас портом (Р-1693) — **одна заглушка на все случаи модуля** (находка ревью К4 № 6: две копии уже разошлись, и в
+ * одной сумма печаталась без валюты).
+ *
+ * Нарочно **метки**, а не формат: проверяется, что в строку уходит остаток `verify` и состояние прочитанного, а не
+ * форматирование суммы — у него свой тест там, где он объявлен. Сумма печатается **парой** (число и код валюты), как
+ * требует правило планов № 2: заглушка без валюты прятала бы ошибку масштаба.
+ */
+export const shell: ShellText = {
+  notSpent: (intent, lang) =>
+    `«не списано ${String(intent.amount_left.amount)} ${intent.amount_left.currency} на ${lang}»`,
+  done: (r, lang) => `«сделано ${r.state} на ${lang}»`,
+};
+
+export const deps = (over: Partial<OrderBodyDeps> = {}): OrderBodyDeps => ({ lang: "ru", texts, shell, ...over });

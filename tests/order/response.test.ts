@@ -2,32 +2,20 @@
 // Тексты — из `config/order.default.json`, того же файла, что в работе (Р-1511); русский текст класса проверки
 // клиринга — **у ядра** (Р-1696), и тест берёт его оттуда же, откуда берёт код.
 // Фикстура — общая (`./fixture.js`), одна на случаи К1 и К2 (находка ревью К2 № 7).
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { absenceReasonOf, absenceTextOf, orderBody, scopeCodeOfNotice, type OrderBodyDeps } from "../../src/order/response.js";
-import { parseOrderTexts, scopeTextOf, type OrderTexts } from "../../src/order/texts.js";
-import type { OrderRead, ShellText } from "../../src/order/port.js";
+import { scopeTextOf } from "../../src/order/texts.js";
+import type { OrderRead } from "../../src/order/port.js";
 import {
   ORDER_ABSENCE_REASONS,
   type OrderAbsenceReason,
   type UiFeedEvent,
 } from "../../src/contract/ui-v1/methods.js";
-import { CHECKED_AT, fulfilment, operation, read, STOPPED_AT, unsettled } from "./fixture.js";
+// Тексты, заглушка каркаса и зависимости — из **общей** фикстуры модуля (находка ревью К4 № 6: две копии уже
+// разошлись, и в одной сумма печаталась без валюты).
+import { CHECKED_AT, deps, fulfilment, operation, read, STOPPED_AT, texts, unsettled } from "./fixture.js";
 import { AGENT_DIAG } from "agentic-buyer-ref/src/agent/declines/registry.js";
 import type { PurchaseNotice } from "agentic-buyer-ref/src/agent/ports/shop.js";
-
-const texts: OrderTexts = parseOrderTexts(
-  JSON.parse(readFileSync(new URL("../../config/order.default.json", import.meta.url), "utf8")),
-);
-
-/** Каркас портом (Р-1693): нарочно **метки**, а не формат — проверяется, что в строку уходит остаток `verify` и
- *  состояние прочитанного, а не форматирование суммы (у него свой тест там, где он объявлен). */
-const shell: ShellText = {
-  notSpent: (intent, lang) => `«не списано ${String(intent.amount_left.amount)} ${intent.amount_left.currency} на ${lang}»`,
-  done: (r, lang) => `«сделано ${r.state} на ${lang}»`,
-};
-
-const deps = (over: Partial<OrderBodyDeps> = {}): OrderBodyDeps => ({ lang: "ru", texts, shell, ...over });
 
 const body = (r = read(), d: OrderBodyDeps = deps()) => orderBody(r, d);
 

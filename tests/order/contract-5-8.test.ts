@@ -11,10 +11,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ORDER_ABSENCE_REASONS } from "../../src/contract/ui-v1/methods.js";
-import { orderBody, type OrderBodyDeps } from "../../src/order/response.js";
-import { parseOrderTexts, type OrderTexts } from "../../src/order/texts.js";
-import type { ShellText } from "../../src/order/port.js";
-import { read, unsettled } from "./fixture.js";
+import { orderBody } from "../../src/order/response.js";
+import { deps as depsOf, read, texts, unsettled } from "./fixture.js";
 
 const DOC = new URL("../../docs/reference/2026-11-21-kontrakt-K-B-ui-v1-v1.4.md", import.meta.url);
 const doc = readFileSync(DOC, "utf8");
@@ -28,12 +26,8 @@ const section = (() => {
   return doc.slice(from, to);
 })();
 
-const texts: OrderTexts = parseOrderTexts(
-  JSON.parse(readFileSync(new URL("../../config/order.default.json", import.meta.url), "utf8")),
-);
-
-const shell: ShellText = { notSpent: () => "не списано", done: () => "сделано" };
-const deps: OrderBodyDeps = { lang: "ru", texts, shell };
+// Тексты, заглушка каркаса и зависимости — из **общей** фикстуры модуля (находка ревью К4 № 6).
+const deps = depsOf();
 
 /** Имена полей верхнего уровня из **первого** примера § 5.8 (полное тело). */
 const docFields = (): readonly string[] => {

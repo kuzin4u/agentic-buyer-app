@@ -1,20 +1,15 @@
 // Н-3, К3 — исход итога в журнал покупки (постановка Н-3, П36).
 // Фикстура общая (`./fixture.js`): моменты и суммы разные, поэтому подмена поля в записи не может остаться зелёной.
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { orderBody, type OrderBodyDeps } from "../../src/order/response.js";
+import { orderBody } from "../../src/order/response.js";
 import { recordOrderShown, scopeDetailOf, type OrderJournalEntry } from "../../src/order/journal.js";
-import { parseOrderTexts, scopeTextOf, type OrderTexts } from "../../src/order/texts.js";
-import type { OrderRead, ShellText } from "../../src/order/port.js";
+import { scopeTextOf } from "../../src/order/texts.js";
+import type { OrderRead } from "../../src/order/port.js";
 import { hitsForbidden } from "../support/forbidden-fields.js";
-import { CHECKED_AT, fulfilment, operation, read, unsettled } from "./fixture.js";
+import { CHECKED_AT, deps as depsOf, fulfilment, operation, read, texts, unsettled } from "./fixture.js";
 
-const texts: OrderTexts = parseOrderTexts(
-  JSON.parse(readFileSync(new URL("../../config/order.default.json", import.meta.url), "utf8")),
-);
-
-const shell: ShellText = { notSpent: () => "не списано", done: () => "сделано" };
-const deps: OrderBodyDeps = { lang: "ru", texts, shell };
+// Тексты, заглушка каркаса и зависимости — из **общей** фикстуры модуля (находка ревью К4 № 6).
+const deps = depsOf();
 
 /** Время записи — **своё**, не равное ни времени чтения, ни времени записи Платформы, ни времени `verify`. */
 const WRITTEN_AT = "2026-11-21T20:15:03.000Z";
