@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { contractDoc, CONTRACT_VERSION } from "../support/contract-doc.js";
+import { contractDoc, CONTRACT_DOC, CONTRACT_VERSION } from "../support/contract-doc.js";
 import { filesUnder } from "../support/imports.js";
 import { ALLOWED_EXAMPLES, FORBIDDEN_EXAMPLES, hitsForbidden } from "../support/forbidden-fields.js";
 import {
@@ -34,10 +34,11 @@ import type { PrinciplesView } from "../../src/principles/model.js";
 import { RETRY_BY_CODE as INTENT_RETRY } from "../../src/intent/service.js";
 import { RETRY_BY_CODE as PRINCIPLES_RETRY } from "../../src/principles/index.js";
 
-// Действующая версия документа — **v1.3** (кирпич К7 ИН-П1): v1.1 и v1.2 остаются в репозитории для истории, и
-// сверка идёт с версией наибольшего номера. Прежние сторожки «в документе этого ещё нет» сняты: § 5.1 с двумя
-// телами, поля § 5.14, коды § 6 и класс повтора у каждого кода в v1.3 есть, и сверять их теперь можно напрямую —
-// это и закрыло расхождения № 24 и № 25.
+// Действующая версия документа — **v1.5** (кирпич К-Б ИН-П2; прежде v1.3, кирпич К7 ИН-П1): v1.1…v1.4 остаются в
+// репозитории для истории, и сверка идёт с версией наибольшего номера. v1.4 в коде не стояла — выпущена и отменена
+// v1.5 в один день 22.11, поэтому переход сразу на v1.5. Прежние сторожки «в документе этого ещё нет» сняты: § 5.1
+// с двумя телами, поля § 5.14, коды § 6 и класс повтора у каждого кода есть с v1.3 — это и закрыло расхождения
+// № 24 и № 25.
 // Путь к документу — **из одного места** (`tests/support/contract-doc.ts`): свой путь у каждого теста однажды уже
 // отстал от действующей версии (находка ревью К7 № 8).
 const doc = contractDoc();
@@ -139,10 +140,10 @@ describe("Р-1666: тело § 5.1 — либо карточка, либо во�
     expect(body.draft_id).toBe("drf_6");
   });
 
-  /** **Расхождение № 24 закрыто** (кирпич К7 ИН-П1): в документе v1.3 у § 5.1 **два тела**, как в модуле, поэтому
+  /** **Расхождение № 24 закрыто** (кирпич К7 ИН-П1): с документа v1.3 у § 5.1 **два тела**, как в модуле, поэтому
    *  сторожок «документ ещё не знает этого правила» снят, а на его место встала прямая сверка — обе ветки описаны и
    *  там, и там. Теперь расхождение не «названо», а нет его. */
-  it("два тела § 5.1 — и в модуле, и в документе v1.3", () => {
+  it("два тела § 5.1 — и в модуле, и в действующем документе", () => {
     const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
     const section = methods.slice(methods.indexOf("export type IntentDraftResponse"));
     const typeBody = section.slice(0, section.indexOf("\n\n"));
@@ -151,9 +152,11 @@ describe("Р-1666: тело § 5.1 — либо карточка, либо во�
     expect(typeBody).toContain("card: null");
     expect(typeBody).toContain("view: null");
     expect(typeBody).toContain("questions: readonly [IntentQuestion, ...IntentQuestion[]]");
-    // Документ той же версии, по которой собран модуль: разойдись они — сверка шла бы с чужим документом.
-    expect(UI_CONTRACT_VERSION).toBe("1.3");
-    expect(doc).toContain("версия 1.3 от 21.11.2026");
+    // Документ той же версии, по которой собран модуль: разойдись они — сверка шла бы с чужим документом. Номер
+    // берётся у источника (`CONTRACT_VERSION`), а не литералом: литерал «1.3» стоял здесь третьим местом, которое
+    // надо править на каждом выпуске, и само согласие трёх величин проверяет случай «путь и версия контракта» ниже.
+    expect(UI_CONTRACT_VERSION).toBe(CONTRACT_VERSION);
+    expect(doc).toContain(`версия ${CONTRACT_VERSION} от 22.11.2026`);
     // Обе ветки § 5.1 названы в документе: карточка с пустым перечнем вопросов и вопросы при `card: null`.
     const docSection = doc.slice(doc.indexOf("## 5.1 "), doc.indexOf("## 5.2 "));
     expect(docSection).toContain('"questions": []');
@@ -163,7 +166,7 @@ describe("Р-1666: тело § 5.1 — либо карточка, либо во�
 });
 
 describe("К2.4 п. 2: коды `/ui`, их статусы и классы повтора совпадают с § 6 документа", () => {
-  /** Строки таблицы § 6 v1.3: `| `КОД` | 409 | `класс` | источник | когда |`. Перечень берётся из документа —
+  /** Строки таблицы § 6: `| `КОД` | 409 | `класс` | источник | когда |`. Перечень берётся из документа —
    *  источника, а не из копии; с v1.3 в нём есть и **класс повтора** у каждого кода. */
   const fromDoc = (() => {
     const section = doc.slice(doc.indexOf("# 6. Коды `/ui`"), doc.indexOf("# 7. Что работает"));
@@ -233,7 +236,7 @@ describe("К2.4 п. 2: коды `/ui`, их статусы и классы по�
     for (const [code, retry] of Object.entries(PRINCIPLES_RETRY)) expect(retry, `принципы ${code}`).toBe(UI_RETRY[code as keyof typeof UI_RETRY]);
   });
 
-  it("поля `notes`, `items[].on` и `locked_id` есть и в модуле, и в § 5.14 документа v1.3", () => {
+  it("поля `notes`, `items[].on` и `locked_id` есть и в модуле, и в § 5.14 действующего документа", () => {
     const methods = readFileSync(new URL("../../src/contract/ui-v1/methods.ts", import.meta.url), "utf8");
     const section = methods.slice(methods.indexOf("export interface PrinciplesResponse"));
     const body = section.slice(0, section.indexOf("\n}"));
@@ -246,7 +249,7 @@ describe("К2.4 п. 2: коды `/ui`, их статусы и классы по�
    *  Третье значение `test` — решение владельца 19.11, 22:10: прогон должен быть отличим от нажатия в эмуляторе
    *  интерфейса, иначе в акте для НСПК «не человек» и «прогон» читаются одинаково. С v1.3 поле `by` и все три
    *  значения в § 5.14 документа есть, и сверка идёт напрямую. */
-  it("`by` — закрытый перечень из трёх значений, и все три названы в § 5.14 документа v1.3", () => {
+  it("`by` — закрытый перечень из трёх значений, и все три названы в § 5.14 действующего документа", () => {
     expect(UI_SIGNED_BY).toEqual(["human", "emulator", "test"]);
     expect(isUiSignedBy("test")).toBe(true);
     expect(isUiSignedBy("robot")).toBe(false);
@@ -269,6 +272,10 @@ describe("К2.4 п. 2: коды `/ui`, их статусы и классы по�
     // контракта согласованным, а не «правкой в одном месте из трёх».
     expect(UI_CONTRACT_VERSION).toBe(CONTRACT_VERSION);
     expect(doc).toContain(`версия ${CONTRACT_VERSION} от`);
+    // И **имя файла** — тоже: прежде комментарий обещал сверку «номера у пути к действующему файлу», а связка держалась
+    // только на строке внутри документа (находка ревью К-Б № 10). Укажи путь на файл прежней версии с правильной
+    // строкой внутри — тест бы молчал.
+    expect(CONTRACT_DOC.pathname).toContain(`-v${CONTRACT_VERSION}.md`);
   });
 });
 

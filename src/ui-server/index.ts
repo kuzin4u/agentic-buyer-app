@@ -392,7 +392,8 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
   return (req, res) => {
     void route(req, res).catch((e: unknown) => {
       // Сбой разбора — ответ человеку и строка в журнал процесса; тело § 3 здесь не отдаётся: кода внутренней ошибки
-      // ни у ядра, ни в § 6 контракта нет (в v1.3 по-прежнему), и выдумывать его в коде нельзя — строка в STATUS.
+      // ни у ядра, ни в § 6 контракта нет (в действующей v1.5 по-прежнему), и выдумывать его в коде нельзя — строка
+      // в STATUS.
       console.error("/ui/v1: сбой разбора запроса", e);
       send(res, { status: 500, type: TEXT_TYPE, body: t(fallback, "http.internal") });
     });
