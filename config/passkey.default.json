@@ -1,0 +1,83 @@
+{
+  "text_version": "p4@1.0",
+  "challenge_ttl_ms": 120000,
+  "screen": {
+    "title": {
+      "ru": "Как вы будете подтверждать поручения",
+      "en": "How you will confirm instructions"
+    },
+    "subtitle": {
+      "ru": "Один раз настроим подтверждение на этом телефоне. Дальше каждую оплату вы подтверждаете касанием — отпечатком или кодом телефона.",
+      "en": "We will set up confirmation on this phone once. After that you confirm every payment with a touch — your fingerprint or your phone code."
+    },
+    "footer": {
+      "ru": "Ключ остаётся в телефоне. Мы его не видим и не храним.",
+      "en": "The key stays on your phone. We do not see it and do not store it."
+    },
+    "register_label": {
+      "ru": "Настроить подтверждение",
+      "en": "Set up confirmation"
+    },
+    "touch_label": {
+      "ru": "Подтвердить касанием",
+      "en": "Confirm with a touch"
+    }
+  },
+  "pep": {
+    "text_version": "pep@1.0",
+    "title": {
+      "ru": "Соглашение о простой электронной подписи",
+      "en": "Agreement on an electronic signature"
+    },
+    "text": {
+      "ru": "Подтверждая касанием, вы подписываете показанное: приложение сохраняет отпечаток ровно той карточки, которую вы видели, вместе со временем и признаком подтверждения. Эта запись — ваша простая электронная подпись. Запись нельзя изменить задним числом: новое подтверждение добавляется рядом, прежнее сохраняется.",
+      "en": "By confirming with a touch you sign what was shown: the application stores a fingerprint of exactly the card you saw, together with the time and the confirmation mark. That record is your electronic signature. The record cannot be changed afterwards: a new confirmation is added alongside and the previous one is kept."
+    },
+    "accept_label": {
+      "ru": "Принимаю соглашение",
+      "en": "I accept the agreement"
+    },
+    "note": {
+      "ru": "Текст соглашения демо-стенда, не оферта",
+      "en": "Demo stand agreement text, not an offer"
+    }
+  },
+  "errors": {
+    "PASSKEY_NOT_SUPPORTED": {
+      "ru": "Этот телефон или браузер не умеет подтверждать касанием. Откройте приложение на телефоне с отпечатком или кодом — и настройте подтверждение там",
+      "en": "This phone or browser cannot confirm with a touch. Open the application on a phone with a fingerprint or a code and set up confirmation there"
+    },
+    "PEP_NOT_ACCEPTED": {
+      "ru": "Отметьте, что принимаете соглашение: без него подтверждать поручения нечем",
+      "en": "Tick that you accept the agreement: without it there is nothing to confirm instructions with"
+    },
+    "CHALLENGE_EXPIRED": {
+      "ru": "Время на подтверждение вышло. Коснитесь заново",
+      "en": "The time for confirming has run out. Touch again"
+    },
+    "CHALLENGE_UNKNOWN": {
+      "ru": "Это подтверждение уже использовано. Откройте карточку заново и подтвердите ещё раз",
+      "en": "This confirmation has already been used. Open the card again and confirm once more"
+    },
+    "PASSKEY_SIGNATURE_INVALID": {
+      "ru": "Подтверждение не сошлось с тем, что было показано. Откройте карточку заново и подтвердите ещё раз",
+      "en": "The confirmation did not match what was shown. Open the card again and confirm once more"
+    },
+    "PASSKEY_COUNTER_REGRESSED": {
+      "ru": "Подтверждение пришло от копии вашего ключа. Настройте подтверждение на этом телефоне заново",
+      "en": "The confirmation came from a copy of your key. Set up confirmation on this phone again"
+    },
+    "PASSKEY_NOT_REGISTERED": {
+      "ru": "На этом телефоне подтверждение ещё не настроено. Настройте его и повторите",
+      "en": "Confirmation is not set up on this phone yet. Set it up and try again"
+    },
+    "PASSKEY_USER_NOT_VERIFIED": {
+      "ru": "Подтверждение не прошло: приложите отпечаток или введите код телефона",
+      "en": "The confirmation did not go through: use your fingerprint or enter your phone code"
+    },
+    "SHOWN_STALE": {
+      "ru": "Карточка успела измениться. Посмотрите новую и подтвердите её",
+      "en": "The card has changed. Look at the new one and confirm it"
+    }
+  }
+}

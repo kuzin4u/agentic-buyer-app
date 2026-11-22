@@ -49,3 +49,8 @@ export {
 } from "./webauthn.js";
 
 export { createPasskeyVerifier } from "./passkey-verifier.js";
+
+// Данные экрана П4 и текст ПЭП — кирпич К1 (`config/passkey.default.json`).
+export type { PasskeyCatalog, PasskeyScreenTexts, PasskeyTextCode, PepTexts } from "./texts.js";
+
+export { PASSKEY_TEXT_CODES, parsePasskeyCatalog } from "./texts.js";

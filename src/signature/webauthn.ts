@@ -116,6 +116,20 @@ export function challengeValue(shownHash: ShownHash, nonce: string): string {
   return createHash("sha256").update(`${shownHash}:${nonce}`).digest("base64url");
 }
 
+/**
+ * Границы срока жизни вызова — **одно место на приложение** (находка ревью К1 № 3).
+ *
+ * Прежде границы стояли в разборе данных (`texts.ts`, от секунды до десяти минут), а `issueChallenge` принимал любое
+ * положительное значение: две проверки одной нормы разной строгости — ровно то, против чего завёлся
+ * `src/config-parse.ts`. Теперь норма здесь, у владельца понятия «вызов», и её берут оба.
+ *
+ * Величины названы доводом, а не вкусом: меньше секунды вызов не живёт (человек не успевает коснуться), больше
+ * десяти минут он перестаёт быть одноразовым по сути — забытая страница остаётся годной к подписи. Решения владельца
+ * у этих чисел **нет**, и это названо: вопрос ему задан в PR, пока границы — рекомендация окна.
+ */
+export const CHALLENGE_TTL_MS_MIN = 1_000;
+export const CHALLENGE_TTL_MS_MAX = 600_000;
+
 /** Зависимости выдачи вызова: время, одноразовое число и срок жизни. Срок — **величина данных** (`config/`, К1), не
  *  литерал: он правится без правки кода. */
 export interface IssueChallengeDeps {
@@ -130,7 +144,9 @@ export function issueChallenge(
   deps: IssueChallengeDeps,
   req: { readonly owner: string; readonly purpose: PasskeyPurpose; readonly purchase_id: string | null; readonly shown_hash: ShownHash },
 ): PasskeyChallenge {
-  if (deps.ttlMs <= 0) throw new TypeError("вызов пасскея: срок жизни вызова должен быть положительным");
+  // Та же норма, что у разбора данных: одно место, одна строгость.
+  if (!Number.isInteger(deps.ttlMs) || deps.ttlMs < CHALLENGE_TTL_MS_MIN || deps.ttlMs > CHALLENGE_TTL_MS_MAX)
+    throw new TypeError(`вызов пасскея: срок жизни вызова — целое от ${CHALLENGE_TTL_MS_MIN} до ${CHALLENGE_TTL_MS_MAX} мс, пришло ${deps.ttlMs}`);
   const issued: PasskeyChallenge = Object.freeze({
     value: challengeValue(req.shown_hash, deps.nonce()),
     owner: req.owner,

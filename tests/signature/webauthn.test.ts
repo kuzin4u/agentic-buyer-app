@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest";
 import type { ShownHash, UiPaymentMode } from "../../src/contract/ui-v1/index.js";
 import { createPasskeyVerifier } from "../../src/signature/passkey-verifier.js";
 import {
+  CHALLENGE_TTL_MS_MAX,
+  CHALLENGE_TTL_MS_MIN,
   challengeValue,
   checkPaymentAssertion,
   createChallengeStore,
@@ -111,11 +113,19 @@ describe("вызов: из хэша показанного и одноразов
     expect(store.peek(c.value)).toBeNull();
   });
 
-  it("нулевой или отрицательный срок жизни не принимается", () => {
+  it("срок жизни вне границ не принимается — **на каждую сторону свой случай**", () => {
+    // Требование владельца 22.11.2026 (П37, дополнение 2): у границ случай с каждой стороны, иначе это снова
+    // «проверка ничего не проверяет». Границы — одно место на приложение (`CHALLENGE_TTL_MS_MIN`/`MAX`), и здесь
+    // проверяется **второй** потребитель той же нормы: разбор данных проверяется своим случаем в `texts.test.ts`.
     const store = createChallengeStore();
-    expect(() =>
-      issueChallenge({ store, now: () => NOW, nonce: () => NONCE, ttlMs: 0 }, { owner: OWNER, purpose: "PAYMENT", purchase_id: PURCHASE, shown_hash: SHOWN_HASH }),
-    ).toThrow(/срок жизни/);
+    const issue = (ttlMs: number) =>
+      issueChallenge({ store, now: () => NOW, nonce: () => NONCE, ttlMs }, { owner: OWNER, purpose: "PAYMENT", purchase_id: PURCHASE, shown_hash: SHOWN_HASH });
+    for (const bad of [0, -1, CHALLENGE_TTL_MS_MIN - 1, CHALLENGE_TTL_MS_MAX + 1, 1.5]) {
+      expect(() => issue(bad), String(bad)).toThrow(/срок жизни вызова — целое от 1000 до 600000 мс/);
+    }
+    // А на самих границах — проходит: иначе запрет был бы шире нормы.
+    expect(issue(CHALLENGE_TTL_MS_MIN).expires_at).toBe("2026-11-22T19:00:01.000Z");
+    expect(issue(CHALLENGE_TTL_MS_MAX).expires_at).toBe("2026-11-22T19:10:00.000Z");
   });
 });
 
