@@ -10,79 +10,16 @@
 // самого `read`, и шаги названы в строке кирпича (Р-1698, Р-1702): схлопывание `dropped` через `new Set` роняет
 // проверку «запись на каждую карточку», отбор товаров исключённого магазина — три проверки, включая сквозную
 // сверку счёта.
+// Фикстура магазина, товара и витрины — **общая** (`./fixture.js`), а не своя копия: две копии уже начали
+// расходиться (находка ревью К4 № 9).
 import { describe, expect, it } from "vitest";
 import { classifyOffer } from "agentic-buyer-ref/src/agent/policy/catalog.js";
-import type { CatalogProduct, CatalogShop, ShopOffers, ShopUnavailable } from "../../src/catalog/port.js";
 import { CATALOG_ENTRY_KINDS, read, type CatalogEntry, type CatalogEntryKind } from "../../src/catalog/read.js";
+import type { ShopUnavailable } from "../../src/catalog/port.js";
+import { MERCHANT, MERCHANT_B, REGION, SHOP_B, offers, product, productFacts, shop, type Issues } from "./fixture.js";
 
-type ProductFacts = ShopOffers["facts"]["products"][number];
-type Issues = ProductFacts["issues"];
-type Signals = ProductFacts["signals"];
-
-const RUB = (amount: number) => ({ amount, currency: "RUB" });
-
-const REGION = "RU-MOW";
-
-/**
- * Магазин в форме К8. Опознаватель магазина **не равен** коду продавца: у витрины эмулятора это разные значения
- * (ядро оговаривает это прямо), и в фикстуре они разные — иначе подмена `merchantId` на `shop.id` не покраснела бы
- * ни в одной проверке (находка ревью К2 № 2; разобранный случай К1.5).
- */
-const shop: CatalogShop = {
-  id: "SHOP-1042",
-  inn: "0012345678",
-  mcc: "5462",
-  paymentMethods: ["card", "sbp"],
-  deliveryRegions: [REGION],
-  returns: { days: 0, text: "Хлеб надлежащего качества возврату не подлежит" },
-};
-
-const MERCHANT = "MER-7001";
-const MERCHANT_B = "MER-7002";
-const SHOP_B = "SHOP-2050";
-
-/** Товар в форме К8. `gtin` у выпечки нет — это `null` по замыслу модели, а не «забыли». */
-const product = (sku: string, title: string, price: number): CatalogProduct => ({
-  sku,
-  gtin: null,
-  brand: null,
-  model: null,
-  attributes: { вес: "650 г" },
-  title,
-  category: "Хлеб",
-  price: RUB(price),
-  availability: { inStock: true },
-  delivery: [{ method: "PICKUP", minDays: 0, maxDays: 0, cost: RUB(0) }],
-  updatedAt: "2026-11-22T09:00:00+03:00",
-  description: "Классика: хрустящая корочка, пористый мякиш",
-});
-
-const productFacts = (p: CatalogProduct, issues: Issues = [], signals: Signals = []): ProductFacts => ({
-  product: p,
-  issues,
-  signals,
-});
-
-/** Витрина, ответившая фактами. */
-const offers = (over: {
-  merchantId?: string;
-  inContour?: boolean;
-  shopIssues?: ShopOffers["facts"]["shopIssues"];
-  products?: ShopOffers["facts"]["products"];
-  dropped?: ShopOffers["facts"]["dropped"];
-}): ShopOffers => ({
-  merchantId: over.merchantId ?? MERCHANT,
-  inContour: over.inContour ?? true,
-  facts: {
-    shop,
-    shopIssues: over.shopIssues ?? [],
-    products: over.products ?? [],
-    dropped: over.dropped ?? [],
-  },
-});
-
-const tartine = product("SKU-001", "Тартин — хлеб на закваске", 38000);
-const rye = product("SKU-002", "Заварной ржано-пшеничный", 42500);
+const tartine = product();
+const rye = product({ sku: "SKU-002", title: "Заварной ржано-пшеничный", price: { amount: 42500, currency: "RUB" } });
 
 describe("учёт прочитанного каталога (П38 п. 6)", () => {
   it("пустой ответ — пустой учёт, а не исключение", () => {
@@ -92,8 +29,8 @@ describe("учёт прочитанного каталога (П38 п. 6)", () =
   it("витрина без замечаний: по записи на товар, коды пустые, зона контура перенесена", () => {
     const r = read([offers({ products: [productFacts(tartine), productFacts(rye)] })]);
     expect(r.entries).toEqual([
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: true, issues: [], signals: [] },
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: [], signals: [] },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: true, issues: [], signals: [], cardLike: [] },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: [], signals: [], cardLike: [] },
     ]);
     expect(r.positions).toBe(2);
     expect(r.shopsExcluded).toBe(0);
@@ -103,7 +40,7 @@ describe("учёт прочитанного каталога (П38 п. 6)", () =
   it("вне контура гарантий: признак ядра идёт в запись как есть (инвариант 5)", () => {
     const r = read([offers({ inContour: false, products: [productFacts(tartine)] })]);
     expect(r.entries).toEqual([
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: false, issues: [], signals: [] },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: false, issues: [], signals: [], cardLike: [] },
     ]);
   });
 
@@ -112,8 +49,16 @@ describe("учёт прочитанного каталога (П38 п. 6)", () =
       offers({ products: [productFacts(tartine, [], ["A5_PRICE_MISMATCH"]), productFacts(rye, ["BAD_GTIN"], [])] }),
     ]);
     expect(r.entries).toEqual([
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: true, issues: [], signals: ["A5_PRICE_MISMATCH"] },
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: ["BAD_GTIN"], signals: [] },
+      {
+        kind: "offer",
+        merchantId: MERCHANT,
+        sku: "SKU-001",
+        inContour: true,
+        issues: [],
+        signals: ["A5_PRICE_MISMATCH"],
+        cardLike: [],
+      },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: ["BAD_GTIN"], signals: [], cardLike: [] },
     ]);
   });
 
@@ -122,8 +67,8 @@ describe("учёт прочитанного каталога (П38 п. 6)", () =
     expect(r.entries).toEqual([
       { kind: "shop_excluded", merchantId: MERCHANT, codes: ["REQUIRED"], offers: 2 },
       // Ошибка магазина приезжает к каждому его товару — так же её сводит `classifyOffer` ядра (см. проверку ниже).
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: true, issues: ["REQUIRED"], signals: [] },
-      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: ["REQUIRED"], signals: [] },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-001", inContour: true, issues: ["REQUIRED"], signals: [], cardLike: [] },
+      { kind: "offer", merchantId: MERCHANT, sku: "SKU-002", inContour: true, issues: ["REQUIRED"], signals: [], cardLike: [] },
     ]);
     expect(r.shopsExcluded).toBe(1);
     expect(r.positions).toBe(2);
