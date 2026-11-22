@@ -20,13 +20,15 @@ const cborInt = (n: number): Buffer => {
   throw new Error(`тестовый CBOR: значение ${n} вне нужного диапазона`);
 };
 
-/** CBOR: строка байтов (major 2). Кодировщика текста здесь нет намеренно: он нужен `attestationObject` регистрации, а
- *  регистрация — кирпич К2, и заводить его заранее значило бы держать в тестах мёртвый код. */
-const cborBytes = (b: Buffer): Buffer => {
-  if (b.length < 24) return Buffer.concat([Buffer.from([0x40 | b.length]), b]);
-  if (b.length < 0x100) return Buffer.concat([Buffer.from([0x40 | 24, b.length]), b]);
-  return Buffer.concat([Buffer.from([0x40 | 25, b.length >> 8, b.length & 0xff]), b]);
+/** CBOR: строка байтов (major 2) и строка текста (major 3) — текст понадобился `attestationObject` регистрации (К2). */
+const cborStr = (b: Buffer, major: number): Buffer => {
+  if (b.length < 24) return Buffer.concat([Buffer.from([major | b.length]), b]);
+  if (b.length < 0x100) return Buffer.concat([Buffer.from([major | 24, b.length]), b]);
+  return Buffer.concat([Buffer.from([major | 25, b.length >> 8, b.length & 0xff]), b]);
 };
+
+const cborBytes = (b: Buffer): Buffer => cborStr(b, 0x40);
+const cborText = (s: string): Buffer => cborStr(Buffer.from(s, "utf8"), 0x60);
 
 /** CBOR: map (major 5) из готовых пар. */
 const cborMap = (pairs: readonly (readonly [Buffer, Buffer])[]): Buffer => {
@@ -49,9 +51,10 @@ const coseKey = (pub: KeyObject): Buffer => {
   ]);
 };
 
-/** Флаги `authenticatorData`: UP (нажатие) и UV (подтверждение человеком). */
+/** Флаги `authenticatorData`: UP (нажатие), UV (подтверждение человеком), AT (есть данные ключа — только регистрация). */
 export const FLAG_UP = 0x01;
 export const FLAG_UV = 0x04;
+export const FLAG_AT = 0x40;
 
 /** `authenticatorData`: `rpIdHash(32) ‖ flags(1) ‖ signCount(4)`. */
 const authData = (rpId: string, flags: number, counter: number): Buffer => {
@@ -64,6 +67,16 @@ const authData = (rpId: string, flags: number, counter: number): Buffer => {
 
 export interface TestAuthenticator {
   readonly passkey_id: string;
+  /** Собрать ответ на вызов **регистрации** (кирпич К2): `attestationObject` формата `none` — так его и отдаёт
+   *  платформенный аутентификатор пасскея, то есть доказательства происхождения устройства в нём нет. */
+  registration(o: {
+    readonly challenge: string;
+    readonly origin: string;
+    readonly rp_id?: string;
+    readonly counter?: number;
+    readonly flags?: number;
+    readonly type?: string;
+  }): { readonly id: string; readonly client_data: string; readonly attestation: string };
   /** COSE-ключ в base64url — в этой форме его хранит реестр (`RegisteredPasskey.public_key`) */
   readonly public_key: string;
   /** Собрать ответ на вызов. Подпись настоящая; `flags` и `counter` можно испортить нарочно. */
@@ -82,9 +95,28 @@ export interface TestAuthenticator {
 /** Аутентификатор с настоящей парой ключей. `rp_id` — тот, под который он зарегистрирован. */
 export function createTestAuthenticator(rpId: string, passkeyId = "pk_test_1"): TestAuthenticator {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const credId = Buffer.from(passkeyId, "base64url");
   return {
     passkey_id: passkeyId,
     public_key: b64u(coseKey(publicKey)),
+    registration(o) {
+      const clientData = Buffer.from(
+        JSON.stringify({ type: o.type ?? "webauthn.create", challenge: o.challenge, origin: o.origin, crossOrigin: false }),
+        "utf8",
+      );
+      // `authenticatorData` регистрации: как у подписи, плюс данные ключа — `aaguid(16) ‖ длина(2) ‖ id ‖ COSE`.
+      // `aaguid` нулевой: платформенный аутентификатор пасскея себя не называет, и это не упущение фикстуры.
+      const head = authData(o.rp_id ?? rpId, o.flags ?? (FLAG_UP | FLAG_UV | FLAG_AT), o.counter ?? 0);
+      const len = Buffer.alloc(2);
+      len.writeUInt16BE(credId.length, 0);
+      const data = Buffer.concat([head, Buffer.alloc(16), len, credId, coseKey(publicKey)]);
+      const attestation = cborMap([
+        [cborText("fmt"), cborText("none")],
+        [cborText("attStmt"), Buffer.from([0xa0])],
+        [cborText("authData"), cborBytes(data)],
+      ]);
+      return { id: passkeyId, client_data: b64u(clientData), attestation: b64u(attestation) };
+    },
     assertion(o) {
       const clientData = Buffer.from(
         JSON.stringify({ type: o.type ?? "webauthn.get", challenge: o.challenge, origin: o.origin, crossOrigin: false }),

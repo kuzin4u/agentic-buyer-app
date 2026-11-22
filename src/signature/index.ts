@@ -50,6 +50,26 @@ export {
 
 export { createPasskeyVerifier } from "./passkey-verifier.js";
 
+// Запись регистрации пасскея и реестр ключей — кирпич К2 (П37 п. 2, приём П32).
+export type {
+  PasskeyRegisteredEntry,
+  PasskeyRegistrationJournal,
+  PasskeyRegistrationRefusedEntry,
+  RecordRegistrationDeps,
+  RegistrationStore,
+  SignedRegistration,
+} from "./registration.js";
+
+export {
+  FIRST_REGISTRATION_NO,
+  createPasskeyRegistry,
+  createRegistrationStore,
+  nextRegistrationVersion,
+  recordRegistration,
+} from "./registration.js";
+
+export type { PasskeyRegistrationAnswer, VerifyRegistrationInput } from "./webauthn.js";
+
 // Данные экрана П4 и текст ПЭП — кирпич К1 (`config/passkey.default.json`).
 export type { PasskeyCatalog, PasskeyScreenTexts, PasskeyTextCode, PepTexts } from "./texts.js";
 

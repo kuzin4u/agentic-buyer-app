@@ -45,11 +45,13 @@ const SHOWN_HASH: ShownHash = paymentShownHash(SHOWN);
 function registry(key: RegisteredPasskey, counter: number | null = null): PasskeyRegistry & { readonly counters: Map<string, number> } {
   const counters = new Map<string, number>();
   if (counter !== null) counters.set(key.passkey_id, counter);
+  // Счётчик — у **пары** «человек + ключ» (блокер ревью К2 № 1): заглушка держит ту же форму, что порт, иначе она
+  // показывала бы поведение, которого у кода нет.
   return {
     counters,
     byId: (owner, id) => (owner === key.owner && id === key.passkey_id ? key : null),
-    counterOf: (id) => counters.get(id) ?? null,
-    setCounter: (id, c) => void counters.set(id, c),
+    counterOf: (owner, id) => (owner === key.owner ? counters.get(id) ?? null : null),
+    setCounter: (owner, id, c) => void (owner === key.owner && counters.set(id, c)),
   };
 }
 
@@ -57,6 +59,11 @@ function registry(key: RegisteredPasskey, counter: number | null = null): Passke
  *  по умолчанию есть — иначе каждая ветка спотыкалась бы о чужую проверку. */
 const fakeVerifier = (verified: boolean, counter = 2, user_verified = true): PasskeyVerifier => ({
   verifyAssertion: () => Promise.resolve({ verified, counter, user_verified }),
+  // Регистрацию эти случаи не трогают, и заглушка **падает**, если её позовут: молчаливый «успех» регистрации внутри
+  // проверки подписи означал бы, что случай проверяет не то, о чём говорит (приём заглушки журнала из `m2.test.ts`).
+  verifyRegistration: () => {
+    throw new Error("проверка подписи не регистрирует пасскей");
+  },
 });
 
 const deps = (o: {
@@ -225,7 +232,7 @@ describe("отказные ветки проверки — каждая свое
     const c = issued(store);
     // Инвариант 3 держит **правило**, а не настройка адаптера: порт отдал годную подпись без признака UV — отказ.
     const out = await checkPaymentAssertion(
-      deps({ store, registry: registry(key), verifier: { verifyAssertion: () => Promise.resolve({ verified: true, counter: 3, user_verified: false }) } }),
+      deps({ store, registry: registry(key), verifier: { ...fakeVerifier(true, 3), verifyAssertion: () => Promise.resolve({ verified: true, counter: 3, user_verified: false }) } }),
       body({ challenge: c.value }),
     );
     expect(out).toMatchObject({ ok: false, code: "PASSKEY_USER_NOT_VERIFIED" });

@@ -9,10 +9,9 @@
 // `authenticatorData ‖ sha256(clientDataJSON)`, сверка `rpIdHash`, флагов и типа `webauthn.get` — у библиотеки. Своего
 // разборщика двоичного формата от недоверенной стороны у приложения нет и не появляется.
 //
-// Чего здесь нет: регистрации. Её проверка приходит кирпичом **К2** вместе с записью регистрации — порт расширится
-// вторым методом, и адаптер получит `verifyRegistrationResponse` той же библиотеки.
-import { verifyAuthenticationResponse } from "@simplewebauthn/server";
-import type { PasskeyVerifier, VerifyAssertionInput } from "./webauthn.js";
+// Проверок две, обе — методами порта: подпись оплаты (кирпич К3а) и регистрация ключа (кирпич К2, ниже).
+import { verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
+import type { PasskeyVerifier, VerifyAssertionInput, VerifyRegistrationInput } from "./webauthn.js";
 
 /**
  * Проверяющий на библиотеке.
@@ -68,6 +67,62 @@ export function createPasskeyVerifier(o: { readonly onRefused: (e: unknown) => v
         // Причина — в журнал процесса тому, кто поднял сервер; человеку уходит код и готовый текст (правило 3 К-Б).
         o.onRefused(e);
         return { verified: false, counter: 0, user_verified: false };
+      }
+    },
+
+    /**
+     * Проверка ответа регистрации.
+     *
+     * **Что проверяется и что нет — названо, а не умолчано** (требование владельца 22.11.2026 по К2 п. 1). Библиотека
+     * сверяет вызов, источник страницы, `rp_id`, тип `webauthn.create`, признак подтверждения человеком и разбирает
+     * `attestationObject`, отдавая открытый ключ и начальный счётчик. **Цепочка сертификатов attestation к корню
+     * доверия не ведётся:** перечень доверенных корней задаётся у этой библиотеки отдельной службой метаданных
+     * (`MetadataService` с набором FIDO MDS или своим списком банка), и она **не подключена** — проверять цепочку не к
+     * чему. Названо точно, потому что рычаг легко спутать: `attestationType` — параметр **выдачи** вызова
+     * (`generateRegistrationOptions`), а не проверки ответа, и этот кирпич его не вызывает (находка ревью К2 № 7).
+     * Для пасскея это обычное положение дел —
+     * платформенный аутентификатор отдаёт `fmt: "none"`, то есть attestation как доказательства происхождения
+     * устройства здесь нет вовсе.
+     *
+     * Поэтому **найденная в 13.2.2 дыра GHSA-6hxq-p678-4hr2 нас не касалась и не касается**: она про то, что
+     * `validateCertificatePath()` не убеждался в завершении цепочки на настроенном корне, — у нас цепочки нет. Версия
+     * 13.3.3 починила саму проверку, но **не включает её за нас**: остаточный риск назван строкой в `STATUS.md`
+     * «Открыто» с адресом (договор с банком пилота, Р-1662).
+     *
+     * Что это значит по существу: приложение доверяет **ключу**, а не устройству. Для ПЭП по варианту А (Р-1716) этого
+     * достаточно — подпись доказывает, что подписал тот же ключ, который человек зарегистрировал, и что он подтвердил
+     * касанием. Доказательства «это подлинный аутентификатор такого-то производителя» у нас нет, и оно не обещается.
+     */
+    async verifyRegistration(input: VerifyRegistrationInput) {
+      try {
+        const out = await verifyRegistrationResponse({
+          response: {
+            id: input.answer.id,
+            rawId: input.answer.id,
+            type: "public-key",
+            clientExtensionResults: {},
+            response: { clientDataJSON: input.answer.client_data, attestationObject: input.answer.attestation },
+          },
+          expectedChallenge: input.expected_challenge,
+          expectedOrigin: input.expected_origin,
+          expectedRPID: input.expected_rp_id,
+          requireUserVerification: true,
+        });
+        const info = out.registrationInfo;
+        if (!out.verified || info === undefined) {
+          o.onRefused(new Error("регистрация пасскея: библиотека не подтвердила ответ"));
+          return { verified: false, passkey_id: "", public_key: "", counter: 0, user_verified: false };
+        }
+        return {
+          verified: true,
+          passkey_id: info.credential.id,
+          public_key: Buffer.from(info.credential.publicKey).toString("base64url"),
+          counter: info.credential.counter,
+          user_verified: info.userVerified,
+        };
+      } catch (e: unknown) {
+        o.onRefused(e);
+        return { verified: false, passkey_id: "", public_key: "", counter: 0, user_verified: false };
       }
     },
   };

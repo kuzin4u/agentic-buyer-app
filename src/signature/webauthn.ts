@@ -177,9 +177,18 @@ export interface RegisteredPasskey {
  */
 export interface PasskeyRegistry {
   byId(owner: string, passkeyId: string): RegisteredPasskey | null;
-  /** действующий счётчик ключа; `null` — ключ есть, а счётчика ещё нет (первая подпись) */
-  counterOf(passkeyId: string): number | null;
-  setCounter(passkeyId: string, counter: number): void;
+  /**
+   * Действующий счётчик ключа **этого человека**; `null` — ключ есть, а счётчика ещё нет.
+   *
+   * **Владелец в ключе обязателен** (блокер ревью К2 № 1): опознаватель пасскея приходит из ответа недоверенной
+   * стороны, и при `fmt: "none"` его значение выбирает тот, кто регистрируется. Пока счётчик ключевался одним
+   * опознавателем, посторонний мог зарегистрировать свой ключ с **тем же** опознавателем и этим: (1) сбить засев
+   * счётчика жертвы на нуль — тогда подпись копии её ключа проходила как законная, то есть защита от клона
+   * отключалась чужим действием; (2) поднять действующее значение и навсегда запереть человека отказом
+   * `PASSKEY_COUNTER_REGRESSED`. Поэтому величина принадлежит паре «человек + ключ», и порт получает владельца.
+   */
+  counterOf(owner: string, passkeyId: string): number | null;
+  setCounter(owner: string, passkeyId: string, counter: number): void;
 }
 
 /** Ответ пасскея на вызов подписи — в форме П37 п. 3 (`assertion`). Значения — base64url, как их отдаёт браузер. */
@@ -221,6 +230,30 @@ export interface PasskeyVerifier {
     readonly counter: number;
     readonly user_verified: boolean;
   }>;
+  /** Проверка ответа **регистрации** (кирпич К2). Открытый ключ и начальный счётчик приходят отсюда: приложение их не
+   *  разбирает — это CBOR с COSE-ключом от недоверенной стороны (Р-1721). */
+  verifyRegistration(input: VerifyRegistrationInput): Promise<{
+    readonly verified: boolean;
+    readonly passkey_id: string;
+    readonly public_key: string;
+    readonly counter: number;
+    readonly user_verified: boolean;
+  }>;
+}
+
+/** Ответ пасскея на вызов регистрации — форма П37 п. 3 (`passkey`). Имя поля не `credential`: слово занято платёжным
+ *  реквизитом в перечне инварианта 1 (довод в карточке П37). */
+export interface PasskeyRegistrationAnswer {
+  readonly id: string;
+  readonly client_data: string;
+  readonly attestation: string;
+}
+
+export interface VerifyRegistrationInput {
+  readonly answer: PasskeyRegistrationAnswer;
+  readonly expected_challenge: string;
+  readonly expected_origin: string;
+  readonly expected_rp_id: string;
 }
 
 export type PasskeyCheck =
@@ -288,7 +321,7 @@ export async function checkPaymentAssertion(
   // прежде `deps.rp_id` был объявлен настройкой и не использовался ни в одной проверке).
   if (key.rp_id !== deps.rp_id) return refuse("PASSKEY_NOT_REGISTERED", `пасскей зарегистрирован под ${key.rp_id}, а не под ${deps.rp_id}`);
 
-  const known = deps.registry.counterOf(key.passkey_id) ?? 0;
+  const known = deps.registry.counterOf(body.owner, key.passkey_id) ?? 0;
   const out = await deps.verifier.verifyAssertion({
     assertion: body.assertion,
     expected_challenge: issued.value,
@@ -304,7 +337,7 @@ export async function checkPaymentAssertion(
   // величины нулевые: часть аутентификаторов счётчика не ведёт вовсе и всегда присылает 0.
   if (out.counter < known || (out.counter === known && known !== 0))
     return refuse("PASSKEY_COUNTER_REGRESSED", `счётчик не вырос: было ${known}, пришло ${out.counter}`);
-  deps.registry.setCounter(key.passkey_id, out.counter);
+  deps.registry.setCounter(body.owner, key.passkey_id, out.counter);
 
   return { ok: true, passkey_id: key.passkey_id, counter: out.counter, shown_hash: issued.shown_hash };
 }
