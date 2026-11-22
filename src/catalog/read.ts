@@ -166,12 +166,24 @@ export interface DroppedEntry {
   readonly code: CatalogIssueCode;
 }
 
-/** Магазин исключён целиком. `offers` — сколько его товаров ушло вместе с ним. */
+/**
+ * Магазин исключён целиком.
+ *
+ * `offers` — сколько его товаров ушло вместе с ним, либо **`null`, когда это неизвестно**. Неизвестно бывает: если
+ * не разобрались сами **факты магазина**, ядро отдаёт `shop: null` с одним кодом и **пустыми** `products` и
+ * `dropped` — «по карточкам записей нет» (Р54 п. 5, `adapters/shops/adapter.ts`). Карточки у витрины при этом есть,
+ * но до приложения они не доходят.
+ *
+ * Поэтому `0` здесь был бы **неправдой**, а не упрощением: он утверждал бы «товаров не было», тогда как верное
+ * утверждение — «сколько их было, мы не знаем». Разница видна человеку: «магазин исключён, товаров 0» и «магазин
+ * исключён, сколько товаров — неизвестно» это разные сообщения, и второе честное (находка ревью К5 № 3). Сама
+ * потеря карточек — расхождение с ядром, записано в `STATUS.md`; в приложении оно не обходится.
+ */
 export interface ShopExcludedEntry {
   readonly kind: "shop_excluded";
   readonly merchantId: string;
   readonly codes: readonly CatalogIssueCode[];
-  readonly offers: number;
+  readonly offers: number | null;
 }
 
 /**
@@ -303,7 +315,9 @@ export function read(results: readonly SearchResult[]): CatalogReading {
           kind: "shop_excluded",
           merchantId,
           codes: [...facts.shopIssues],
-          offers: facts.products.length,
+          // Факты магазина не разобраны (`shop === null`) — карточек ядро не отдало, и их число неизвестно.
+          // `facts.products.length` здесь равен нулю, но ноль означал бы «товаров не было» (см. тип).
+          offers: facts.shop === null ? null : facts.products.length,
         });
       }
       for (const p of facts.products) {
