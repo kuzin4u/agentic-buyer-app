@@ -20,6 +20,7 @@ import {
   type SourceCode,
 } from "../../src/order/texts.js";
 import { ORDER_ABSENCE_REASONS } from "../../src/contract/ui-v1/methods.js";
+import type { UiLang } from "../../src/contract/ui-v1/common.js";
 import { AGENT_DIAG } from "agentic-buyer-ref/src/agent/declines/registry.js";
 import type { ShellText } from "../../src/order/port.js";
 import { hitsForbidden } from "../support/forbidden-fields.js";
@@ -76,6 +77,15 @@ describe("К1: тексты источников — данными в `config/`
     for (const code of SCOPE_CORE_CODES) expect(scopeTextOf(code, texts, "ru")).toBe(AGENT_DIAG[code].human.ru);
     // Английский — свой, и он не равен русскому ядра.
     for (const code of SCOPE_CORE_CODES) expect(scopeTextOf(code, texts, "en")).toBe(texts.scope_en[code]);
+  });
+
+  // Находка ревью К3 № 2 задачи ВР-1: прежняя последняя строка `return human.ru` была недостижима (`ru` обязателен
+  // у `DiagTexts`), и подмена её ничего не краснила — мёртвый код там, где комментарий обещал обратное. Функция
+  // переписана разбором по языку с ветвью `never`; в работе ветвь достижима, потому что язык приезжает из запроса.
+  it("язык вне перечня интерфейса — отказ, а не молчаливая английская строка", () => {
+    expect(() => scopeTextOf(SCOPE_CORE_CODES[0]!, texts, "de" as UiLang)).toThrow("язык вне перечня интерфейса");
+    // И для своего текста «в пределах поручения» язык вне перечня тоже не даёт строки.
+    expect(() => scopeTextOf("WITHIN_LIMITS", texts, "de" as UiLang)).toThrow();
   });
 
   it("русский текст ядра зафиксирован **значением**: правка у ядра краснеет здесь, и en правят тем же кирпичом", () => {

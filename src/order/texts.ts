@@ -111,15 +111,33 @@ export interface OrderTexts {
  * предел поручения (находка ревью К2 № 5).
  */
 export function scopeTextOf(code: ScopeCode, texts: OrderTexts, lang: UiLang): string {
+  // Язык проверяется **раньше выбора текста** и один раз на обе ветви. Без этого ветвь «в пределах поручения»
+  // отдавала бы на языке вне перечня `undefined` — молча, потому что `Bilingual` это `Record<UiLang, string>` и
+  // индекс лживым приведением типа не проверяется (нашлось тестом ветви `never`, находка ревью К3 № 2 ВР-1:
+  // у кода ядра получался отказ, а у своего текста — пустота; одно и то же обращение вело себя по-разному).
+  switch (lang) {
+    case "ru":
+    case "en":
+      break;
+    default: {
+      const rest: never = lang;
+      void rest;
+      throw new Error("язык вне перечня интерфейса");
+    }
+  }
   if (code === "WITHIN_LIMITS") return texts.scope_within[lang];
   // Язык запроса у реестра ядра может появиться позже (`DiagTexts` допускает любые языки) — тогда он берётся **раньше**
   // своей пары: источник текста один, и своя пара нужна лишь пока у ядра языка нет (находка ревью К2а № 6 — прежде
   // ветка `en` до реестра не доходила никогда, и обещание в комментарии не исполнялось).
+  //
+  // Разбор **по языку**, а не общий `human[lang] ?? …` — находка ревью К3 № 2 задачи ВР-1. Прежняя последняя строка
+  // `return human.ru` была **недостижима**: `ru` у `DiagTexts` обязателен, и при `lang === "ru"` возврат происходил
+  // раньше. То есть здесь лежал мёртвый код того же рода, который этот же комментарий выше и описывает как урок.
+  // Теперь у каждого языка свой путь, а третий язык роняет компиляцию: ему нужно своё решение о том, откуда
+  // берутся тексты (у реестра обязателен только `ru`, в `config/` лежит одна наша пара).
   const human = AGENT_DIAG[code].human;
-  const fromCore = human[lang];
-  if (fromCore !== undefined) return fromCore;
-  if (lang === "en") return texts.scope_en[code];
-  return human.ru;
+  // `ru` у записи реестра обязателен, поэтому он и есть источник; у `en` — реестр раньше своей пары.
+  return lang === "ru" ? human.ru : (human["en"] ?? texts.scope_en[code]);
 }
 
 const SECTIONS = ["sources", "scope_within", "scope_en", "outcomes", "reasons", "withheld"] as const;
