@@ -20,3 +20,32 @@ export {
   nextApprovalVersion,
   recordPaymentApproval,
 } from "./m2.js";
+
+// Серверная проверка ответа пасскея — кирпич К3а (П37 п. 3; Р-1716, Р-1720, Р-1721).
+export type {
+  ChallengeStore,
+  CheckAssertionDeps,
+  IssueChallengeDeps,
+  PasskeyAssertion,
+  PasskeyChallenge,
+  PasskeyCheck,
+  PasskeyPurpose,
+  PasskeyRefusalCode,
+  PasskeyRegistry,
+  PasskeyVerifier,
+  RegisteredPasskey,
+  VerifyAssertionInput,
+} from "./webauthn.js";
+
+export {
+  PASSKEY_PURPOSES,
+  PASSKEY_REFUSAL_CODES,
+  challengeValue,
+  checkPaymentAssertion,
+  createChallengeStore,
+  issueChallenge,
+  paymentShown,
+  paymentShownHash,
+} from "./webauthn.js";
+
+export { createPasskeyVerifier } from "./passkey-verifier.js";
