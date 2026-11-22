@@ -18,7 +18,16 @@
 // `PENDING_V1_6`; кирпич К4 переносит их в контракт тем же составом, когда документ их назовёт. Класс повтора у
 // каждого назван решением П37 (Р-1681: класс — один на приложение и только у источника).
 import { createHash } from "node:crypto";
-import { showingHash, type ShownHash, type ShownPayload, type UiInstant, type UiPaymentMode } from "../contract/ui-v1/index.js";
+import {
+  frozenShown,
+  showingHash,
+  type ShownHash,
+  type ShownPayload,
+  type UiInstant,
+  type UiPaymentMode,
+  type UiRetryClass,
+  type UiShown,
+} from "../contract/ui-v1/index.js";
 
 /** Зачем выдан вызов: регистрация пасскея (П4) или подпись оплаты (М2). Перечень закрыт: вызов одного дела не годится
  *  для другого, и это проверяется, а не предполагается. */
@@ -64,6 +73,38 @@ export const PASSKEY_REFUSAL_CODES = [
 
 export type PasskeyRefusalCode = (typeof PASSKEY_REFUSAL_CODES)[number];
 
+/**
+ * HTTP-статус и класс повтора у каждого кода — **одним местом** (кирпич К4), как у контракта (`UI_ERROR_STATUS`,
+ * `UI_RETRY`). Значения названы решением **П37** п. 3 с дополнением 1; источник класса — само решение (Р-1681: класс
+ * повтора один на приложение и только у источника), и второй таблицы в приложении нет.
+ *
+ * Пометка **`PENDING_V1_6`**: в контракт эти коды переносит выпуск К-Б v1.6 — до него перечень сверяется с решением,
+ * а не с документом (довод в шапке файла). Тест требует, чтобы в обеих таблицах стояли **ровно** те же коды, что в
+ * `PASSKEY_REFUSAL_CODES`: иначе код без статуса ушёл бы человеку как 500, а код без класса — без совета, что делать.
+ */
+export const PASSKEY_REFUSAL_STATUS: Readonly<Record<PasskeyRefusalCode, number>> = Object.freeze({
+  PASSKEY_NOT_SUPPORTED: 409,
+  PEP_NOT_ACCEPTED: 400,
+  CHALLENGE_EXPIRED: 409,
+  CHALLENGE_UNKNOWN: 409,
+  PASSKEY_SIGNATURE_INVALID: 400,
+  PASSKEY_COUNTER_REGRESSED: 409,
+  PASSKEY_NOT_REGISTERED: 409,
+  PASSKEY_USER_NOT_VERIFIED: 409,
+});
+
+export const PASSKEY_REFUSAL_RETRY: Readonly<Record<PasskeyRefusalCode, UiRetryClass>> = Object.freeze({
+  // «повтор не поможет на этом устройстве, но поможет на другом» — выход есть, и `never` его бы закрыл
+  PASSKEY_NOT_SUPPORTED: "after_human",
+  PEP_NOT_ACCEPTED: "after_fix",
+  CHALLENGE_EXPIRED: "after_human",
+  CHALLENGE_UNKNOWN: "never",
+  PASSKEY_SIGNATURE_INVALID: "never",
+  PASSKEY_COUNTER_REGRESSED: "never",
+  PASSKEY_NOT_REGISTERED: "after_human",
+  PASSKEY_USER_NOT_VERIFIED: "after_human",
+});
+
 /** Выданный вызов. `shown_hash` хранится **рядом с вызовом**: по нему проверяется, что подписывают ровно ту карточку,
  *  для которой вызов выдан (правило 1 К-Б). `purchase_id` у регистрации равен `null` — ей покупка не нужна. */
 export interface PasskeyChallenge {
@@ -71,7 +112,14 @@ export interface PasskeyChallenge {
   readonly owner: string;
   readonly purpose: PasskeyPurpose;
   readonly purchase_id: string | null;
-  readonly shown_hash: ShownHash;
+  /**
+   * Что показано: **хэш и версия текстов вместе** — одна запись `UiShown` об **одной** карточке (Р-1682, правило 1).
+   *
+   * Версия текстов хранится здесь, а не берётся у данных экрана при записи версии (блокер ревью К4 № 1): подпись
+   * оплаты встаёт над карточкой оплаты, а версия текстов бралась из каталога П4 — в подписанной версии оказывалась
+   * пара от **двух разных** карточек, и по ней нельзя было установить, под какой формулировкой человек подтвердил.
+   */
+  readonly shown: UiShown;
   readonly expires_at: UiInstant;
 }
 
@@ -86,19 +134,66 @@ export interface ChallengeStore {
   peek(value: string): PasskeyChallenge | null;
   /** отдать и вычеркнуть: второй раз вернёт `null` */
   consume(value: string): PasskeyChallenge | null;
+  /**
+   * Отдать и вычеркнуть **свой** живой вызов этого человека для этого дела.
+   *
+   * Так тела методов П37 п. 3 обходятся **без поля `challenge`**: в записанной форме его нет (находка ревью К4 № 8),
+   * и экрану незачем возвращать значение, которое сервер выдал сам. Берётся **последний** выданный: человек мог
+   * открыть экран дважды, и годен тот вызов, который он видит сейчас.
+   */
+  consumeFor(owner: string, purpose: PasskeyPurpose, purchaseId: string | null): PasskeyChallenge | null;
+  /** то же, но **не вычёркивая**: нужно там, где вызов вычеркнет проверка подписи, и правило одноразовости обязано
+   *  остаться в одном месте (`checkPaymentAssertion`) */
+  peekFor(owner: string, purpose: PasskeyPurpose, purchaseId: string | null): PasskeyChallenge | null;
+  /** сколько вызовов помнит — для проверок предела */
+  readonly size: number;
 }
 
+/** Предел числа живых вызовов: память наполняется запросами извне, причём `GET` вызова регистрации **ключа
+ *  идемпотентности не несёт**, то есть ничем не ограничен. Без предела процесс рос бы по числу обращений — тот же
+ *  случай, что `MAX_KEYS` у памяти повторов (находка ревью К2 № 8 ИН-0, повторно — ревью К4 № 13). */
+const MAX_CHALLENGES = 10_000;
+
 /** Состояние в памяти процесса — как прочее состояние стенда (П2 п. 1–2). Снаружи виден только порт. */
-export function createChallengeStore(): ChallengeStore {
+export function createChallengeStore(now: () => UiInstant = () => new Date().toISOString()): ChallengeStore {
   const live = new Map<string, PasskeyChallenge>();
+  /** Просроченные вычищаются при каждой выдаче: вызов со вышедшим сроком всё равно негоден, и держать его незачем. */
+  const sweep = (): void => {
+    const at = Date.parse(now());
+    if (Number.isNaN(at)) return;
+    for (const [value, c] of live) if (at > Date.parse(c.expires_at)) live.delete(value);
+  };
   return {
-    put: (challenge) => void live.set(challenge.value, challenge),
+    get size() {
+      return live.size;
+    },
+    put: (challenge) => {
+      sweep();
+      // Предел — после уборки: сначала уходят просроченные, и только если и после этого тесно, вытесняется самый
+      // давний (у него и шанс пригодиться наименьший).
+      if (live.size >= MAX_CHALLENGES) {
+        const oldest = live.keys().next();
+        if (!oldest.done) live.delete(oldest.value);
+      }
+      live.set(challenge.value, challenge);
+    },
     peek: (value) => live.get(value) ?? null,
     consume: (value) => {
       const was = live.get(value);
       if (was === undefined) return null;
       live.delete(value);
       return was;
+    },
+    peekFor: (owner, purpose, purchaseId) => {
+      let found: PasskeyChallenge | null = null;
+      for (const c of live.values()) if (c.owner === owner && c.purpose === purpose && c.purchase_id === purchaseId) found = c;
+      return found;
+    },
+    consumeFor(owner, purpose, purchaseId) {
+      const found = this.peekFor(owner, purpose, purchaseId);
+      if (found === null) return null;
+      live.delete(found.value);
+      return found;
     },
   };
 }
@@ -142,17 +237,17 @@ export interface IssueChallengeDeps {
 /** Выдать вызов под карточку. Сохраняет его вместе с хэшем показанного и сроком. */
 export function issueChallenge(
   deps: IssueChallengeDeps,
-  req: { readonly owner: string; readonly purpose: PasskeyPurpose; readonly purchase_id: string | null; readonly shown_hash: ShownHash },
+  req: { readonly owner: string; readonly purpose: PasskeyPurpose; readonly purchase_id: string | null; readonly shown: UiShown },
 ): PasskeyChallenge {
   // Та же норма, что у разбора данных: одно место, одна строгость.
   if (!Number.isInteger(deps.ttlMs) || deps.ttlMs < CHALLENGE_TTL_MS_MIN || deps.ttlMs > CHALLENGE_TTL_MS_MAX)
     throw new TypeError(`вызов пасскея: срок жизни вызова — целое от ${CHALLENGE_TTL_MS_MIN} до ${CHALLENGE_TTL_MS_MAX} мс, пришло ${deps.ttlMs}`);
   const issued: PasskeyChallenge = Object.freeze({
-    value: challengeValue(req.shown_hash, deps.nonce()),
+    value: challengeValue(req.shown.hash, deps.nonce()),
     owner: req.owner,
     purpose: req.purpose,
     purchase_id: req.purchase_id,
-    shown_hash: req.shown_hash,
+    shown: frozenShown(req.shown),
     expires_at: new Date(Date.parse(deps.now()) + deps.ttlMs).toISOString(),
   });
   deps.store.put(issued);
@@ -257,7 +352,8 @@ export interface VerifyRegistrationInput {
 }
 
 export type PasskeyCheck =
-  | { readonly ok: true; readonly passkey_id: string; readonly counter: number; readonly shown_hash: ShownHash }
+  /** `shown` — запись показанного **из вызова**, одной парой: её и пишет подписанная версия (блокер ревью К4 № 1). */
+  | { readonly ok: true; readonly passkey_id: string; readonly counter: number; readonly shown: UiShown }
   | { readonly ok: false; readonly code: PasskeyRefusalCode; readonly reason: string };
 
 const refuse = (code: PasskeyRefusalCode, reason: string): PasskeyCheck => ({ ok: false, code, reason });
@@ -313,7 +409,7 @@ export async function checkPaymentAssertion(
   if (at > Date.parse(issued.expires_at)) return refuse("CHALLENGE_EXPIRED", "срок вызова вышел");
   // Хэш показанного сверяется **с тем, что хранит вызов**, а не с присланным телом против самого себя: иначе проверка
   // проверяла бы присланное присланным (довод `shownMatches` контракта).
-  if (issued.shown_hash !== body.shown_hash) return refuse("PASSKEY_SIGNATURE_INVALID", "подписана не та карточка, для которой выдан вызов");
+  if (issued.shown.hash !== body.shown_hash) return refuse("PASSKEY_SIGNATURE_INVALID", "подписана не та карточка, для которой выдан вызов");
 
   const key = deps.registry.byId(body.owner, body.assertion.passkey_id);
   if (key === null) return refuse("PASSKEY_NOT_REGISTERED", "у этого человека такого пасскея нет");
@@ -339,7 +435,7 @@ export async function checkPaymentAssertion(
     return refuse("PASSKEY_COUNTER_REGRESSED", `счётчик не вырос: было ${known}, пришло ${out.counter}`);
   deps.registry.setCounter(body.owner, key.passkey_id, out.counter);
 
-  return { ok: true, passkey_id: key.passkey_id, counter: out.counter, shown_hash: issued.shown_hash };
+  return { ok: true, passkey_id: key.passkey_id, counter: out.counter, shown: issued.shown };
 }
 
 /**

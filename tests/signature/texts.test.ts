@@ -107,7 +107,7 @@ describe("перечень кодов сверяется с источником
     const store = createChallengeStore();
     const issued = issueChallenge(
       { store, now: () => "2026-11-22T20:00:00.000Z", nonce: () => "nonce_k1", ttlMs: catalog.challenge_ttl_ms },
-      { owner: "own_k1", purpose: "PAYMENT", purchase_id: "pur_k1", shown_hash: `sha256:${"a".repeat(64)}` },
+      { owner: "own_k1", purpose: "PAYMENT", purchase_id: "pur_k1", shown: { hash: `sha256:${"a".repeat(64)}`, text_version: "p4-pay@1.0" } },
     );
     expect(issued.expires_at).toBe("2026-11-22T20:02:00.000Z");
   });

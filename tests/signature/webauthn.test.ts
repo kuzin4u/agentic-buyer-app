@@ -40,6 +40,7 @@ const TTL = 120_000;
 const CARD = { mode: "BANK" as UiPaymentMode, purchase_id: PURCHASE, total: { amount: 36_800, currency: "RUB" }, shop: "Масса Мадре" };
 const SHOWN = { text_version: "p4-pay@1.0", card: CARD } as const;
 const SHOWN_HASH: ShownHash = paymentShownHash(SHOWN);
+const SHOWN_PAIR = { hash: SHOWN_HASH, text_version: SHOWN.text_version } as const;
 
 /** Реестр пасскеев: ключ и **изменяемое** состояние счётчика (П37 п. 2). */
 function registry(key: RegisteredPasskey, counter: number | null = null): PasskeyRegistry & { readonly counters: Map<string, number> } {
@@ -83,7 +84,8 @@ const deps = (o: {
 const issued = (store: ReturnType<typeof createChallengeStore>, over: { purpose?: "REGISTRATION" | "PAYMENT"; purchase_id?: string | null } = {}) =>
   issueChallenge(
     { store, now: () => NOW, nonce: () => NONCE, ttlMs: TTL },
-    { owner: OWNER, purpose: over.purpose ?? "PAYMENT", purchase_id: over.purchase_id ?? PURCHASE, shown_hash: SHOWN_HASH },
+    // Вызов хранит **пару** «хэш + версия текстов» об одной карточке (блокер ревью К4 № 1).
+    { owner: OWNER, purpose: over.purpose ?? "PAYMENT", purchase_id: over.purchase_id ?? PURCHASE, shown: SHOWN_PAIR },
   );
 
 describe("вызов: из хэша показанного и одноразового числа, одноразовый, со сроком", () => {
@@ -102,10 +104,12 @@ describe("вызов: из хэша показанного и одноразов
     expect(() => challengeValue(SHOWN_HASH, "")).toThrow(/одноразовое число пустое/);
   });
 
-  it("вызов хранит хэш показанного, покупку и срок", () => {
+  it("вызов хранит запись показанного одной парой, покупку и срок", () => {
     const store = createChallengeStore();
     const c = issued(store);
-    expect(c.shown_hash).toBe(SHOWN_HASH);
+    // Пара, а не один хэш: версия текстов нужна подписанной версии, и брать её у данных другого экрана нельзя
+    // (блокер ревью К4 № 1 — там в версию уходила пара от двух разных карточек).
+    expect(c.shown).toEqual({ hash: SHOWN_HASH, text_version: "p4-pay@1.0" });
     expect(c.purchase_id).toBe(PURCHASE);
     expect(c.expires_at).toBe("2026-11-22T19:02:00.000Z");
     expect(Object.isFrozen(c)).toBe(true);
@@ -126,7 +130,7 @@ describe("вызов: из хэша показанного и одноразов
     // проверяется **второй** потребитель той же нормы: разбор данных проверяется своим случаем в `texts.test.ts`.
     const store = createChallengeStore();
     const issue = (ttlMs: number) =>
-      issueChallenge({ store, now: () => NOW, nonce: () => NONCE, ttlMs }, { owner: OWNER, purpose: "PAYMENT", purchase_id: PURCHASE, shown_hash: SHOWN_HASH });
+      issueChallenge({ store, now: () => NOW, nonce: () => NONCE, ttlMs }, { owner: OWNER, purpose: "PAYMENT", purchase_id: PURCHASE, shown: SHOWN_PAIR });
     for (const bad of [0, -1, CHALLENGE_TTL_MS_MIN - 1, CHALLENGE_TTL_MS_MAX + 1, 1.5]) {
       expect(() => issue(bad), String(bad)).toThrow(/срок жизни вызова — целое от 1000 до 600000 мс/);
     }
@@ -287,7 +291,8 @@ describe("отказные ветки проверки — каждая свое
     const c = issued(store);
     const reg = registry(key, 5);
     const out = await checkPaymentAssertion(deps({ store, registry: reg, verifier: fakeVerifier(true, 9) }), body({ challenge: c.value }));
-    expect(out).toEqual({ ok: true, passkey_id: "pk_1", counter: 9, shown_hash: SHOWN_HASH });
+    // Исход отдаёт запись показанного **парой** — её и пишет подписанная версия (блокер ревью К4 № 1).
+    expect(out).toEqual({ ok: true, passkey_id: "pk_1", counter: 9, shown: SHOWN_PAIR });
     expect(reg.counters.get("pk_1")).toBe(9);
   });
 
@@ -341,7 +346,7 @@ describe("подпись проверяется настоящей библио�
       challenge: c.value,
       assertion: auth.assertion({ challenge: c.value, origin: ORIGIN, counter: 4 }),
     });
-    expect(out).toEqual({ ok: true, passkey_id: PASSKEY_ID, counter: 4, shown_hash: SHOWN_HASH });
+    expect(out).toEqual({ ok: true, passkey_id: PASSKEY_ID, counter: 4, shown: SHOWN_PAIR });
   });
 
   it("убывший счётчик на живом материале — `PASSKEY_COUNTER_REGRESSED`, а не «подпись не сошлась»", async () => {

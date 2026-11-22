@@ -70,6 +70,20 @@ export {
 
 export type { PasskeyRegistrationAnswer, VerifyRegistrationInput } from "./webauthn.js";
 
+// Четыре метода `/ui/v1` формы П37 п. 3 — кирпич К4 (`PENDING_V1_6`).
+export type { PasskeyOutcome, PasskeyServiceDeps } from "./service.js";
+
+export {
+  getPasskeyRegistration,
+  passkeyRefusal,
+  postPasskeyRegistration,
+  postPaymentSignature,
+  postPaymentSignatureChallenge,
+  registrationShown,
+} from "./service.js";
+
+export { PASSKEY_REFUSAL_RETRY, PASSKEY_REFUSAL_STATUS } from "./webauthn.js";
+
 // Данные экрана П4 и текст ПЭП — кирпич К1 (`config/passkey.default.json`).
 export type { PasskeyCatalog, PasskeyScreenTexts, PasskeyTextCode, PepTexts } from "./texts.js";
 

@@ -259,7 +259,7 @@ describe("К2 и К3а сошлись: счётчик живёт одной ве
     const challenges = createChallengeStore();
     const issuedChallenge = issueChallenge(
       { store: challenges, now: () => NOW, nonce: () => `nonce_${counter}`, ttlMs: 120_000 },
-      { owner: OWNER, purpose: "PAYMENT", purchase_id: "pur_reg_1", shown_hash: payHash },
+      { owner: OWNER, purpose: "PAYMENT", purchase_id: "pur_reg_1", shown: { hash: payHash, text_version: SHOWN_PAY.text_version } },
     );
     return checkPaymentAssertion(
       {

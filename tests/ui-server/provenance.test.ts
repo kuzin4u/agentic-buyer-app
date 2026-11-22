@@ -131,14 +131,29 @@ test("POST с полем by — 400, и в память повторов так�
      * попытки** — это и есть то, что правило 2 запрещает; исправленное тело идёт новым ключом.
      */
     expect(repeats.size).toBe(1);
-    // Тот же ключ с **другим** телом — конфликт, а не новое действие: ключ уже занят отказом.
+    /**
+     * **Ожидание исправлено кирпичом К4 ИН-П2** (требование владельца 3 к К4). Прежде тот же ключ с телом, которое
+     * отличается **только внутри `press`**, давал `IDEMPOTENCY_CONFLICT` — потому что отпечаток считался по всему
+     * телу, вместе с провенансом. Правило 2 К-Б v1.5 говорит обратное дословно: «провенанс нажатия `press` в
+     * отпечаток **не входит**» — иначе законный повтор (обрыв связи, второе нажатие) упирался бы в конфликт. Значит
+     * два таких тела — **одно действие**, и второе получает прежний ответ, а не конфликт. Исправленное тело идёт
+     * **новым** ключом, как и требует правило 2.
+     */
     const again = await fetch(`${s.url}/ui/v1/anything`, {
       method: "POST",
       headers: { cookie, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
       body: JSON.stringify({ press: { at: "t", device: "mobile", text_version: "v", gesture: "tap" } }),
     });
-    expect(again.status).toBe(409);
-    expect(((await again.json()) as { error: { code: string } }).error.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(again.status).toBe(400);
+    // А тело, отличающееся **полем действия**, — по-прежнему конфликт: отпечаток обязан меняться от любого поля,
+    // кроме провенанса, иначе два разных действия получили бы один ответ.
+    const other = await fetch(`${s.url}/ui/v1/anything`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", [IDEMPOTENCY_HEADER]: key },
+      body: JSON.stringify({ shown_hash: `sha256:${"a".repeat(64)}`, press: { at: "t", device: "mobile", text_version: "v", gesture: "tap" } }),
+    });
+    expect(other.status).toBe(409);
+    expect(((await other.json()) as { error: { code: string } }).error.code).toBe("IDEMPOTENCY_CONFLICT");
     // Повтор **того же** негодного тела тем же ключом отдаёт тот же отказ, второго разбора нет.
     const replay = await fetch(`${s.url}/ui/v1/anything`, {
       method: "POST",
