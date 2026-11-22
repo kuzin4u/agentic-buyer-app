@@ -27,8 +27,8 @@
 //
 // **Отличия от образца названы, а не умолчаны** (у согласия так же — `consent.ts:7`): пара «хэш + версия текстов»
 // названа здесь `shown`, а у согласия то же поле зовётся `view` — имя у формы одно (`UiShown`, Р-1682), и второй
-// формы не завелось; в записи журнала рядом с хэшем стоит `text_version` (у согласия её нет), потому что подпись
-// ПЭП читают по версии формулировки; аналога `allRequiredAccepted` здесь нет — отмечать нечего; и добавлены два
+// формы не завелось; в записи журнала стоит вся запись показанного `shown`, а у согласия — только `hash`, потому что
+// подпись ПЭП читают по версии формулировки; аналога `allRequiredAccepted` здесь нет — отмечать нечего; и добавлены два
 // вопроса, которых у согласия не бывает: «эта оплата подтверждена?» (`approvalFor`) и «подтвердил человек?»
 // (`approvedByHuman`).
 //
@@ -212,15 +212,22 @@ export function approvalFor(store: PaymentApprovalStore, look: ApprovalLookup): 
  */
 export const approvedByHuman = (version: SignedPaymentApproval): boolean => version.by === "human";
 
-/** Запись журнала о подтверждении оплаты. Реквизитов, номера карты и сумм в ней нет (инвариант 1) — номер версии,
- *  покупка, хэш показанного и провенанс. Формулировки ПЭП в журнале тоже нет: в нём стоит версия текстов. */
+/**
+ * Запись журнала о подтверждении оплаты. Реквизитов, номера карты и сумм в ней нет (инвариант 1) — номер версии,
+ * покупка, запись показанного и провенанс. Формулировки ПЭП в журнале тоже нет: в нём стоит версия текстов.
+ *
+ * Запись показанного — **одним полем общей формы** `UiShown`, а не парой `hash` + `text_version` рядом (**Р-1682**,
+ * решение владельца 21.11.2026). Пара, объявленная здесь во второй раз, и была причиной красного CI на PR #32:
+ * сторож «объявление пары в `src/` одно» (тест К2.4) нашёл `src/signature/m2.ts`. Правило сильнее удобства плоской
+ * строки журнала: добавь правило 1 К-Б в запись показанного ещё одно поле — править пришлось бы в двух местах, и
+ * расхождение было бы тихим.
+ */
 export interface PaymentApprovedEntry {
   readonly event: "payment.approved";
   readonly version: number;
   readonly owner: string;
   readonly purchase_id: string;
-  readonly hash: ShownHash;
-  readonly text_version: string;
+  readonly shown: UiShown;
   readonly press: UiPress;
   readonly by: UiSignedBy;
   readonly received_at: UiInstant;
@@ -307,8 +314,8 @@ export function recordPaymentApproval(
     version: version.no,
     owner: version.owner,
     purchase_id: version.purchase_id,
-    hash: version.shown.hash,
-    text_version: version.shown.text_version,
+    // Та же замороженная запись, что в версии: журнал и версия говорят об одном показанном, а не о двух похожих.
+    shown: version.shown,
     press: version.press,
     by,
     received_at,
