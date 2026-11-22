@@ -14,7 +14,13 @@ const INTENT = join(ROOT, "src/intent");
 
 /** Пакеты, которые модулю поручения ввозить нельзя. Ядро и его канонизация — можно (`agentic-buyer-ref`,
  *  `@kuzin4u/agentic-core`): это источник домена и хэша показанного, а не сборка стенда. */
-const FORBIDDEN_PACKAGES = [/^agentic-ps-platform(\/|$)/, /^vitest(\/|$)/];
+/** Адаптеры конкретной платформы внутри ядра запрещены так же, как пакет стенда (правило планов № 1): строка добавлена
+ *  кирпичом **К1 Н-3** по находке ревью К1 № 5 — щель была одинаковой в обоих файлах границ, и закрыта она в обоих. */
+const FORBIDDEN_PACKAGES = [
+  /^agentic-ps-platform(\/|$)/,
+  /^vitest(\/|$)/,
+  /^agentic-buyer-ref\/src\/agent\/adapters\//,
+];
 
 /** Свои каталоги, которые модулю поручения ввозить нельзя: сборка стенда, экраны и пульт. */
 /** `src/ui-server/` — файлы окна Б (ИН-0): окно А их не импортирует (указание владельца 20.11), и на этом стоит весь
@@ -59,6 +65,7 @@ describe("граница src/intent (правило 1 планов: только
     expect(FORBIDDEN_LOCAL.some((re) => re.test("src/demo/scenarios.ts"))).toBe(true);
     expect(FORBIDDEN_LOCAL.some((re) => re.test("src/ui-server/money.ts"))).toBe(true);
     expect(FORBIDDEN_PACKAGES.some((re) => re.test("agentic-ps-platform/fixtures"))).toBe(true);
+    expect(FORBIDDEN_PACKAGES.some((re) => re.test("agentic-buyer-ref/src/agent/adapters/pao/map.js"))).toBe(true);
     // А ядро — нет: домен и канонизация берутся у него.
     expect(FORBIDDEN_PACKAGES.some((re) => re.test("agentic-buyer-ref/src/shared/domain.js"))).toBe(false);
     expect(FORBIDDEN_LOCAL.some((re) => re.test("src/contract/ui-v1/methods.ts"))).toBe(false);

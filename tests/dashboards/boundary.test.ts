@@ -61,10 +61,17 @@ describe("граница экранов DEMO-2 (Р-1246 п. 3)", () => {
     }
   });
 
-  it("src/pult (П-1) импортирует только node:*, свои модули, src/dashboards и бренд — сборку стенда нет", () => {
+  it("src/pult (П-1) импортирует только node:*, свои модули, src/dashboards, бренд и общий фильтр — сборку стенда нет", () => {
     const pult = join(ROOT, "src/pult");
     expect(filesUnder(pult).length).toBeGreaterThan(0);
-    const allowed = new Set([...filesUnder(join(ROOT, "src/dashboards")), join(ROOT, "src/brand.ts")]);
+    // `src/card-guard.ts` разрешён наравне с брендом: это **нейтральный** модуль приложения (кирпич К4а Н-3). Фильтр
+    // «похоже на номер карты» нужен и пульту (R41, записи шины), и серверу итога (просев значения Платформы, Р-1707),
+    // а `src/pult/` окно А импортировать не может по своей границе — вторая копия фильтра разошлась бы молча.
+    const allowed = new Set([
+      ...filesUnder(join(ROOT, "src/dashboards")),
+      join(ROOT, "src/brand.ts"),
+      join(ROOT, "src/card-guard.ts"),
+    ]);
     expect(violations(pult, allowed)).toEqual([]);
   });
 

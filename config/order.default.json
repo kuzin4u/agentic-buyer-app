@@ -1,0 +1,57 @@
+{
+  "sources": {
+    "PLATFORM_FULFILMENT": {
+      "ru": "Запись об исполнении Платформы",
+      "en": "Platform fulfilment record"
+    },
+    "PLATFORM_OPERATION": {
+      "ru": "Состояние операции у Платформы, записи об исполнении ещё нет",
+      "en": "Operation status at the Platform, no fulfilment record yet"
+    }
+  },
+  "scope_within": {
+    "ru": "В пределах поручения",
+    "en": "Within the mandate limits"
+  },
+  "scope_en": {
+    "SCOPE_EXCEEDS_AUTHORIZATION": {
+      "en": "More was charged than the amount approved. The purchase is complete; check the outcome in your bank app — this payment can be disputed."
+    },
+    "SCOPE_NOT_RESERVED": {
+      "en": "The money was charged outside your mandate reservation: the mandate budget did not account for this charge. The charged amount is in the notice. The purchase is complete; check the outcome in your bank app."
+    },
+    "SCOPE_CHECK_UNRECOGNIZED": {
+      "en": "The bank reported a charge check that the assistant did not recognise. The purchase is complete; check the outcome in your bank app."
+    }
+  },
+  "outcomes": {
+    "DECLINED": {
+      "ru": "Платформа отказала в оплате",
+      "en": "The Platform declined the payment"
+    },
+    "REVERSED": {
+      "ru": "Оплата отменена",
+      "en": "The payment was reversed"
+    },
+    "REFUNDED": {
+      "ru": "Деньги вернулись. Предел поручения не восстановлен",
+      "en": "The money was refunded. The mandate limit is not restored"
+    }
+  },
+  "reasons": {
+    "FULFILMENT_ABSENT": {
+      "ru": "Итога расчёта ещё нет: Платформа не записала исполнение",
+      "en": "The settlement outcome is not in yet: the Platform has not recorded the fulfilment"
+    },
+    "OPERATION_AMOUNT_ABSENT": {
+      "ru": "Суммы операции Платформа не сообщила",
+      "en": "The Platform did not report the operation amount"
+    }
+  },
+  "withheld": {
+    "LOOKS_LIKE_CARD": {
+      "ru": "Значение Платформы не показано: оно по форме похоже на номер карты",
+      "en": "The Platform value is not shown: by its form it looks like a card number"
+    }
+  }
+}

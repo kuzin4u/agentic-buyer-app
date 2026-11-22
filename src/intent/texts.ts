@@ -9,7 +9,7 @@
 // Подстановки в строках закрыты так же: у каждого кода назван перечень допустимых подстановок, и разбор отвергает
 // строку с чужой или пропущенной подстановкой. Иначе `{limit}`, забытый в английской строке, доехал бы до экрана
 // пустым местом вместо суммы.
-import { obj, str } from "../config-parse.js";
+import { bilingual, obj, slotRe, str, type Bilingual } from "../config-parse.js";
 import type { UiLang, UiMoney } from "../contract/ui-v1/common.js";
 import type { IntentCard } from "../contract/ui-v1/methods.js";
 import { formatInstant } from "../format.js";
@@ -48,7 +48,9 @@ type SlotsCoverCodes = keyof typeof LINE_SLOTS extends LineCode
 const _slotsCoverCodes: SlotsCoverCodes = true;
 void _slotsCoverCodes;
 
-export type Bilingual = Readonly<Record<UiLang, string>>;
+/** Пара ru/en — **общая форма** приложения (`src/config-parse.ts`): здесь только имя, под которым её знают тексты
+ *  поручения. Своего объявления у модуля нет с кирпича К1 Н-3 — два объявления одной формы расходятся молча. */
+export type { Bilingual };
 
 /** Тексты действия «Сохранить поручение» (§ 5.1, `actions.submit`): подпись кнопки и объяснение, почему она сейчас
  *  недоступна. Перечень закрытый — недоступное объясняется текстом, а не молчанием (К4), и текст не берётся по месту. */
@@ -86,24 +88,6 @@ export interface IntentTexts {
   readonly actions: Readonly<Record<ActionTextKey, Bilingual>>;
   readonly errors: Readonly<Record<ErrorTextKey, Bilingual>>;
   readonly questions: Readonly<Record<DraftField, Bilingual>>;
-}
-
-const LANGS: readonly UiLang[] = ["ru", "en"];
-const SLOT = /\{([a-z_]+)\}/g;
-
-/** Пара ru/en с проверкой подстановок: у строк обоих языков перечень подстановок — ровно `slots`. */
-function bilingual(raw: unknown, where: string, slots: readonly string[]): Bilingual {
-  const r = obj(raw, where);
-  for (const key of Object.keys(r)) if (!LANGS.includes(key as UiLang)) throw new Error(`${where}.${key}: лишний язык`);
-  const out = {} as Record<UiLang, string>;
-  for (const lang of LANGS) {
-    const s = str(r, lang, where);
-    const used = [...s.matchAll(SLOT)].map((m) => m[1] as string);
-    for (const u of used) if (!slots.includes(u)) throw new Error(`${where}.${lang}: подстановка {${u}} здесь не бывает`);
-    for (const need of slots) if (!used.includes(need)) throw new Error(`${where}.${lang}: нет подстановки {${need}}`);
-    out[lang] = s;
-  }
-  return out;
 }
 
 /** Разбор `config/intent.default.json`. Ключи — ровно перечни кодов: ни пропуска, ни лишнего (Р-1511). */
@@ -177,7 +161,7 @@ function slotValues(draft: IntentDraft, deps: LinesDeps): Readonly<Record<string
 }
 
 function fill(template: string, values: Readonly<Record<string, string>>, where: string): string {
-  return template.replace(SLOT, (_, name: string) => {
+  return template.replace(slotRe(), (_, name: string) => {
     const v = values[name];
     // Умолчания у подстановки нет: пустое место на карточке — это условие поручения, которого человек не прочитал.
     if (v === undefined) throw new Error(`${where}: нечем заполнить {${name}}`);
