@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@kuzin4u/agentic-core": "git+https://github.com/kuzin4u/agentic-core.git#v0.13.1",
+    "@simplewebauthn/server": "13.3.3",
     "agentic-buyer-ref": "git+https://github.com/kuzin4u/agentic-buyer-ref.git#v0.1.0"
   },
   "devDependencies": {

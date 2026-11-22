@@ -8,13 +8,17 @@
 // **Выпуск новой версии контракта** включает правку двух мест: этого файла и `UI_CONTRACT_VERSION` в
 // `src/contract/ui-v1/index.ts`. Их согласие проверяет тест К2.4 («путь и версия контракта — как в документе»):
 // оставь одно без другого — покраснеет.
+//
+// Переход **с v1.3 сразу на v1.5** (кирпич К-Б ИН-П2, указание владельца 22.11.2026): v1.4 выпущена 22.11 и в тот
+// же день отменена v1.5, в коде она не стояла. Промежуточной правки на v1.4 нет намеренно — она была бы правкой на
+// отменённую версию.
 import { readFileSync } from "node:fs";
 
 /** Файл действующей версии документа. Прежние версии остаются в `docs/reference/` для истории. */
-export const CONTRACT_DOC = new URL("../../docs/reference/2026-11-21-kontrakt-K-B-ui-v1-v1.3.md", import.meta.url);
+export const CONTRACT_DOC = new URL("../../docs/reference/2026-11-22-kontrakt-K-B-ui-v1-v1.5.md", import.meta.url);
 
 /** Номер действующей версии — тот, что назван в самом документе и в `UI_CONTRACT_VERSION`. */
-export const CONTRACT_VERSION = "1.3";
+export const CONTRACT_VERSION = "1.5";
 
 /** Текст документа. Читается один раз на файл теста. */
 export const contractDoc = (): string => readFileSync(CONTRACT_DOC, "utf8");

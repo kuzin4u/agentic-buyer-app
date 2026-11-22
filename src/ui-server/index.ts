@@ -24,6 +24,13 @@ import {
   postConsent,
   type OnboardingServiceDeps,
 } from "../onboarding/service.js";
+import {
+  getPasskeyRegistration,
+  postPasskeyRegistration,
+  postPaymentSignature,
+  postPaymentSignatureChallenge,
+  type PasskeyServiceDeps,
+} from "../signature/service.js";
 import { uiError } from "./errors.js";
 import { feedChunk } from "./feed.js";
 import { langOf, t } from "./lang.js";
@@ -102,7 +109,21 @@ export interface UiServerOptions {
    * лежит ли в репозитории файл знакомства.
    */
   readonly onboarding?: OnboardingOptions;
+  /**
+   * Пасскей: данные экрана П4, хранение вызовов, регистраций и подтверждений (ИН-П2, кирпич К4).
+   *
+   * Не передано — четырёх методов П37 нет, как нет и всех прочих незарегистрированных: по ответу не видно, что метод
+   * «есть, но молчит». Признака «кто нажал» здесь нет — его ставит сервер своим провенансом (П26 дополнение 2).
+   */
+  readonly passkey?: PasskeyOptions;
 }
+
+/** Настройка пасскея. Хранения, журналы, проверяющий, случайный опознаватель для устройства и одноразовое число —
+ *  **зависимостями**: их знает тот, кто поднял сервер, а не маршрут. */
+export type PasskeyOptions = Omit<PasskeyServiceDeps, "now" | "by"> & {
+  /** время получения сервером; не передано — часы процесса */
+  readonly now?: () => string;
+};
 
 /**
  * Настройка знакомства: данные экранов, опознаватель своей копии карточки и хранение согласий (кирпичи К3 и К4).
@@ -322,6 +343,24 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
           return settle(got.ok ? json(200, got.body) : json(got.status, got.body));
         }
 
+        // ── П37 п. 3 `POST /ui/v1/passkey/registration` и подпись оплаты (ИН-П2, кирпич К4; `PENDING_V1_6`) ──
+        //
+        // Все три POST стоят **после** проверки повтора общего слоя, и это то, что требует уточнение 2 к П37:
+        // законный повтор с тем же ключом идемпотентности получает прежний ответ **до** всякой проверки вызова и
+        // `CHALLENGE_UNKNOWN` не получает. Отказ за повтором использованного вызова остаётся — но только с **новым**
+        // ключом, то есть когда это и правда другое действие.
+        if (path === "/passkey/registration" || path === "/payment/signature" || path === "/payment/signature/challenge") {
+          if (o.passkey === undefined) return settle({ status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
+          const deps = { ...o.passkey, now: o.passkey.now ?? (() => new Date().toISOString()), by: signedBy };
+          const got =
+            path === "/passkey/registration"
+              ? await postPasskeyRegistration(parsed, owner, lang, deps)
+              : path === "/payment/signature/challenge"
+                ? postPaymentSignatureChallenge(parsed, owner, lang, deps)
+                : await postPaymentSignature(parsed, owner, lang, deps);
+          return settle(json(got.status, got.body));
+        }
+
         // Остальные адреса под `/ui/v1` изменяющих методов пока не имеют: любой другой POST — неизвестный адрес, и
         // поле `by` в его теле ничего не меняет — отвечать кодом метода, которого нет, было бы выдумыванием.
         // Ответ запоминается тем же ключом, поэтому повтор экрана получит ровно его, а не новый разбор.
@@ -372,6 +411,22 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
         return send(res, got.ok ? json(200, got.body) : json(got.status, got.body));
       }
 
+      // Два адреса подписи — **только POST**: отвечать на них общим 404 значило бы сказать «метода нет», когда он
+      // есть (прецедент `/consent`, находка ревью К4 № 11 ИН-П1; здесь — находка ревью К4 № 9 ИН-П2).
+      if ((path === "/payment/signature" || path === "/payment/signature/challenge") && o.passkey !== undefined) {
+        return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "POST" });
+      }
+
+      // ── П37 п. 3 `GET /ui/v1/passkey/registration` — вызов регистрации и соглашение о ПЭП (кирпич К4) ──
+      if (path === "/passkey/registration") {
+        if (o.passkey === undefined) return send(res, { status: 404, type: TEXT_TYPE, body: t(lang, "http.not_found") });
+        if (method !== "GET")
+          return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET, POST" });
+        const deps = { ...o.passkey, now: o.passkey.now ?? (() => new Date().toISOString()), by: signedBy };
+        const got = getPasskeyRegistration(owner, lang, deps);
+        return send(res, json(got.status, got.body));
+      }
+
       // ── § 5.9 `GET /ui/v1/feed` (SSE) ──
       if (path === "/feed") {
         if (method !== "GET") return send(res, { status: 405, type: TEXT_TYPE, body: t(lang, "http.method_not_allowed") }, { allow: "GET" });
@@ -392,7 +447,8 @@ export function createUiHandler(o: UiServerOptions): (req: IncomingMessage, res:
   return (req, res) => {
     void route(req, res).catch((e: unknown) => {
       // Сбой разбора — ответ человеку и строка в журнал процесса; тело § 3 здесь не отдаётся: кода внутренней ошибки
-      // ни у ядра, ни в § 6 контракта нет (в v1.3 по-прежнему), и выдумывать его в коде нельзя — строка в STATUS.
+      // ни у ядра, ни в § 6 контракта нет (в действующей v1.5 по-прежнему), и выдумывать его в коде нельзя — строка
+      // в STATUS.
       console.error("/ui/v1: сбой разбора запроса", e);
       send(res, { status: 500, type: TEXT_TYPE, body: t(fallback, "http.internal") });
     });

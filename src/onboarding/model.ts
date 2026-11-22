@@ -60,8 +60,9 @@ export type ConsentId = (typeof CONSENT_IDS)[number];
 export const isConsentId = (s: unknown): s is ConsentId =>
   typeof s === "string" && (CONSENT_IDS as readonly string[]).includes(s);
 
-/** Экраны задачи: П1 «какой агент» и П3 «условия и согласия». П2 и П4–П6 — не в ИН-П1 (П4 и П6 — ИН-П2, П5 — И-2),
- *  поэтому в перечне их нет: место под них появится вместе с ними. */
+/** Экраны задачи: П1 «какой агент» и П3 «условия и согласия». П2 и П4–П6 — не в ИН-П1 (**П4 — ИН-П2, П6 — ИН-ВМ**
+ *  по решению владельца 22.11.2026, **Р-1705**; П5 — И-2), поэтому в перечне их нет: место под них появится вместе
+ *  с ними. */
 export const ONBOARDING_SCREENS = ["P1", "P3"] as const;
 
 export type OnboardingScreenId = (typeof ONBOARDING_SCREENS)[number];
