@@ -44,7 +44,13 @@ async function stand(o: { readonly ownerOnPage?: () => string } = {}) {
   const challenges = createChallengeStore();
   const registrations = createRegistrationStore();
   const approvals = createPaymentApprovalStore();
-  const journal = { write: () => undefined, refused: () => undefined };
+  /**
+   * Два журнала — **разными заглушками** (находка ревью К6 № 8): пока регистрация и подтверждение оплаты делили один
+   * объект, различить их было нечем, и ошибка маршрутизации отказов (отказ оплаты уходил в журнал регистрации) жила
+   * незамеченной до сквозного теста К6. Это правило «в фикстуре разные сущности — разные значения» буквально.
+   */
+  const regJournal = { written: [] as unknown[], write: (e: unknown) => void regJournal.written.push(e), refused: (e: unknown) => void regJournal.written.push(e) };
+  const payJournal = { written: [] as unknown[], write: (e: unknown) => void payJournal.written.push(e), refused: (e: unknown) => void payJournal.written.push(e) };
   const auth = createTestAuthenticator(RP_ID, PASSKEY_ID);
   let nonce = 0;
   const s = await startUiServer({
@@ -56,8 +62,8 @@ async function stand(o: { readonly ownerOnPage?: () => string } = {}) {
       challenges,
       registrations,
       approvals,
-      journal,
-      approvalJournal: journal,
+      journal: regJournal,
+      approvalJournal: payJournal,
       verifier: createPasskeyVerifier({ onRefused: () => undefined }),
       nonce: () => `nonce_${++nonce}`,
       origin: ORIGIN,
@@ -67,7 +73,7 @@ async function stand(o: { readonly ownerOnPage?: () => string } = {}) {
     },
   });
   const cookie = async () => (await fetch(`${s.url}/ui`)).headers.get("set-cookie")!.split(";")[0]!;
-  return { s, sessions, challenges, registrations, approvals, auth, cookie, close: () => s.close() };
+  return { s, sessions, challenges, registrations, approvals, auth, cookie, regJournal, payJournal, close: () => s.close() };
 }
 
 const post = (url: string, cookie: string, key: string, body: unknown) =>
@@ -137,6 +143,9 @@ describe("состав тел: `path` не появляется тихо (П37, 
       expect(body.error.code).toBe("PASSKEY_NOT_REGISTERED");
       expect(body.error.retry).toBe("after_human");
       expect(body.error.text).toBe(catalog.errors.PASSKEY_NOT_REGISTERED.ru);
+      // Отказ ушёл **в свой** журнал — подтверждений оплаты, а не регистрации (находка ревью К6 № 8).
+      expect(st.payJournal.written).toHaveLength(1);
+      expect(st.regJournal.written).toHaveLength(0);
     } finally {
       await st.close();
     }

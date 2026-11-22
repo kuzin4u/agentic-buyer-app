@@ -65,19 +65,40 @@ export function passkeyRefusal(code: PasskeyRefusalCode | "SHOWN_STALE", lang: U
  *
  * Человеку уходит код и готовый текст; **причина** (какая величина не сошлась) идёт только в журнал — экрану она не
  * нужна и не отдаётся (правило 3 К-Б, П32 дополнение 1).
+ *
+ * **Строк, пришедших от экрана, в причине нет** (находка ревью К6 № 2): сперва причина несовпадения версий текстов
+ * склеивалась из обоих значений, и значение экрана (`press.text_version` — по контракту любая непустая строка)
+ * уходило в журнал как есть. Журнал по инварианту 1 держит **только** свои опознаватели: экран мог бы положить туда
+ * что угодно, вплоть до строки, похожей на номер карты. Поэтому в причине стоит **наша** величина, а про пришедшую
+ * сказано, что она не совпала.
  */
+/** Журнал регистрации — одной величиной, чтобы у каждого вызова отказа было видно, куда он пишет. */
+const REG = { kind: "REGISTRATION" } as const;
+
+/** Журнал подтверждений оплаты: покупка может быть и негодной — тогда `null`, и это видно в записи. */
+const PAY = (purchase_id: string | null) => ({ kind: "PAYMENT", purchase_id }) as const;
+
 function refuseAndLog(
   code: PasskeyRefusalCode | "SHOWN_STALE",
   reason: string,
   owner: string,
   lang: UiLang,
   deps: PasskeyServiceDeps,
-  purchaseId: string | null = null,
+  /**
+   * В какой журнал. **Выбирается методом, а не наличием `purchase_id` в теле** (нашлось сквозным тестом К6): пока
+   * журнал выбирался по полю, отказ метода оплаты с негодной покупкой уходил в журнал **регистрации** — на разборе
+   * «человек не смог подтвердить оплату» строка лежала бы не там, где её ищут.
+   *
+   * **Шаг воспроизведения** (Р-1702): верни выбор журнала по `purchase_id` — и ожидание перечня событий в
+   * `tests/signature/invariant1.test.ts` («путь проходится целиком») покраснеет: три отказа оплаты уедут в журнал
+   * регистрации. Обязательный параметр `where` закрывает это и компиляцией — новый отказ без него не соберётся.
+   */
+  where: typeof REG | { readonly kind: "PAYMENT"; readonly purchase_id: string | null },
 ): PasskeyOutcome {
   const received_at = deps.now();
   const by = deps.by();
-  if (purchaseId === null) deps.journal.refused({ event: "passkey.registration_refused", owner, code, reason, by, received_at });
-  else deps.approvalJournal.refused({ event: "payment.approval_refused", owner, code, reason, purchase_id: purchaseId, by, received_at });
+  if (where.kind === "REGISTRATION") deps.journal.refused({ event: "passkey.registration_refused", owner, code, reason, by, received_at });
+  else deps.approvalJournal.refused({ event: "payment.approval_refused", owner, code, reason, purchase_id: where.purchase_id, by, received_at });
   return passkeyRefusal(code, lang, deps.catalog);
 }
 
@@ -208,22 +229,22 @@ export async function postPasskeyRegistration(
   // Форма ответа устройства по П37 п. 3: `passkey: { id, client_data, attestation }`.
   const answer = answerOf(body, "passkey", ["id", "client_data", "attestation"]) as PasskeyRegistrationAnswer | null;
   if (press === null || shownHash === null || !isShownHash(shownHash) || answer === null)
-    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела регистрации", owner, lang, deps);
+    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела регистрации", owner, lang, deps, REG);
   // Соглашение о ПЭП — **обязательная отметка**: без него подтверждать поручения нечем (П37 п. 1).
   if ((body as Record<string, unknown>)["pep_accepted"] !== true)
-    return refuseAndLog("PEP_NOT_ACCEPTED", "соглашение о ПЭП не отмечено", owner, lang, deps);
+    return refuseAndLog("PEP_NOT_ACCEPTED", "соглашение о ПЭП не отмечено", owner, lang, deps, REG);
 
   // Вызов находится **по человеку и делу**, а не по значению из тела: поля `challenge` в записанной форме П37 нет
   // (находка ревью К4 № 8), и экрану незачем возвращать то, что сервер выдал сам.
   const issued = deps.challenges.consumeFor(owner, "REGISTRATION", null);
-  if (issued === null) return refuseAndLog("CHALLENGE_UNKNOWN", "живого вызова регистрации у этого человека нет", owner, lang, deps);
+  if (issued === null) return refuseAndLog("CHALLENGE_UNKNOWN", "живого вызова регистрации у этого человека нет", owner, lang, deps, REG);
   if (Date.parse(deps.now()) > Date.parse(issued.expires_at))
-    return refuseAndLog("CHALLENGE_EXPIRED", "срок вызова регистрации вышел", owner, lang, deps);
-  if (issued.shown.hash !== shownHash) return refuseAndLog("SHOWN_STALE", "присланный хэш не совпал с хэшем вызова", owner, lang, deps);
+    return refuseAndLog("CHALLENGE_EXPIRED", "срок вызова регистрации вышел", owner, lang, deps, REG);
+  if (issued.shown.hash !== shownHash) return refuseAndLog("SHOWN_STALE", "присланный хэш не совпал с хэшем вызова", owner, lang, deps, REG);
   // Версия текстов показанного и версия текстов нажатия обязаны совпасть (П26): расходись они — человек подтверждал
   // не те тексты, что сервер считает показанными.
   if (press.text_version !== issued.shown.text_version)
-    return refuseAndLog("SHOWN_STALE", `версия текстов нажатия ${press.text_version} ≠ показанного ${issued.shown.text_version}`, owner, lang, deps);
+    return refuseAndLog("SHOWN_STALE", `версия текстов нажатия не совпала с показанным ${issued.shown.text_version}`, owner, lang, deps, REG);
 
   const checked = await deps.verifier.verifyRegistration({
     answer,
@@ -231,8 +252,8 @@ export async function postPasskeyRegistration(
     expected_origin: deps.origin,
     expected_rp_id: deps.rp_id,
   });
-  if (!checked.verified) return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "библиотека не подтвердила ответ регистрации", owner, lang, deps);
-  if (!checked.user_verified) return refuseAndLog("PASSKEY_USER_NOT_VERIFIED", "ответ регистрации без подтверждения человеком", owner, lang, deps);
+  if (!checked.verified) return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "библиотека не подтвердила ответ регистрации", owner, lang, deps, REG);
+  if (!checked.user_verified) return refuseAndLog("PASSKEY_USER_NOT_VERIFIED", "ответ регистрации без подтверждения человеком", owner, lang, deps, REG);
 
   const version = recordRegistration(
     { store: deps.registrations, journal: deps.journal, now: deps.now, by: deps.by },
@@ -277,9 +298,9 @@ export function postPaymentSignatureChallenge(body: unknown, owner: string, lang
   // Версия текстов карточки приходит **вместе с хэшем**: она уходит в вызов, а из вызова — в подписанную версию, и
   // пара обязана говорить об одной карточке (блокер ревью К4 № 1).
   if (purchaseId === null || !PURCHASE_ID.test(purchaseId) || shownHash === null || !isShownHash(shownHash) || textVersion === null)
-    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела вызова подписи", owner, lang, deps, purchaseId);
+    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела вызова подписи", owner, lang, deps, PAY(purchaseId));
   const keys = deps.registrations.all(owner);
-  if (keys.length === 0) return refuseAndLog("PASSKEY_NOT_REGISTERED", "у человека нет ни одного пасскея", owner, lang, deps, purchaseId);
+  if (keys.length === 0) return refuseAndLog("PASSKEY_NOT_REGISTERED", "у человека нет ни одного пасскея", owner, lang, deps, PAY(purchaseId));
   const challenge = issueChallenge(
     { store: deps.challenges, now: deps.now, nonce: deps.nonce, ttlMs: deps.catalog.challenge_ttl_ms },
     { owner, purpose: "PAYMENT", purchase_id: purchaseId, shown: { hash: shownHash, text_version: textVersion } },
@@ -308,14 +329,22 @@ export async function postPaymentSignature(body: unknown, owner: string, lang: U
   const shownHash = strOf(body, "shown_hash");
   const assertion = answerOf(body, "assertion", ["passkey_id", "client_data", "authenticator_data", "signature"]) as PasskeyAssertion | null;
   if (press === null || purchaseId === null || !PURCHASE_ID.test(purchaseId) || shownHash === null || !isShownHash(shownHash) || assertion === null)
-    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела подписи оплаты", owner, lang, deps, purchaseId);
+    return refuseAndLog("PASSKEY_SIGNATURE_INVALID", "негодная форма тела подписи оплаты", owner, lang, deps, PAY(purchaseId));
 
   // Вызов — **свой, по человеку и покупке** (поля `challenge` в форме П37 нет): читается **без вычёркивания**, потому
   // что вычеркнёт его проверка подписи — правило «вызов одноразовый» остаётся в одном месте (`checkPaymentAssertion`).
   const mine = deps.challenges.peekFor(owner, "PAYMENT", purchaseId);
-  if (mine === null) return refuseAndLog("CHALLENGE_UNKNOWN", "живого вызова подписи у этого человека и покупки нет", owner, lang, deps, purchaseId);
+  if (mine === null)
+    return refuseAndLog("CHALLENGE_UNKNOWN", "живого вызова подписи у этого человека и покупки нет", owner, lang, deps, PAY(purchaseId));
   if (press.text_version !== mine.shown.text_version)
-    return refuseAndLog("SHOWN_STALE", `версия текстов нажатия ${press.text_version} ≠ показанного ${mine.shown.text_version}`, owner, lang, deps, purchaseId);
+    return refuseAndLog(
+      "SHOWN_STALE",
+      `версия текстов нажатия не совпала с показанным ${mine.shown.text_version}`,
+      owner,
+      lang,
+      deps,
+      PAY(purchaseId),
+    );
 
   const checked = await checkPaymentAssertion(
     {
@@ -328,7 +357,7 @@ export async function postPaymentSignature(body: unknown, owner: string, lang: U
     },
     { owner, purchase_id: purchaseId, shown_hash: shownHash, challenge: mine.value, assertion },
   );
-  if (!checked.ok) return refuseAndLog(checked.code, checked.reason, owner, lang, deps, purchaseId);
+  if (!checked.ok) return refuseAndLog(checked.code, checked.reason, owner, lang, deps, PAY(purchaseId));
 
   const approval = recordPaymentApproval(
     { store: deps.approvals, journal: deps.approvalJournal, now: deps.now, by: deps.by },
